@@ -29,6 +29,9 @@ importers:
       '@hono/node-server':
         specifier: ^2.1.7
         version: 2.1.7(hono@4.13.18)
+      '@relay/channels':
+        specifier: workspace:*
+        version: link:../../packages/channels
       '@relay/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -175,6 +178,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@relay/channels':
+        specifier: workspace:*
+        version: link:../../packages/channels
       '@relay/core':
         specifier: workspace:*
         version: link:../../packages/core

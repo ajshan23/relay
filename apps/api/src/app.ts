@@ -7,6 +7,7 @@ import { authOptionsRoutes } from "./modules/auth/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
+import { metaWebhookRoutes } from "./modules/webhooks/meta";
 
 /**
  * One module per folder under src/modules. A module owns its routes, logic and queries,
@@ -21,6 +22,7 @@ export function createApp(ctx: AppContext) {
   app.use(cors({ origin: ctx.config.WEB_URL, credentials: true }));
 
   app.route("/health", healthRoutes(ctx));
+  app.route("/webhooks/meta", metaWebhookRoutes(ctx));
   app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
   app.route("/api/auth-options", authOptionsRoutes());
   app.route("/api/me", meRoutes(ctx));

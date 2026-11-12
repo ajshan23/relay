@@ -2,8 +2,9 @@ import { createServer } from "node:http";
 import { env, queues } from "@relay/core";
 import { createDb } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -17,15 +18,15 @@ const emails = new Worker<EmailJob>(queues.emails, createEmailSender({ db, provi
 });
 emails.on("ready", () => console.log(`emails worker ready (provider: ${emailProvider.name})`));
 
-/* Channel webhooks: placeholder until the WhatsApp adapter lands. */
-const webhooks = new Worker(
-  queues.webhooks,
-  async (job) => {
-    console.log(`webhook job ${job.id} received`);
-  },
-  { connection, concurrency: 10 },
+/* Channel webhooks: stored raw by the API, turned into contacts, conversations and messages here. */
+const mediaQueue = new Queue<MediaJob>(queues.media, { connection });
+const webhooks = new Worker<WebhookJob>(queues.webhooks, createWebhookProcessor({ db, mediaQueue }), {
+  connection,
+  concurrency: 10,
+});
+webhooks.on("failed", (job, err) =>
+  console.error(`webhook ${job?.data.eventId} failed (attempt ${job?.attemptsMade})`, err.message),
 );
-webhooks.on("failed", (job, err) => console.error(`webhook job ${job?.id} failed`, err));
 
 /* Health check for the process manager (and the local launcher): 200 while the workers run. */
 const port = Number(process.env.WORKER_PORT ?? 3202);
@@ -38,7 +39,7 @@ health.listen(port, () => console.log(`worker health on :${port}`));
 
 async function shutdown() {
   health.close();
-  await Promise.all([emails.close(), webhooks.close()]);
+  await Promise.all([emails.close(), webhooks.close(), mediaQueue.close()]);
   connection.disconnect();
   await sql.end();
   process.exit(0);

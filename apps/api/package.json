@@ -18,6 +18,7 @@
     "hono": "^4.13.18",
     "ioredis": "^6.0.0",
     "zod": "^4.6.7",
-    "@relay/email": "workspace:*"
+    "@relay/email": "workspace:*",
+    "@relay/channels": "workspace:*"
   }
 }
