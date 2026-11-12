@@ -26,7 +26,13 @@ export function createWebhookProcessor({ db, mediaQueue }: { db: Db; mediaQueue:
         await mediaQueue.add(
           "download",
           { attachmentId },
-          { jobId: attachmentId, attempts: 5, backoff: { type: "exponential", delay: 5_000 } },
+          {
+            jobId: attachmentId,
+            attempts: 5,
+            backoff: { type: "exponential", delay: 5_000 },
+            removeOnComplete: true,
+            removeOnFail: { age: 7 * 24 * 60 * 60 },
+          },
         );
       }
       await db

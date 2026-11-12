@@ -1,0 +1,97 @@
+import { createHash } from "node:crypto";
+import { createGraphClient, fetchWhatsAppMedia, GraphError, whatsappCapabilities } from "@relay/channels";
+import { decryptSecretJson, env, localFileStorage } from "@relay/core";
+import { type createDb, eq, schema } from "@relay/db";
+import { type Job, UnrecoverableError } from "bullmq";
+import type { MediaJob } from "./webhooks";
+
+type Db = ReturnType<typeof createDb>["db"];
+
+const extensions: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/3gpp": "3gp",
+  "audio/ogg": "ogg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/aac": "aac",
+  "application/pdf": "pdf",
+};
+
+/**
+ * Copies one customer file from Meta into our storage. Meta's media links last 5 minutes and media
+ * ids 7 days, so this runs right after the message arrives.
+ */
+export function createMediaProcessor({ db }: { db: Db }) {
+  const config = env();
+  const storage = localFileStorage(config.MEDIA_DIR);
+  const graph = createGraphClient({
+    baseUrl: config.META_GRAPH_URL,
+    version: config.META_GRAPH_VERSION,
+    timeoutMs: 60_000,
+  });
+
+  return async function downloadMedia(job: Job<MediaJob>) {
+    const [row] = await db
+      .select({ attachment: schema.attachment, account: schema.channelAccount })
+      .from(schema.attachment)
+      .innerJoin(schema.message, eq(schema.message.id, schema.attachment.messageId))
+      .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.message.channelAccountId))
+      .where(eq(schema.attachment.id, job.data.attachmentId))
+      .limit(1);
+    if (!row || row.attachment.status === "stored") return;
+    const { attachment, account } = row;
+    const mediaId = attachment.providerMediaId;
+    if (!mediaId) return;
+
+    const markFailed = (error: string) =>
+      db
+        .update(schema.attachment)
+        .set({ status: "failed", error })
+        .where(eq(schema.attachment.id, attachment.id));
+
+    try {
+      const { accessToken } = decryptSecretJson<{ accessToken: string }>(
+        account.credentials,
+        config.CHANNEL_SECRET_KEY ?? "",
+      );
+      const limits = whatsappCapabilities.media as Record<string, { maxBytes: number }>;
+      const maxBytes = limits[attachment.kind]?.maxBytes ?? 100 * 1024 * 1024;
+      const file = await fetchWhatsAppMedia(
+        graph,
+        { phoneNumberId: account.externalId, accessToken },
+        mediaId,
+        maxBytes,
+      );
+
+      const mimeType =
+        file.mimeType?.split(";")[0]?.trim() ?? attachment.mimeType ?? "application/octet-stream";
+      const extension = extensions[mimeType] ?? attachment.fileName?.split(".").pop() ?? "bin";
+      const now = new Date();
+      const key = `${attachment.organizationId}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${attachment.id}.${extension}`;
+      await storage.put(key, file.bytes);
+      await db
+        .update(schema.attachment)
+        .set({
+          status: "stored",
+          storageKey: key,
+          mimeType,
+          sizeBytes: file.bytes.byteLength,
+          sha256: attachment.sha256 ?? createHash("sha256").update(file.bytes).digest("base64"),
+          error: null,
+        })
+        .where(eq(schema.attachment.id, attachment.id));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      if (err instanceof GraphError && (err.kind === "permanent" || err.kind === "authFailed")) {
+        await markFailed(message);
+        throw new UnrecoverableError(message);
+      }
+      if (lastAttempt) await markFailed(message);
+      throw err;
+    }
+  };
+}

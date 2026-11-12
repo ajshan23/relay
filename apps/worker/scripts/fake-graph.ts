@@ -26,6 +26,17 @@ const graphError = (code: number, message: string, status = 400) =>
 
 app.get("/_requests", (c) => c.json(received));
 
+// A 1x1 PNG, for media download tests.
+app.get("/_media/:id", () => {
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  return new Response(png, {
+    headers: { "content-type": "image/png", "content-length": String(png.length) },
+  });
+});
+
 app.post("/:version/:phoneId/messages", async (c) => {
   const body = (await c.req.json()) as {
     text?: { body?: string };
@@ -71,15 +82,4 @@ app.get("/:version/:id", (c) =>
   }),
 );
 app.post("/:version/:wabaId/subscribed_apps", (c) => c.json({ success: true }));
-// A 1x1 PNG, for media download tests.
-app.get("/_media/:id", () => {
-  const png = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-    "base64",
-  );
-  return new Response(png, {
-    headers: { "content-type": "image/png", "content-length": String(png.length) },
-  });
-});
-
 serve({ fetch: app.fetch, port: 3299 }, () => console.log("fake Graph API on http://localhost:3299"));
