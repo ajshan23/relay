@@ -15,6 +15,13 @@
       "when": 1794512655267,
       "tag": "0001_email_log",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794514455557,
+      "tag": "0002_channels_and_messaging",
+      "breakpoints": true
     }
   ]
 }

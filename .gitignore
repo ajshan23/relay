@@ -10,3 +10,6 @@ dist
 # reference clones, not part of the product
 opensource/*/
 !opensource/notes/
+
+# Local media storage
+.data/
