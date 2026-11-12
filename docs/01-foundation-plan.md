@@ -183,3 +183,17 @@ Before launch:
 - The proxy in front of the web app must set `x-forwarded-for` to the real client IP; today every request shares one rate-limit bucket.
 - Move rate-limit storage from memory to Redis before running more than one API process.
 - Real Terms and Privacy text.
+
+## 10. Channels: many of each type (decided 2026-11-13)
+
+A business can connect **any number of channels of each type**: several WhatsApp numbers, several
+Instagram accounts, several Facebook Pages, several website widgets, later several SMS numbers.
+
+- Nothing may assume "the WhatsApp channel" of an organization or branch. Every conversation, message,
+  template, campaign, contact identity and reply window points at a specific `channel_account`.
+- A channel account belongs to an organization and is assigned to one or more branches.
+- Webhooks are routed to the right channel account by Meta's IDs (phone number ID, Page ID, IG account ID),
+  never by channel type alone.
+- The same customer can talk to two of our numbers; that is two conversations with one contact.
+- Screens let people choose which channel to send from wherever more than one could apply
+  (replies default to the channel the customer wrote on).
