@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script>
+  const v = (n) => `var(--${n})`;
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Figtree', 'system-ui', 'sans-serif'], display: ['"Bricolage Grotesque"', 'Figtree', 'sans-serif'] },
+        colors: {
+          canvas: v('canvas'), side: v('side'), surface: v('surface'), raised: v('raised'), line: v('line'),
+          ink: v('ink'), muted: v('muted'),
+          primary: v('primary'), 'primary-ink': v('primary-ink'), 'primary-soft': v('primary-soft'),
+          ai: v('ai'), 'ai-ink': v('ai-ink'), 'ai-strong': v('ai-strong'),
+          good: v('good'), 'good-soft': v('good-soft'), danger: v('danger'), 'danger-soft': v('danger-soft'),
+        },
+        borderRadius: { card: '14px', ctl: '10px' },
+      },
+    },
+  };
+</script>
+<style>
+  /* Theme "Tide": cool mist surfaces, petrol for people and actions, apricot for anything the AI did. */
+  :root {
+    --canvas: #F4F6F7; --side: #EAEEF0; --surface: #FFFFFF; --raised: #EEF2F3; --line: #DCE3E6;
+    --ink: #10222B; --muted: #5C6F78;
+    --primary: #0F6272; --primary-ink: #FFFFFF; --primary-soft: #DDEEF1;
+    --ai: #FFF0DD; --ai-ink: #6B3A05; --ai-strong: #FFB56B;
+    --good: #1B7F52; --good-soft: #DCF1E6; --danger: #B4233C; --danger-soft: #FBE3E7;
+  }
+  :root[data-theme="dark"] {
+    --canvas: #0D171C; --side: #0A1317; --surface: #132128; --raised: #1B2D35; --line: #253A43;
+    --ink: #E8F0F2; --muted: #8FA3AB;
+    --primary: #5CC8D8; --primary-ink: #05252C; --primary-soft: #143842;
+    --ai: #33260F; --ai-ink: #FFCF99; --ai-strong: #FFB56B;
+    --good: #5FD39A; --good-soft: #123425; --danger: #FF8A9B; --danger-soft: #3D1620;
+  }
+  body { background: var(--canvas); color: var(--ink); }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 6px; }
+  .thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .thin::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
+  @media (prefers-reduced-motion: no-preference) { .panel-in { animation: slide .18s ease-out; } }
+  @keyframes slide { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+</style>
+</head>
+<body class="font-sans antialiased">
+<div id="app" class="h-screen flex overflow-hidden"></div>
+
+<script>
+/* ------------------------------------------------------------------ state */
+const state = {
+  page: (location.hash || '#assistant').slice(1),
+  thread: false, panel: true, details: false, customer: null, agentTab: 'Teach', menu: false,
+  branch: 'Marina', theme: localStorageGet('relay-theme') || 'light',
+};
+function localStorageGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function localStorageSet(k, val) { try { localStorage.setItem(k, val); } catch { /* private mode */ } }
+
+/* ------------------------------------------------------------------- data */
+const chats = [
+  { name: 'Daniel Okafor', preview: 'I was charged twice for the whitening. Can I get a refund?', time: '4 min', ch: 'Instagram', who: 'Needs a person', unread: 1 },
+  { name: 'Asha Menon', preview: 'Saturday 11 works. Do I need to bring my old reports?', time: '2 min', ch: 'WhatsApp', who: 'Mira', unread: 2 },
+  { name: 'Rahul Verma', preview: 'Can I move my appointment to Monday?', time: '2 hr', ch: 'WhatsApp', who: 'Mira' },
+  { name: 'Website visitor', preview: 'Do you open on Sundays?', time: '1 hr', ch: 'Website', who: 'Mira' },
+  { name: 'Fatima Noor', preview: 'You: Your invoice is attached. Thank you for visiting.', time: '32 min', ch: 'WhatsApp', who: 'Priya' },
+  { name: 'Leila Haddad', preview: 'Thanks, see you tomorrow.', time: '3 hr', ch: 'WhatsApp', who: 'Sameer' },
+  { name: 'Tom Becker', preview: 'How much is a check-up for a child?', time: '5 hr', ch: 'Instagram', who: 'Mira' },
+];
+const customers = [
+  ['Asha Menon', 'Marina', 'WhatsApp', 'Booked', 'Sat 11:00', 'Mira'], ['Daniel Okafor', 'Marina', 'Instagram', 'Talking', 'Refund request', 'Front desk'],
+  ['Rahul Verma', 'Marina', 'WhatsApp', 'Booked', 'Mon 10:30', 'Mira'], ['Fatima Noor', 'Downtown', 'WhatsApp', 'Visited', 'Invoice sent', 'Priya'],
+  ['Leila Haddad', 'Marina', 'WhatsApp', 'Booked', 'Wed 4:00', 'Sameer'], ['Tom Becker', 'Downtown', 'Instagram', 'New enquiry', 'Asked a price', 'Mira'],
+  ['Nora Aziz', 'Marina', 'WhatsApp', 'New enquiry', 'Asked about braces', 'Mira'], ['Omar Said', 'Downtown', 'WhatsApp', 'Booked', 'Thu 9:00', 'Mira'],
+  ['Ivy Chen', 'Marina', 'Website', 'Visited', 'Asked for a review', 'Mira'],
+];
+const needs = [
+  { icon: 'hand-helping', title: 'Daniel is asking for a refund', detail: 'Mira stopped and handed the chat to the front desk 4 minutes ago.', action: 'Open chat', go: 'inbox' },
+  { icon: 'book-open', title: 'Mira couldn’t answer an insurance question', detail: '“Do you take Aetna?” was asked 3 times this week.', action: 'Teach Mira', go: 'agents' },
+  { icon: 'circle-alert', title: 'WhatsApp rejected your reminder message', detail: 'It reads like marketing. A small rewording fixes it.', action: 'Fix message', go: 'campaigns' },
+];
+const recents = ['Winter cleaning offer', 'Why did Mira hand over 5 chats?', 'Add the Downtown branch', 'Teach Mira the price list', 'Weekly numbers for both branches'];
+const nav = [['assistant', 'sparkles', 'Assistant'], ['inbox', 'message-circle', 'Inbox', 3], ['customers', 'users', 'Customers'], ['agents', 'bot', 'Agents'], ['campaigns', 'megaphone', 'Campaigns'], ['insights', 'bar-chart-3', 'Insights']];
+const chIcon = { WhatsApp: 'message-circle', Instagram: 'camera', Website: 'globe' };
+
+/* ---------------------------------------------------------------- helpers */
+const ic = (n, c = 'w-4 h-4') => `<i data-lucide="${n}" class="${c} shrink-0"></i>`;
+const initials = (n) => n.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+const avatar = (n, c = 'w-9 h-9 text-xs') => `<span class="${c} shrink-0 rounded-full bg-raised text-ink font-semibold inline-flex items-center justify-center">${initials(n)}</span>`;
+const mira = (c = 'w-9 h-9 text-sm') => `<span class="${c} shrink-0 rounded-full bg-ai-strong text-[#4A2600] font-bold inline-flex items-center justify-center" title="Mira, AI agent">M</span>`;
+const mark = (c = 'w-8 h-8') => `<span class="${c} shrink-0 rounded-[10px] bg-primary text-primary-ink inline-flex items-center justify-center">${ic('messages-square', 'w-[58%] h-[58%]')}</span>`;
+const btn = (label, kind = 'quiet', attrs = '') => {
+  const k = { primary: 'bg-primary text-primary-ink hover:opacity-90', quiet: 'bg-raised text-ink hover:bg-line', ghost: 'text-muted hover:bg-raised', line: 'border border-line text-ink hover:bg-raised' }[kind];
+  return `<button ${attrs} class="h-9 px-3.5 rounded-ctl text-sm font-semibold whitespace-nowrap inline-flex items-center gap-2 ${k}">${label}</button>`;
+};
+const chip = (label, tone = 'plain') => {
+  const t = { plain: 'bg-raised text-muted', ai: 'bg-ai text-ai-ink', good: 'bg-good-soft text-good', danger: 'bg-danger-soft text-danger', primary: 'bg-primary-soft text-primary' }[tone];
+  return `<span class="px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap ${t}">${label}</span>`;
+};
+const whoChip = (w) => (w === 'Mira' ? chip('Mira', 'ai') : w === 'Needs a person' || w === 'Front desk' ? chip(w, 'danger') : chip(w));
+const stageChip = (s) => chip(s, { Booked: 'good', Talking: 'primary', 'New enquiry': 'ai', Visited: 'plain' }[s]);
+const card = (inner, extra = '') => `<div class="bg-surface border border-line rounded-card ${extra}">${inner}</div>`;
+const pageHead = (title, sub, actions = '') => `
+  <header class="px-5 sm:px-8 pt-7 pb-5 flex flex-wrap items-end gap-3">
+    <div class="min-w-0 flex-1"><h1 class="font-display text-[28px] leading-tight font-semibold tracking-tight">${title}</h1><p class="text-muted mt-1">${sub}</p></div>
+    <div class="flex gap-2">${actions}</div>
+  </header>`;
+
+const bubble = (side, text, by) => `
+  <div class="flex ${side === 'out' ? 'justify-end' : ''}"><div class="max-w-[80%]">
+    ${by === 'mira' ? `<div class="text-[11px] text-muted mb-1 flex justify-end items-center gap-1">${ic('bot', 'w-3 h-3')}Mira</div>` : ''}
+    <p class="px-3.5 py-2.5 text-sm leading-relaxed rounded-2xl ${side === 'in' ? 'bg-surface border border-line rounded-bl-md' : by === 'mira' ? 'bg-ai text-ai-ink rounded-br-md' : 'bg-primary text-primary-ink rounded-br-md'}">${text}</p>
+  </div></div>`;
+
+const askBox = (ph) => `
+  <div class="bg-surface border border-line rounded-[18px] shadow-sm focus-within:border-primary p-3">
+    <label class="sr-only" for="ask">Message the assistant</label>
+    <textarea id="ask" rows="2" placeholder="${ph}" class="w-full resize-none bg-transparent outline-none text-[15px] px-1.5 pt-1"></textarea>
+    <div class="flex items-center gap-2">
+      <button aria-label="Attach a file" class="w-9 h-9 rounded-ctl text-muted hover:bg-raised inline-flex items-center justify-center">${ic('paperclip')}</button>
+      <button class="h-9 px-3 rounded-ctl text-sm text-muted hover:bg-raised inline-flex items-center gap-1.5">${ic('map-pin', 'w-3.5 h-3.5')}${state.branch}${ic('chevron-down', 'w-3.5 h-3.5')}</button>
+      <button data-act="open-thread" aria-label="Send" class="ml-auto w-9 h-9 rounded-ctl bg-primary text-primary-ink inline-flex items-center justify-center">${ic('arrow-up')}</button>
+    </div>
+  </div>`;
+
+/* ---------------------------------------------------------------- sidebar */
+function sidebar() {
+  return `
+  <aside class="${state.menu ? 'flex fixed inset-y-0 left-0 z-40 shadow-2xl' : 'hidden'} md:flex md:static w-[264px] shrink-0 flex-col bg-side border-r border-line">
+    <div class="px-4 pt-4 pb-3 flex items-center gap-2.5">${mark()}<span class="font-display text-lg font-semibold tracking-tight">Relay</span></div>
+    <div class="px-3"><button data-go="assistant" data-act="new" class="w-full h-10 px-3 rounded-ctl bg-surface border border-line text-sm font-semibold flex items-center gap-2 hover:border-primary">${ic('plus')}New request</button></div>
+    <nav aria-label="Main" class="px-3 pt-3 flex flex-col gap-0.5">
+      ${nav.map(([id, icon, label, count]) => `<button data-go="${id}" aria-current="${state.page === id ? 'page' : 'false'}" class="h-9 px-3 rounded-ctl text-sm flex items-center gap-2.5 ${state.page === id ? 'bg-surface font-semibold shadow-sm' : 'text-muted hover:bg-raised hover:text-ink'}">${ic(icon)}<span class="flex-1 text-left">${label}</span>${count ? `<span class="min-w-5 h-5 px-1.5 rounded-full bg-danger-soft text-danger text-[11px] font-bold inline-flex items-center justify-center">${count}</span>` : ''}</button>`).join('')}
+    </nav>
+    <div class="px-3 pt-5">
+      <h2 class="px-3 pb-1.5 text-xs font-semibold text-muted">Branches</h2>
+      ${['Marina', 'Downtown', 'All branches'].map((b) => `<button data-branch="${b}" class="w-full h-8 px-3 rounded-ctl text-sm flex items-center gap-2.5 ${state.branch === b ? 'text-ink font-semibold' : 'text-muted hover:bg-raised'}"><span class="w-2 h-2 rounded-full ${state.branch === b ? 'bg-primary' : 'bg-line'}"></span>${b}</button>`).join('')}
+    </div>
+    <div class="px-3 pt-5 min-h-0 flex-1 overflow-y-auto thin">
+      <h2 class="px-3 pb-1.5 text-xs font-semibold text-muted">Recent requests</h2>
+      ${recents.map((r, n) => `<button data-go="assistant" data-act="open-thread" class="w-full h-8 px-3 rounded-ctl text-sm text-left truncate ${state.page === 'assistant' && state.thread && n === 0 ? 'bg-raised text-ink' : 'text-muted hover:bg-raised'}">${r}</button>`).join('')}
+    </div>
+    <div class="p-3 border-t border-line flex items-center gap-2.5">
+      ${avatar('Priya Shah', 'w-8 h-8 text-[11px]')}
+      <div class="min-w-0 flex-1"><div class="text-sm font-semibold truncate">Priya Shah</div><div class="text-xs text-muted truncate">Lumen Clinics, owner</div></div>
+      <button data-act="theme" aria-label="Switch between light and dark" class="w-8 h-8 rounded-ctl text-muted hover:bg-raised inline-flex items-center justify-center">${ic(state.theme === 'dark' ? 'sun' : 'moon')}</button>
+    </div>
+    <div class="px-3 pb-3 flex gap-1 text-xs text-muted"><button data-go="theme" class="px-2 py-1 rounded hover:bg-raised">Theme</button><button data-go="signin" class="px-2 py-1 rounded hover:bg-raised">Sign-in screen</button></div>
+  </aside>`;
+}
+
+const mobileBar = () => `<div class="md:hidden h-12 px-3 flex items-center gap-2 border-b border-line bg-side"><button data-act="menu" aria-label="Open menu" class="w-9 h-9 inline-flex items-center justify-center">${ic('menu', 'w-5 h-5')}</button>${mark('w-7 h-7')}<span class="font-display font-semibold">Relay</span></div>`;
+
+/* ------------------------------------------------------------------ pages */
+const pages = {};
+
+pages.assistant = () => (state.thread ? assistantThread() : `
+  <div class="flex-1 overflow-y-auto thin"><div class="max-w-2xl mx-auto px-5 py-10 sm:py-16 flex flex-col gap-8">
+    <div class="flex flex-col gap-2">
+      <h1 class="font-display text-[34px] sm:text-[40px] leading-[1.1] font-semibold tracking-tight">Good morning, Priya</h1>
+      <p class="text-muted text-[17px]">${state.branch === 'All branches' ? 'Both branches' : state.branch} answered 42 of 47 chats without you. Three things need a decision.</p>
+    </div>
+    ${askBox('Ask for a campaign, a report, or a change to how Mira answers')}
+    <div class="flex flex-wrap gap-2 -mt-3">
+      ${['Offer 10% off cleanings to lapsed patients', 'Why did Mira hand over 5 chats?', 'Show this week’s numbers', 'Add opening hours for Sunday'].map((s) => `<button data-act="open-thread" class="px-3 py-1.5 rounded-full bg-surface border border-line text-sm text-muted hover:text-ink hover:border-primary">${s}</button>`).join('')}
+    </div>
+    <section aria-labelledby="needs-h" class="flex flex-col gap-3">
+      <h2 id="needs-h" class="text-sm font-semibold">Needs you</h2>
+      ${needs.map((n) => card(`<div class="p-4 flex items-center gap-3.5"><span class="w-10 h-10 rounded-ctl bg-ai text-ai-ink inline-flex items-center justify-center">${ic(n.icon, 'w-5 h-5')}</span><div class="min-w-0 flex-1"><div class="font-semibold">${n.title}</div><div class="text-sm text-muted">${n.detail}</div></div>${btn(n.action, 'line', `data-go="${n.go}"`)}</div>`)).join('')}
+    </section>
+  </div></div>`);
+
+function assistantThread() {
+  const artifactChip = `<button data-act="panel" class="w-full text-left bg-surface border ${state.panel ? 'border-primary' : 'border-line'} rounded-card p-3.5 flex items-center gap-3 hover:border-primary"><span class="w-10 h-10 rounded-ctl bg-primary-soft text-primary inline-flex items-center justify-center">${ic('megaphone', 'w-5 h-5')}</span><span class="flex-1"><span class="block font-semibold">Winter cleaning offer</span><span class="block text-sm text-muted">Campaign draft, 412 customers</span></span>${ic('panel-right-open', 'w-4 h-4 text-muted')}</button>`;
+  return `
+  <div class="flex-1 min-h-0 flex">
+    <div class="flex-1 min-w-0 flex flex-col">
+      <div class="h-14 px-5 flex items-center gap-3 border-b border-line"><h1 class="font-semibold truncate">Winter cleaning offer</h1>${chip(state.branch, 'primary')}</div>
+      <div class="flex-1 overflow-y-auto thin"><div class="max-w-2xl mx-auto px-5 py-8 flex flex-col gap-6">
+        <div class="self-end max-w-[85%] px-4 py-3 rounded-2xl rounded-br-md bg-raised text-[15px] leading-relaxed">Send a 10% cleaning offer to patients who haven’t visited Marina in six months.</div>
+        <div class="flex gap-3">${mark('w-8 h-8')}<div class="flex-1 min-w-0 flex flex-col gap-4 text-[15px] leading-relaxed">
+          <p>I found <strong>412 patients</strong> at Marina whose last visit was before 12 May. WhatsApp only allows approved messages for offers, so I reused “Seasonal offer”, which is already approved.</p>
+          ${artifactChip}
+          <p>Mira will handle the replies and book the slots. I’ve capped it at 100 messages a day so the front desk isn’t swamped. Want it to start today at 5:00 pm?</p>
+          <div class="flex flex-wrap gap-2">${btn('Yes, send at 5:00 pm', 'primary')}${btn('Send me a test first')}${btn('Change the audience')}</div>
+        </div></div>
+      </div></div>
+      <div class="max-w-2xl w-full mx-auto px-5 pb-5">${askBox('Reply to the assistant')}</div>
+    </div>
+    ${state.panel ? `
+    <aside aria-label="Campaign draft" class="panel-in hidden lg:flex w-[440px] shrink-0 flex-col border-l border-line bg-surface">
+      <div class="h-14 px-4 flex items-center gap-2 border-b border-line"><h2 class="font-semibold flex-1">Campaign draft</h2>${chip('Not sent', 'plain')}<button data-act="panel" aria-label="Close panel" class="w-8 h-8 rounded-ctl text-muted hover:bg-raised inline-flex items-center justify-center">${ic('x')}</button></div>
+      <div class="flex-1 overflow-y-auto thin p-5 flex flex-col gap-5">
+        <div><h3 class="font-display text-xl font-semibold tracking-tight">Winter cleaning offer</h3><p class="text-sm text-muted mt-1">Marina, WhatsApp, starts today 5:00 pm</p></div>
+        <div class="rounded-card bg-canvas p-4 flex flex-col gap-2">
+          <div class="text-xs text-muted font-semibold">What customers receive</div>
+          <div class="self-start max-w-[90%] bg-surface border border-line rounded-2xl rounded-bl-md px-3.5 py-2.5 text-sm leading-relaxed">Hi Asha, it’s been a while. Book a cleaning at Lumen Marina before Sunday and get 10% off.<div class="mt-2.5 pt-2.5 border-t border-line text-primary font-semibold text-center">Book a time</div></div>
+        </div>
+        <dl class="flex flex-col divide-y divide-line text-sm">
+          ${[['Audience', '412 patients, last visit before 12 May'], ['Pace', '100 a day, about 5 days'], ['Replies handled by', 'Mira, then front desk'], ['Estimated cost', 'AED 62 in WhatsApp fees']].map(([k, val]) => `<div class="py-2.5 flex justify-between gap-4"><dt class="text-muted">${k}</dt><dd class="font-medium text-right">${val}</dd></div>`).join('')}
+        </dl>
+      </div>
+      <div class="p-4 border-t border-line flex gap-2">${btn('Send at 5:00 pm', 'primary')}${btn('Edit')}<span class="ml-auto">${btn('Save for later', 'ghost')}</span></div>
+    </aside>` : ''}
+  </div>`;
+}
+
+pages.inbox = () => `
+  <div class="flex-1 min-h-0 flex">
+    <section aria-label="Chats" class="w-full md:w-[340px] shrink-0 border-r border-line flex flex-col bg-surface">
+      <div class="px-4 pt-5 pb-3 flex items-center justify-between"><h1 class="font-display text-2xl font-semibold tracking-tight">Inbox</h1><span class="text-sm text-muted">${state.branch}</span></div>
+      <div class="px-4 pb-3 flex gap-1.5 text-sm overflow-x-auto">${[['Needs a person', 2, true], ['Mira', 31], ['Mine', 5], ['All', 38]].map(([t, c, on]) => `<button class="shrink-0 px-3 py-1 rounded-full font-medium ${on ? 'bg-ink text-canvas' : 'bg-raised text-muted'}">${t} <span class="opacity-70">${c}</span></button>`).join('')}</div>
+      <div class="flex-1 overflow-y-auto thin px-2 pb-2">${chats.map((c, n) => `
+        <button class="w-full flex items-start gap-3 p-2.5 rounded-ctl text-left ${n === 0 ? 'bg-raised' : 'hover:bg-canvas'}">${avatar(c.name)}<span class="min-w-0 flex-1">
+          <span class="flex items-baseline justify-between gap-2"><span class="truncate text-sm font-semibold">${c.name}</span><span class="shrink-0 text-xs text-muted">${c.time}</span></span>
+          <span class="block truncate text-sm ${c.unread ? '' : 'text-muted'}">${c.preview}</span>
+          <span class="mt-1.5 flex items-center justify-between"><span class="inline-flex items-center gap-1 text-xs text-muted">${ic(chIcon[c.ch], 'w-3 h-3')}${c.ch}</span><span class="flex items-center gap-1.5">${whoChip(c.who)}${c.unread ? `<span class="w-5 h-5 rounded-full bg-primary text-primary-ink text-[11px] font-bold inline-flex items-center justify-center">${c.unread}</span>` : ''}</span></span>
+        </span></button>`).join('')}</div>
+    </section>
+    <section aria-label="Chat with Daniel Okafor" class="hidden md:flex flex-1 min-w-0 flex-col">
+      <header class="h-16 px-5 flex items-center gap-3 border-b border-line bg-surface">${avatar('Daniel Okafor')}<div class="min-w-0"><h2 class="font-semibold truncate">Daniel Okafor</h2><p class="text-xs text-muted truncate">Instagram. You can reply freely for 23 more hours</p></div><div class="ml-auto flex gap-2">${btn(`${ic('user')}Details`, state.details ? 'quiet' : 'line', 'data-act="details"')}${btn('Mark done', 'primary')}</div></header>
+      <div class="flex-1 overflow-y-auto thin p-5 flex flex-col gap-3 max-w-3xl w-full mx-auto">
+        ${bubble('in', 'Hi, I had whitening done on Saturday.')}
+        ${bubble('out', 'Hi Daniel, thanks for coming in. How can I help?', 'mira')}
+        ${bubble('in', 'I was charged twice for the whitening. Can I get a refund?')}
+        <p class="text-center text-xs text-muted py-1 inline-flex items-center justify-center gap-1.5 w-full">${ic('hand-helping', 'w-3.5 h-3.5')}Mira handed this chat to the Marina front desk. Refunds need a person.</p>
+      </div>
+      <div class="px-5 pb-5 max-w-3xl w-full mx-auto flex flex-col gap-2">
+        <div class="rounded-card bg-ai text-ai-ink p-3.5 flex items-start gap-3">${mira('w-8 h-8 text-xs')}<div class="flex-1 text-sm"><div class="font-semibold">Mira drafted a reply</div><p class="mt-0.5">Sorry about that, Daniel. I can see two charges of AED 450 on 9 Nov. I’ve refunded one; it reaches your card in 3 to 5 days.</p></div><button class="h-9 px-3 rounded-ctl bg-ai-strong text-[#4A2600] text-sm font-semibold">Use draft</button></div>
+        <div class="bg-surface border border-line rounded-card focus-within:border-primary flex items-center gap-2 px-2 py-1.5"><button aria-label="Attach a file" class="w-9 h-9 text-muted inline-flex items-center justify-center">${ic('paperclip')}</button><label class="sr-only" for="reply">Reply</label><input id="reply" placeholder="Write a reply to Daniel" class="flex-1 h-9 bg-transparent outline-none text-sm">${btn(`${ic('send', 'w-3.5 h-3.5')}Send`, 'primary')}</div>
+      </div>
+    </section>
+    ${state.details ? `
+    <aside aria-label="Customer details" class="panel-in hidden lg:flex w-[320px] shrink-0 flex-col gap-5 border-l border-line bg-surface p-5 overflow-y-auto thin">
+      <div class="flex items-center gap-3">${avatar('Daniel Okafor', 'w-12 h-12 text-sm')}<div><h2 class="font-semibold">Daniel Okafor</h2><p class="text-sm text-muted">Customer since March</p></div></div>
+      <dl class="text-sm flex flex-col divide-y divide-line">${[['Branch', 'Marina'], ['Reached on', 'Instagram, WhatsApp'], ['Last visit', 'Sat 9 Nov, whitening'], ['Spent', 'AED 1,350']].map(([k, val]) => `<div class="py-2.5 flex justify-between gap-3"><dt class="text-muted">${k}</dt><dd class="font-medium text-right">${val}</dd></div>`).join('')}</dl>
+      <div><h3 class="text-sm font-semibold mb-2">Notes</h3><p class="text-sm text-muted">Prefers evening appointments. Paid by card.</p></div>
+      ${btn('Open full profile', 'line', 'data-go="customers"')}
+    </aside>` : ''}
+  </div>`;
+
+pages.customers = () => {
+  const sel = state.customer !== null ? customers[state.customer] : null;
+  return `
+  <div class="flex-1 min-h-0 flex">
+    <div class="flex-1 min-w-0 overflow-y-auto thin">
+      ${pageHead('Customers', '1,284 people across both branches', btn('Import') + btn(`${ic('plus')}Add customer`, 'primary'))}
+      <div class="px-5 sm:px-8 pb-4 flex flex-wrap items-center gap-2">
+        <label class="flex items-center gap-2 h-9 px-3 rounded-ctl bg-surface border border-line text-sm w-full sm:w-72 focus-within:border-primary">${ic('search', 'w-4 h-4 text-muted')}<span class="sr-only">Search customers</span><input placeholder="Search by name or phone" class="bg-transparent outline-none flex-1"></label>
+        ${['Everyone', 'New this week', 'Booked', 'Not seen in 6 months'].map((s, n) => `<button class="px-3 py-1.5 rounded-full text-sm font-medium ${n === 0 ? 'bg-ink text-canvas' : 'bg-surface border border-line text-muted'}">${s}</button>`).join('')}
+      </div>
+      <div class="px-5 sm:px-8 pb-8">${card(`
+        <div class="overflow-x-auto"><table class="w-full text-sm">
+          <thead><tr class="text-left text-muted border-b border-line">${['Name', 'Branch', 'Reached on', 'Stage', 'Latest', 'Handled by'].map((h) => `<th scope="col" class="font-medium px-4 py-3 whitespace-nowrap">${h}</th>`).join('')}</tr></thead>
+          <tbody>${customers.map((c, n) => `<tr data-customer="${n}" tabindex="0" class="border-b border-line last:border-0 cursor-pointer ${state.customer === n ? 'bg-primary-soft' : 'hover:bg-canvas'}"><td class="px-4 py-3"><span class="flex items-center gap-2.5">${avatar(c[0], 'w-7 h-7 text-[10px]')}<span class="font-semibold whitespace-nowrap">${c[0]}</span></span></td><td class="px-4 py-3 text-muted">${c[1]}</td><td class="px-4 py-3 text-muted"><span class="inline-flex items-center gap-1.5">${ic(chIcon[c[2]], 'w-3.5 h-3.5')}${c[2]}</span></td><td class="px-4 py-3">${stageChip(c[3])}</td><td class="px-4 py-3 text-muted whitespace-nowrap">${c[4]}</td><td class="px-4 py-3">${whoChip(c[5])}</td></tr>`).join('')}</tbody>
+        </table></div>`, 'overflow-hidden')}</div>
+    </div>
+    ${sel ? `
+    <aside aria-label="${sel[0]}" class="panel-in hidden lg:flex w-[360px] shrink-0 flex-col border-l border-line bg-surface">
+      <div class="h-14 px-4 flex items-center border-b border-line"><h2 class="font-semibold flex-1">Customer</h2><button data-act="close-customer" aria-label="Close" class="w-8 h-8 rounded-ctl text-muted hover:bg-raised inline-flex items-center justify-center">${ic('x')}</button></div>
+      <div class="p-5 flex flex-col gap-5 overflow-y-auto thin">
+        <div class="flex items-center gap-3">${avatar(sel[0], 'w-14 h-14 text-base')}<div><h3 class="font-display text-xl font-semibold tracking-tight">${sel[0]}</h3><div class="mt-1 flex gap-1.5">${stageChip(sel[3])}${chip(sel[1])}</div></div></div>
+        <div class="flex gap-2">${btn(`${ic('message-circle')}Message`, 'primary', 'data-go="inbox"')}${btn('Book a visit')}</div>
+        <dl class="text-sm flex flex-col divide-y divide-line">${[['Reached on', sel[2]], ['Latest', sel[4]], ['Handled by', sel[5]], ['First seen', '12 Mar 2026']].map(([k, val]) => `<div class="py-2.5 flex justify-between gap-3"><dt class="text-muted">${k}</dt><dd class="font-medium">${val}</dd></div>`).join('')}</dl>
+        <div><h4 class="text-sm font-semibold mb-2">History</h4><ol class="text-sm flex flex-col gap-3 border-l-2 border-line pl-4">${[['Today', 'Chatted with Mira on ' + sel[2]], ['9 Nov', 'Visited ' + sel[1]], ['2 Nov', 'Received “Winter check-up” campaign']].map(([d, t]) => `<li><span class="text-muted">${d}</span><br>${t}</li>`).join('')}</ol></div>
+      </div>
+    </aside>` : ''}
+  </div>`;
+};
+
+const agentTabs = {
+  Teach: () => `
+    <div class="grid lg:grid-cols-2 gap-5">
+      <section class="flex flex-col gap-3"><h2 class="font-semibold">What Mira knows</h2>
+        ${[['globe', 'lumenclinics.example', 'Website, 24 pages, checked daily'], ['file-text', 'Price list 2026.pdf', 'Uploaded 3 Nov'], ['help-circle', 'Questions and answers', '38 answers, 3 waiting for you']].map(([i2, t, s]) => card(`<div class="p-3.5 flex items-center gap-3"><span class="w-9 h-9 rounded-ctl bg-raised inline-flex items-center justify-center">${ic(i2)}</span><div class="flex-1 min-w-0"><div class="font-medium truncate">${t}</div><div class="text-sm text-muted">${s}</div></div>${ic('chevron-right', 'w-4 h-4 text-muted')}</div>`)).join('')}
+        ${btn(`${ic('plus')}Add knowledge`, 'line')}
+      </section>
+      <section class="flex flex-col gap-3"><h2 class="font-semibold">How Mira handles things</h2>
+        ${card(`<div class="p-4"><div class="flex items-center justify-between"><h3 class="font-medium">Book an appointment</h3><span class="text-xs text-muted">4 steps</span></div><ol class="mt-3 flex flex-col gap-2 text-sm">${['Ask which service they need', 'Offer the two nearest free slots at this branch', 'Book the slot and confirm the time', 'Send a reminder the day before'].map((s, n) => `<li class="flex gap-2.5"><span class="w-5 h-5 shrink-0 rounded-full bg-raised text-xs font-bold inline-flex items-center justify-center">${n + 1}</span>${s}</li>`).join('')}</ol></div>`)}
+        ${[['Refund request', 'Ask for the visit date, then hand to the front desk'], ['Price question', 'Answer from the price list, then offer to book']].map(([t, s]) => card(`<div class="p-4"><h3 class="font-medium">${t}</h3><p class="text-sm text-muted mt-0.5">${s}</p></div>`)).join('')}
+      </section>
+    </div>`,
+  Try: () => `
+    <div class="max-w-2xl">${card(`
+      <div class="px-4 py-3 border-b border-line flex items-center gap-2 text-sm"><span class="font-semibold">You are the customer</span><span class="text-muted">on WhatsApp, Marina, Saturday 10:00</span></div>
+      <div class="p-4 flex flex-col gap-3 bg-canvas">${bubble('out', 'I want a cleaning this weekend')}${bubble('in', 'Happy to help. Saturday has 11:00 and 3:30 free at Marina. Which would you like?')}<p class="text-xs text-muted inline-flex items-center gap-1.5">${ic('corner-down-right', 'w-3.5 h-3.5')}Followed “Book an appointment”, step 2. Used the Marina calendar.</p></div>
+      <div class="p-3 border-t border-line flex gap-2"><label class="sr-only" for="try">Test message</label><input id="try" placeholder="Write as a customer" class="flex-1 h-9 px-3 rounded-ctl bg-raised outline-none text-sm">${btn('Send', 'primary')}</div>`, 'overflow-hidden')}
+      <p class="text-sm text-muted mt-3">Nothing here reaches real customers. You’re testing your draft.</p></div>`,
+  'Go live': () => `
+    <div class="max-w-2xl flex flex-col gap-4">
+      ${card(`<div class="p-4 flex items-center gap-3"><span class="w-2.5 h-2.5 rounded-full bg-good"></span><div class="flex-1"><div class="font-semibold">Version 3 is live</div><div class="text-sm text-muted">Since 4 Nov. Answering on WhatsApp, Instagram and the website.</div></div>${btn('History', 'ghost')}</div>`)}
+      ${card(`<div class="p-4"><h2 class="font-semibold">Your draft changes 2 things</h2><ul class="mt-3 flex flex-col gap-2 text-sm"><li class="flex gap-2.5">${ic('plus-circle', 'w-4 h-4 text-good mt-0.5')}New answer: “We accept Aetna and Daman insurance.”</li><li class="flex gap-2.5">${ic('pencil', 'w-4 h-4 text-primary mt-0.5')}Book an appointment: never offer Fridays</li></ul><div class="mt-4 flex gap-2">${btn('Make the draft live', 'primary')}${btn('Try it first', 'quiet', 'data-agent-tab="Try"')}</div></div>`)}
+      ${card(`<div class="p-4"><h2 class="font-semibold mb-3">Where Mira answers</h2>${[['WhatsApp', true], ['Instagram', true], ['Website chat', true], ['Messenger', false]].map(([c, on]) => `<div class="py-2.5 flex items-center justify-between border-b border-line last:border-0 text-sm"><span>${c}</span><span role="switch" aria-checked="${on}" aria-label="${c}" tabindex="0" class="w-10 h-6 rounded-full relative ${on ? 'bg-primary' : 'bg-line'}"><span class="absolute top-1 ${on ? 'right-1' : 'left-1'} w-4 h-4 rounded-full bg-surface"></span></span></div>`).join('')}</div>`)}
+    </div>`,
+  Improve: () => `
+    <div class="max-w-2xl flex flex-col gap-3">
+      <p class="text-muted">Each night Mira reviews the day’s chats and suggests changes. Nothing changes until you accept.</p>
+      ${[['Answer “Do you open on Sundays?”', '8 customers asked this week and Mira wasn’t sure.', 'Add answer'], ['Offer Downtown when Marina is full', 'Mira turned away 4 customers on Saturday.', 'Add to procedure'], ['Shorten the booking confirmation', 'Customers reply faster to messages under 2 lines.', 'See example']].map(([t, s, a]) => card(`<div class="p-4 flex items-center gap-3.5"><span class="w-10 h-10 rounded-ctl bg-ai text-ai-ink inline-flex items-center justify-center">${ic('lightbulb', 'w-5 h-5')}</span><div class="flex-1 min-w-0"><div class="font-semibold">${t}</div><div class="text-sm text-muted">${s}</div></div>${btn(a, 'line')}<button aria-label="Dismiss" class="w-9 h-9 rounded-ctl text-muted hover:bg-raised inline-flex items-center justify-center">${ic('x')}</button></div>`)).join('')}
+    </div>`,
+};
+
+pages.agents = () => `
+  <div class="flex-1 overflow-y-auto thin">
+    <header class="px-5 sm:px-8 pt-7 pb-4 flex flex-wrap items-center gap-4">
+      ${mira('w-14 h-14 text-xl')}
+      <div class="flex-1 min-w-0"><h1 class="font-display text-[28px] leading-tight font-semibold tracking-tight">Mira</h1><p class="text-muted flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-good"></span>Live at ${state.branch}. Answered 42 chats today.</p></div>
+      ${btn('Save draft')}${btn('Make the draft live', 'primary')}
+    </header>
+    <div class="px-5 sm:px-8"><div role="tablist" aria-label="Agent" class="inline-flex p-1 rounded-[12px] bg-raised gap-1">
+      ${Object.keys(agentTabs).map((t, n) => `<button role="tab" aria-selected="${state.agentTab === t}" data-agent-tab="${t}" class="h-9 px-4 rounded-ctl text-sm font-semibold inline-flex items-center gap-2 ${state.agentTab === t ? 'bg-surface shadow-sm' : 'text-muted hover:text-ink'}"><span class="text-xs opacity-60">${n + 1}</span>${t}</button>`).join('')}
+    </div></div>
+    <div class="px-5 sm:px-8 py-6">${agentTabs[state.agentTab]()}</div>
+  </div>`;
+
+pages.campaigns = () => `
+  <div class="flex-1 overflow-y-auto thin">
+    ${pageHead('Campaigns', 'Messages you send to many customers at once', btn(`${ic('sparkles')}Ask the assistant`, 'quiet', 'data-go="assistant" data-act="new"') + btn(`${ic('plus')}New campaign`, 'primary', 'data-go="assistant" data-act="open-thread"'))}
+    <div class="px-5 sm:px-8 pb-8 flex flex-col gap-3">
+      ${card(`<div class="p-4 flex items-center gap-3.5"><span class="w-10 h-10 rounded-ctl bg-danger-soft text-danger inline-flex items-center justify-center">${ic('circle-alert', 'w-5 h-5')}</span><div class="flex-1"><div class="font-semibold">WhatsApp rejected “Appointment reminder”</div><div class="text-sm text-muted">It reads like marketing. Removing “special offer” should get it approved.</div></div>${btn('Fix message', 'line')}</div>`, 'border-danger')}
+      ${[['Winter cleaning offer', 'Draft', 'plain', 412, 0, 0, 0, 'Starts today 5:00 pm'], ['Winter check-up', 'Sent', 'good', 412, 94, 49, 6, '4 Nov, 7 booked'], ['Diwali greetings', 'Sent', 'good', 1180, 97, 71, 12, '30 Oct'], ['New Downtown branch', 'Sending', 'primary', 640, 58, 22, 3, '300 of 640 sent']].map(([name, st, tone, aud, del, read, rep, when]) => card(`
+        <div class="p-4 grid md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] gap-4 items-center">
+          <div class="min-w-0"><div class="flex items-center gap-2"><h2 class="font-semibold truncate">${name}</h2>${chip(st, tone)}</div><p class="text-sm text-muted mt-0.5">${aud.toLocaleString()} customers. ${when}</p></div>
+          <div class="grid grid-cols-3 gap-3 text-sm">${[['Delivered', del], ['Read', read], ['Replied', rep]].map(([l, p]) => `<div><div class="flex justify-between"><span class="text-muted">${l}</span><span class="font-semibold">${p}%</span></div><div class="mt-1.5 h-1.5 rounded-full bg-raised overflow-hidden"><div class="h-full bg-primary rounded-full" style="width:${p}%"></div></div></div>`).join('')}</div>
+          ${btn('Open', 'ghost')}
+        </div>`)).join('')}
+    </div>
+  </div>`;
+
+pages.insights = () => {
+  const days = [['Wed', 31, 6], ['Thu', 38, 4], ['Fri', 12, 2], ['Sat', 52, 9], ['Sun', 44, 5], ['Mon', 40, 7], ['Tue', 42, 5]];
+  return `
+  <div class="flex-1 overflow-y-auto thin">
+    ${pageHead('Insights', `${state.branch}, last 7 days`, btn(`Last 7 days ${ic('chevron-down', 'w-3.5 h-3.5')}`, 'line'))}
+    <div class="px-5 sm:px-8 pb-8 flex flex-col gap-5">
+      <div class="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">${[['297', 'chats', 'Up 12% on the week before'], ['87%', 'answered by Mira', '38 went to your team'], ['1m 40s', 'to first reply', 'Target is under 5 minutes'], ['61', 'appointments booked', 'About AED 21,300']].map(([n, l, s]) => card(`<div class="p-4"><div class="font-display text-3xl font-semibold tracking-tight">${n}</div><div class="font-medium">${l}</div><div class="text-sm text-muted mt-1">${s}</div></div>`)).join('')}</div>
+      <div class="grid lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-5">
+        ${card(`<div class="p-5"><div class="flex items-center justify-between"><h2 class="font-semibold">Chats per day</h2><div class="flex gap-4 text-sm text-muted"><span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-ai-strong"></span>Mira</span><span class="inline-flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-primary"></span>Your team</span></div></div>
+          <div class="mt-5 h-48 flex items-end gap-3" role="img" aria-label="Chats per day for the last 7 days. Saturday was the busiest with 61 chats.">${days.map(([d, a, t]) => `<div class="flex-1 flex flex-col items-center gap-1.5 h-full justify-end"><span class="text-xs text-muted">${a + t}</span><div class="w-full max-w-12 flex flex-col gap-0.5" style="height:${((a + t) / 61) * 80}%"><div class="bg-primary rounded-t-md" style="flex:${t}"></div><div class="bg-ai-strong rounded-b-md" style="flex:${a}"></div></div><span class="text-xs text-muted">${d}</span></div>`).join('')}</div></div>`)}
+        ${card(`<div class="p-5"><h2 class="font-semibold">Why Mira handed chats to the team</h2><ul class="mt-4 flex flex-col gap-3.5 text-sm">${[['Refund or complaint', 14], ['Question she couldn’t answer', 11], ['Customer asked for a person', 8], ['Medical advice', 5]].map(([r, c]) => `<li><div class="flex justify-between"><span>${r}</span><span class="font-semibold">${c}</span></div><div class="mt-1.5 h-1.5 rounded-full bg-raised"><div class="h-full rounded-full bg-primary" style="width:${(c / 14) * 100}%"></div></div></li>`).join('')}</ul><div class="mt-5">${btn('See suggested fixes', 'line', 'data-go="agents" data-agent-tab="Improve"')}</div></div>`)}
+      </div>
+      ${card(`<div class="overflow-x-auto"><table class="w-full text-sm"><caption class="text-left font-semibold p-5 pb-3">Branches compared</caption><thead><tr class="text-left text-muted border-y border-line">${['Branch', 'Chats', 'Answered by Mira', 'First reply', 'Booked'].map((h) => `<th scope="col" class="font-medium px-5 py-2.5">${h}</th>`).join('')}</tr></thead><tbody>${[['Marina', 297, '87%', '1m 40s', 61], ['Downtown', 241, '82%', '2m 55s', 44]].map((r) => `<tr class="border-b border-line last:border-0">${r.map((c, n) => `<td class="px-5 py-3 ${n === 0 ? 'font-semibold' : ''}">${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`, 'overflow-hidden')}
+    </div>
+  </div>`;
+};
+
+pages.theme = () => {
+  const tokens = [['canvas', 'Page background'], ['side', 'Sidebar'], ['surface', 'Cards and panels'], ['raised', 'Quiet fills'], ['line', 'Borders'], ['ink', 'Text'], ['muted', 'Secondary text'], ['primary', 'Actions and people'], ['primary-soft', 'Selected states'], ['ai-strong', 'AI accent'], ['ai', 'Anything the AI did'], ['good', 'Positive'], ['danger', 'Needs attention']];
+  const styles = getComputedStyle(document.documentElement);
+  return `
+  <div class="flex-1 overflow-y-auto thin">
+    ${pageHead('Theme: Tide', 'Cool mist surfaces, petrol for people and actions, apricot for anything the AI did.', btn(`${ic(state.theme === 'dark' ? 'sun' : 'moon')}Switch to ${state.theme === 'dark' ? 'light' : 'dark'}`, 'line', 'data-act="theme"'))}
+    <div class="px-5 sm:px-8 pb-10 flex flex-col gap-8 max-w-5xl">
+      <section><h2 class="font-semibold mb-3">Colour</h2><div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">${tokens.map(([t, use]) => card(`<div class="h-16 rounded-t-[13px] border-b border-line" style="background:var(--${t})"></div><div class="p-3"><div class="font-semibold text-sm">${t}</div><div class="text-xs text-muted">${use}</div><div class="text-xs text-muted font-mono mt-1">${styles.getPropertyValue('--' + t).trim()}</div></div>`)).join('')}</div></section>
+      <section><h2 class="font-semibold mb-3">Type</h2>${card(`<div class="p-5 flex flex-col gap-4">
+        <div><div class="font-display text-[40px] leading-[1.1] font-semibold tracking-tight">Good morning, Priya</div><div class="text-xs text-muted mt-1">Bricolage Grotesque 600, 40px. Greetings and page titles only.</div></div>
+        <div><div class="font-display text-[28px] leading-tight font-semibold tracking-tight">Customers</div><div class="text-xs text-muted mt-1">Bricolage Grotesque 600, 28px</div></div>
+        <div><div class="font-semibold">Mira drafted a reply</div><div class="text-xs text-muted mt-1">Figtree 600, 16px. Headings inside cards.</div></div>
+        <div><p class="max-w-prose">You’re booked for Saturday at 11:00 with Dr. Rao. Please bring any X-rays from the last two years.</p><div class="text-xs text-muted mt-1">Figtree 400, 16px. Body.</div></div>
+        <div><p class="text-sm text-muted">Instagram. You can reply freely for 23 more hours</p><div class="text-xs text-muted mt-1">Figtree 400, 14px, muted. Supporting text.</div></div></div>`)}</section>
+      <section><h2 class="font-semibold mb-3">Controls</h2>${card(`<div class="p-5 flex flex-col gap-5">
+        <div class="flex flex-wrap gap-2">${btn('Primary', 'primary')}${btn('Quiet')}${btn('Outline', 'line')}${btn('Ghost', 'ghost')}</div>
+        <div class="flex flex-wrap gap-2">${chip('Neutral')}${chip('Mira', 'ai')}${chip('Booked', 'good')}${chip('Needs a person', 'danger')}${chip('Marina', 'primary')}</div>
+        <label class="flex flex-col gap-1.5 max-w-sm text-sm font-medium">Business name<input placeholder="Lumen Clinics" class="h-10 px-3 rounded-ctl bg-surface border border-line outline-none focus:border-primary font-normal"></label>
+        <div class="flex flex-col gap-2 max-w-md">${bubble('in', 'A customer’s message')}${bubble('out', 'A reply written by Mira', 'mira')}${bubble('out', 'A reply written by a person')}</div>
+        <p class="text-sm text-muted">Corners: 14px on cards, 10px on controls, full on chips. One rule for colour: apricot always means the AI, petrol always means a person or an action you take.</p></div>`)}</section>
+    </div>
+  </div>`;
+};
+
+pages.signin = () => `
+  <div class="flex-1 overflow-y-auto grid lg:grid-cols-2">
+    <div class="flex items-center justify-center p-6 sm:p-10 bg-surface">
+      <form class="w-full max-w-sm flex flex-col gap-6" onsubmit="return false">
+        <div class="flex items-center gap-2.5">${mark()}<span class="font-display text-lg font-semibold tracking-tight">Relay</span></div>
+        <div><h1 class="font-display text-[32px] leading-tight font-semibold tracking-tight">Welcome back</h1><p class="text-muted mt-1.5">Sign in to see what your customers need today.</p></div>
+        <div class="flex flex-col gap-4">
+          <label class="flex flex-col gap-1.5 text-sm font-medium">Work email<input type="email" autocomplete="email" placeholder="you@business.com" class="h-11 px-3 rounded-ctl bg-surface border border-line outline-none focus:border-primary font-normal"></label>
+          <label class="flex flex-col gap-1.5 text-sm font-medium"><span class="flex justify-between">Password<a href="#signin" class="text-primary font-semibold">Forgot it?</a></span><input type="password" autocomplete="current-password" class="h-11 px-3 rounded-ctl bg-surface border border-line outline-none focus:border-primary font-normal"></label>
+        </div>
+        <div class="flex flex-col gap-2.5"><button data-go="assistant" class="h-11 rounded-ctl bg-primary text-primary-ink font-semibold">Sign in</button><button class="h-11 rounded-ctl border border-line font-semibold hover:bg-raised">Continue with Google</button></div>
+        <p class="text-sm text-muted">New here? <a href="#signin" class="text-primary font-semibold">Create an account</a></p>
+      </form>
+    </div>
+    <div class="hidden lg:flex flex-col justify-center gap-8 p-14 bg-side">
+      <h2 class="font-display text-[40px] leading-[1.1] font-semibold tracking-tight max-w-md">Every customer answered. You decide the rest.</h2>
+      <div class="max-w-sm flex flex-col gap-3">${bubble('in', 'Hi, can I book a cleaning for Saturday?')}${bubble('out', 'Of course. Marina has 11:00 and 3:30 free. Which suits you?', 'mira')}${bubble('in', '11 please.')}<div class="self-end">${chip('Booked by Mira, 11:00 Saturday', 'good')}</div></div>
+      <p class="text-muted max-w-md">WhatsApp, Instagram and your website in one place, for every branch.</p>
+    </div>
+  </div>`;
+
+/* ----------------------------------------------------------------- render */
+function render() {
+  document.documentElement.dataset.theme = state.theme;
+  if (!pages[state.page]) state.page = 'assistant';
+  const bare = state.page === 'signin';
+  document.getElementById('app').innerHTML = `
+    ${bare ? '' : sidebar()}
+    ${state.menu ? '<button data-act="menu" aria-label="Close menu" class="md:hidden fixed inset-0 z-30 bg-black/40"></button>' : ''}
+    <main class="flex-1 min-w-0 flex flex-col">${bare ? `<div class="h-10 px-4 flex items-center text-sm text-muted bg-side border-b border-line"><button data-go="assistant" class="inline-flex items-center gap-1.5 hover:text-ink">${ic('arrow-left', 'w-3.5 h-3.5')}Back to the app</button></div>` : mobileBar()}${pages[state.page]()}</main>`;
+  lucide.createIcons();
+  history.replaceState(null, '', '#' + state.page);
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-go],[data-act],[data-branch],[data-customer],[data-agent-tab]');
+  if (!t) return;
+  const d = t.dataset;
+  if (d.go) { state.page = d.go; state.menu = false; if (!d.act && d.go === 'assistant') state.thread = false; }
+  if (d.agentTab) state.agentTab = d.agentTab;
+  if (d.branch) state.branch = d.branch;
+  if (d.customer !== undefined) state.customer = state.customer === Number(d.customer) ? null : Number(d.customer);
+  if (d.act === 'new') state.thread = false;
+  if (d.act === 'open-thread') { state.page = 'assistant'; state.thread = true; state.panel = true; }
+  if (d.act === 'panel') state.panel = !state.panel;
+  if (d.act === 'details') state.details = !state.details;
+  if (d.act === 'close-customer') state.customer = null;
+  if (d.act === 'menu') state.menu = !state.menu;
+  if (d.act === 'theme') { state.theme = state.theme === 'dark' ? 'light' : 'dark'; localStorageSet('relay-theme', state.theme); }
+  render();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('tr[data-customer], [role="switch"]')) e.target.click();
+  if (e.key === 'Escape') { state.menu = false; state.customer = null; render(); }
+});
+render();
+</script>
+</body>
+</html>

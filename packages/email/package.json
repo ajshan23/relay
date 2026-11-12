@@ -1,0 +1,29 @@
+{
+  "name": "@relay/email",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "preview": "email dev --dir src/templates --port 3203",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-email/components": "1.0.12",
+    "@react-email/render": "2.3.1",
+    "@relay/core": "workspace:*",
+    "@relay/db": "workspace:*",
+    "bullmq": "^6.7.5",
+    "ioredis": "^6.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "resend": "6.38.0"
+  },
+  "devDependencies": {
+    "@react-email/ui": "6.11.12",
+    "@types/react": "^19.3.0",
+    "react-email": "6.11.12"
+  }
+}

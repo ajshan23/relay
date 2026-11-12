@@ -1,0 +1,23 @@
+{
+  "name": "relay",
+  "private": true,
+  "packageManager": "pnpm@10.34.9",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check apps packages",
+    "format": "biome check --write apps packages",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @relay/db generate",
+    "db:migrate": "pnpm --filter @relay/db migrate"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.7",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.11",
+    "typescript": "^7.0.2"
+  }
+}

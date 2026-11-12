@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App structure approaches</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script>
+  tailwind.config = { theme: { extend: { fontFamily: { sans: ['Figtree', 'system-ui', 'sans-serif'] } } } };
+</script>
+<style>
+  .dots { background-image: radial-gradient(#d4d4d8 1px, transparent 1px); background-size: 18px 18px; }
+  .scroll-thin::-webkit-scrollbar { height: 6px; width: 6px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 99px; }
+  button:focus-visible, a:focus-visible { outline: 2px solid #059669; outline-offset: 2px; }
+</style>
+</head>
+<body class="font-sans bg-zinc-100 text-zinc-900 antialiased">
+<div class="flex flex-col min-h-screen lg:h-screen">
+
+  <header id="chrome" class="shrink-0 bg-white border-b border-zinc-200">
+    <div class="px-4 pt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h1 class="text-base font-semibold">Ways this product could be structured</h1>
+      <button id="full-on" class="order-last ml-auto h-8 px-3 rounded-lg bg-zinc-900 text-white text-sm font-semibold">Full screen</button>
+      <p class="text-sm text-zinc-500">Same business, same data, twelve structures. The styling is identical on purpose so you compare structure only.</p>
+    </div>
+    <nav id="tabs" aria-label="Approaches" class="px-4 py-2 flex flex-wrap gap-1.5"></nav>
+    <div id="info" class="px-4 pb-3"></div>
+  </header>
+
+  <main id="main" class="flex-1 min-h-0 p-3 sm:p-4">
+    <div id="stage" class="h-[720px] lg:h-full bg-white rounded-xl border border-zinc-300 shadow-sm overflow-hidden flex flex-col"></div>
+  </main>
+  <button id="full-off" class="hidden fixed bottom-3 right-3 z-50 h-8 px-3 rounded-lg bg-zinc-900/90 text-white text-xs font-semibold shadow-lg">Exit full screen (Esc)</button>
+</div>
+
+<script>
+/* ------------------------------------------------------------------ data */
+const chats = [
+  { name: 'Asha Menon', preview: 'Saturday 11 works. Do I need to bring my old reports?', time: '2 min', ch: 'WhatsApp', who: 'Mira', unread: 2 },
+  { name: 'Daniel Okafor', preview: 'I was charged twice for the whitening. Can I get a refund?', time: '4 min', ch: 'Instagram', who: 'Needs you', unread: 1 },
+  { name: 'Fatima Noor', preview: 'You: Your invoice is attached. Thank you for visiting.', time: '32 min', ch: 'WhatsApp', who: 'Priya' },
+  { name: 'Website visitor', preview: 'Do you open on Sundays?', time: '1 hr', ch: 'Website', who: 'Mira' },
+  { name: 'Rahul Verma', preview: 'Can I move my appointment to Monday?', time: '2 hr', ch: 'WhatsApp', who: 'Mira' },
+  { name: 'Leila Haddad', preview: 'Thanks, see you tomorrow.', time: '3 hr', ch: 'WhatsApp', who: 'Sameer' },
+  { name: 'Tom Becker', preview: 'How much is a check-up for a child?', time: '5 hr', ch: 'Instagram', who: 'Mira' },
+];
+const needs = [
+  { icon: 'hand-helping', title: 'Daniel is asking for a refund', detail: 'Mira handed this chat to the team 4 minutes ago.', action: 'Open chat' },
+  { icon: 'book-open', title: 'Mira couldn’t answer “Do you take Aetna insurance?”', detail: 'Customers asked this 3 times this week.', action: 'Teach Mira' },
+  { icon: 'circle-alert', title: 'WhatsApp rejected your appointment reminder', detail: 'It reads like marketing. A small rewording fixes it.', action: 'Fix message' },
+];
+const sections = [['inbox', 'Inbox'], ['users', 'Contacts'], ['bot', 'AI agents'], ['workflow', 'Workers'], ['megaphone', 'Campaigns'], ['bar-chart-3', 'Insights']];
+const chIcon = { WhatsApp: 'message-circle', Instagram: 'camera', Website: 'globe' };
+
+/* --------------------------------------------------------------- helpers */
+const i = (name, cls = 'w-4 h-4') => `<i data-lucide="${name}" class="${cls}"></i>`;
+const initials = (n) => n.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase();
+const avatar = (n, size = 'w-9 h-9 text-xs') => `<span class="${size} shrink-0 rounded-full bg-zinc-200 text-zinc-700 font-semibold inline-flex items-center justify-center">${initials(n)}</span>`;
+const face = (size = 'w-9 h-9') => `<span class="${size} shrink-0 rounded-xl bg-amber-300 text-amber-950 inline-flex items-center justify-center">${i('smile', 'w-[60%] h-[60%]')}</span>`;
+const btn = (label, primary) => `<button class="h-9 px-3 rounded-lg text-sm font-semibold ${primary ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-zinc-100 text-zinc-800 hover:bg-zinc-200'}">${label}</button>`;
+const chip = (label, cls = 'bg-zinc-100 text-zinc-600') => `<span class="px-2 py-0.5 rounded-full text-xs font-medium ${cls}">${label}</span>`;
+const whoChip = (w) => w === 'Mira' ? chip('Mira', 'bg-amber-100 text-amber-900') : w === 'Needs you' ? chip('Needs you', 'bg-rose-100 text-rose-800') : chip(w);
+
+const rail = (active = 0) => `
+  <nav class="w-14 shrink-0 bg-zinc-900 text-zinc-400 hidden md:flex flex-col items-center py-3 gap-1">
+    <span class="w-8 h-8 rounded-lg bg-emerald-500 text-white inline-flex items-center justify-center mb-3">${i('message-circle')}</span>
+    ${sections.map(([ic, label], n) => `<button title="${label}" aria-label="${label}" class="w-10 h-10 rounded-lg inline-flex items-center justify-center ${n === active ? 'bg-zinc-700 text-white' : 'hover:bg-zinc-800'}">${i(ic, 'w-5 h-5')}</button>`).join('')}
+    <span class="mt-auto">${avatar('Priya Shah', 'w-8 h-8 text-[11px]')}</span>
+  </nav>`;
+
+const sidebar = (active = 0, extra = '') => `
+  <nav class="w-52 shrink-0 border-r border-zinc-200 bg-zinc-50 hidden md:flex flex-col p-3 gap-1">
+    <button class="flex items-center justify-between px-2 py-2 mb-2 rounded-lg border border-zinc-200 bg-white text-left">
+      <span><span class="block text-sm font-semibold">Marina branch</span><span class="block text-xs text-zinc-500">Lumen Clinics</span></span>${i('chevrons-up-down', 'w-4 h-4 text-zinc-400')}
+    </button>
+    ${extra}
+    ${sections.map(([ic, label], n) => `<button class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-sm ${n === active ? 'bg-zinc-200 font-semibold' : 'text-zinc-600 hover:bg-zinc-100'}">${i(ic)}${label}</button>`).join('')}
+    <div class="mt-auto flex items-center gap-2 px-2 text-sm">${avatar('Priya Shah', 'w-7 h-7 text-[10px]')}Priya Shah</div>
+  </nav>`;
+
+const chatRow = (c, sel, dense) => `
+  <button class="w-full flex items-start gap-3 p-2.5 rounded-lg text-left ${sel ? 'bg-zinc-100' : 'hover:bg-zinc-50'}">
+    ${avatar(c.name)}
+    <span class="min-w-0 flex-1">
+      <span class="flex items-baseline justify-between gap-2"><span class="truncate text-sm font-semibold">${c.name}</span><span class="shrink-0 text-xs text-zinc-500">${c.time}</span></span>
+      <span class="block truncate text-sm ${c.unread ? 'text-zinc-800' : 'text-zinc-500'}">${c.preview}</span>
+      ${dense ? '' : `<span class="mt-1 flex items-center justify-between"><span class="inline-flex items-center gap-1 text-xs text-zinc-500">${i(chIcon[c.ch], 'w-3 h-3')}${c.ch}</span><span class="flex items-center gap-1.5">${whoChip(c.who)}${c.unread ? `<span class="w-5 h-5 rounded-full bg-emerald-600 text-white text-[11px] font-bold inline-flex items-center justify-center">${c.unread}</span>` : ''}</span></span>`}
+    </span>
+  </button>`;
+
+const bubble = (side, text, ai) => `
+  <div class="flex ${side === 'out' ? 'justify-end' : ''}">
+    <div class="max-w-[78%]">
+      ${ai ? `<div class="text-[11px] text-zinc-500 mb-0.5 text-right inline-flex items-center gap-1 w-full justify-end">${i('bot', 'w-3 h-3')}Mira, AI agent</div>` : ''}
+      <p class="px-3.5 py-2 rounded-2xl text-sm leading-relaxed ${side === 'in' ? 'bg-white border border-zinc-200 rounded-bl-md' : ai ? 'bg-amber-100 text-amber-950 rounded-br-md' : 'bg-emerald-600 text-white rounded-br-md'}">${text}</p>
+    </div>
+  </div>`;
+
+const conversation = () => `
+  ${bubble('in', 'Hi, can I book a cleaning for this Saturday?')}
+  ${bubble('out', 'Of course, Asha. Marina has 11:00 and 3:30 free on Saturday. Which suits you?', true)}
+  ${bubble('in', 'Saturday 11 works. Do I need to bring my old reports?')}
+  <p class="text-center text-xs text-zinc-500 inline-flex items-center justify-center gap-1.5 w-full">${i('calendar-check', 'w-3.5 h-3.5')}Mira booked Saturday 11:00 with Dr. Rao</p>
+  ${bubble('out', 'You’re booked for Saturday at 11:00 with Dr. Rao. Please bring any X-rays from the last two years.', true)}`;
+
+const composer = (placeholder = 'Write a reply') => `
+  <div class="p-3 border-t border-zinc-200 bg-white">
+    <div class="flex items-center gap-2 rounded-xl border border-zinc-200 px-2 py-1.5">
+      <button aria-label="Attach" class="w-8 h-8 inline-flex items-center justify-center text-zinc-500">${i('paperclip')}</button>
+      <input placeholder="${placeholder}" class="flex-1 h-8 text-sm outline-none bg-transparent placeholder:text-zinc-400">
+      <button class="h-8 px-3 rounded-lg bg-emerald-600 text-white text-sm font-semibold inline-flex items-center gap-1.5">${i('send', 'w-3.5 h-3.5')}Send</button>
+    </div>
+  </div>`;
+
+const thread = ({ header = true, takeover = true } = {}) => `
+  <section class="flex-1 min-w-0 hidden md:flex flex-col bg-zinc-50">
+    ${header ? `<header class="flex items-center gap-3 px-4 py-2.5 border-b border-zinc-200 bg-white">
+      ${avatar('Asha Menon')}
+      <div class="min-w-0"><h2 class="text-sm font-semibold truncate">Asha Menon</h2><p class="text-xs text-zinc-500 truncate">WhatsApp, you can reply freely for 21 more hours</p></div>
+      <div class="ml-auto flex gap-2">${takeover ? btn('Assign') + btn('Take over', true) : ''}</div>
+    </header>` : ''}
+    <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">${conversation()}</div>
+    ${composer(takeover ? 'Take over to write a reply' : 'Write a reply')}
+  </section>`;
+
+const needsList = (items = needs) => items.map((n) => `
+  <li class="flex items-center gap-3 px-4 py-3 border-b border-zinc-100 last:border-0">
+    <span class="w-9 h-9 shrink-0 rounded-lg bg-amber-100 text-amber-800 inline-flex items-center justify-center">${i(n.icon)}</span>
+    <span class="min-w-0 flex-1"><span class="block text-sm font-semibold">${n.title}</span><span class="block text-sm text-zinc-500">${n.detail}</span></span>
+    ${btn(n.action)}
+  </li>`).join('');
+
+const askBox = (ph) => `
+  <div class="rounded-2xl border-2 border-emerald-500 bg-white p-3">
+    <textarea rows="2" placeholder="${ph}" class="w-full resize-none outline-none text-base placeholder:text-zinc-400"></textarea>
+    <div class="flex justify-between"><button aria-label="Attach" class="w-9 h-9 rounded-lg bg-zinc-100 inline-flex items-center justify-center">${i('paperclip')}</button><button aria-label="Send" class="w-9 h-9 rounded-lg bg-emerald-600 text-white inline-flex items-center justify-center">${i('arrow-up')}</button></div>
+  </div>`;
+
+/* ------------------------------------------------------------- the mocks */
+const mocks = {};
+
+mocks.console = () => `
+  <div class="flex flex-1 min-h-0">
+    ${rail(0)}
+    <aside class="w-full md:w-80 shrink-0 border-r border-zinc-200 flex flex-col">
+      <div class="p-3 flex flex-col gap-2">
+        <div class="flex items-center justify-between"><h1 class="text-lg font-semibold">Inbox</h1><span class="text-sm text-zinc-500">38 open</span></div>
+        <label class="flex items-center gap-2 h-9 px-3 rounded-lg border border-zinc-200 text-sm text-zinc-400">${i('search')}Search</label>
+        <div class="flex gap-1 text-sm">${['Mine', 'Unassigned', 'All'].map((t, n) => `<button class="px-3 py-1 rounded-full ${n === 2 ? 'bg-zinc-900 text-white' : 'text-zinc-600'}">${t}</button>`).join('')}</div>
+      </div>
+      <div class="flex-1 overflow-y-auto px-2 pb-2">${chats.map((c, n) => chatRow(c, n === 0)).join('')}</div>
+    </aside>
+    ${thread()}
+    <aside class="w-72 shrink-0 border-l border-zinc-200 p-4 hidden xl:flex flex-col gap-4">
+      <div class="flex flex-col items-center gap-2 text-center">${avatar('Asha Menon', 'w-14 h-14 text-base')}<h2 class="font-semibold">Asha Menon</h2>${chip('Returning patient', 'bg-emerald-100 text-emerald-800')}</div>
+      <dl class="text-sm flex flex-col gap-2.5">${[['Phone', '+971 50 555 0142'], ['Branch', 'Marina'], ['First seen', '12 Mar 2026'], ['Next visit', 'Sat, 11:00'], ['Assigned to', 'Mira']].map(([k, v]) => `<div class="flex justify-between gap-3"><dt class="text-zinc-500">${k}</dt><dd class="font-medium">${v}</dd></div>`).join('')}</dl>
+      <div class="border-t border-zinc-200 pt-3"><h3 class="text-sm font-semibold mb-2">Labels</h3><div class="flex flex-wrap gap-1.5">${chip('Cleaning')}${chip('Insurance: none')}${chip('VIP')}</div></div>
+      <div class="border-t border-zinc-200 pt-3"><h3 class="text-sm font-semibold mb-2">Notes</h3><p class="text-sm text-zinc-500">Prefers morning appointments.</p></div>
+    </aside>
+  </div>`;
+
+mocks.agent = () => `
+  <div class="flex flex-1 min-h-0">
+    ${rail(2)}
+    <aside class="w-52 shrink-0 border-r border-zinc-200 p-3 hidden lg:flex flex-col gap-4 text-sm">
+      ${[['Agents', ['Mira', 'New agent']], ['Teach', ['Knowledge', 'Procedures', 'Questions to answer']], ['Try', ['Test chat', 'Simulations']], ['Improve', ['Suggestions', 'Handover reasons']]].map(([t, items], g) => `<div><h2 class="px-2 pb-1 text-xs font-semibold text-zinc-500">${t}</h2>${items.map((it, n) => `<button class="block w-full text-left px-2 py-1.5 rounded-lg ${g === 0 && n === 0 ? 'bg-zinc-100 font-semibold' : 'text-zinc-600 hover:bg-zinc-50'}">${it}</button>`).join('')}</div>`).join('')}
+    </aside>
+    <div class="flex-1 overflow-y-auto">
+      <div class="max-w-2xl mx-auto px-5 py-12 flex flex-col gap-8">
+        <div class="flex flex-col items-center text-center gap-3">${face('w-16 h-16')}<h1 class="text-3xl font-semibold tracking-tight">What’s next for Mira?</h1><p class="text-zinc-500">Mira answered 42 of 47 chats at Marina today.</p></div>
+        ${askBox('Ask anything, or tell Mira what to change')}
+        <div class="flex flex-wrap justify-center gap-2">${['Why were chats handed to the team?', 'Offer 10% off cleanings until Sunday', 'How did today go?'].map((s) => `<button class="px-3 py-1.5 rounded-full border border-zinc-200 text-sm text-zinc-600 hover:bg-zinc-50">${s}</button>`).join('')}</div>
+        <section class="rounded-xl border border-zinc-200 overflow-hidden"><h2 class="px-4 py-3 text-sm font-semibold border-b border-zinc-200">Needs you</h2><ul>${needsList()}</ul></section>
+      </div>
+    </div>
+  </div>`;
+
+mocks.messenger = () => `
+  <div class="flex flex-1 min-h-0">
+    <aside class="w-full md:w-96 shrink-0 border-r border-zinc-200 flex flex-col">
+      <div class="px-4 py-3 flex items-center gap-3">${avatar('Priya Shah')}<h1 class="text-lg font-semibold flex-1">Chats</h1><button aria-label="New chat" class="w-9 h-9 inline-flex items-center justify-center text-zinc-600">${i('square-pen', 'w-5 h-5')}</button><button aria-label="Menu" class="w-9 h-9 inline-flex items-center justify-center text-zinc-600">${i('ellipsis-vertical', 'w-5 h-5')}</button></div>
+      <div class="px-3 pb-2"><label class="flex items-center gap-2 h-9 px-3 rounded-full bg-zinc-100 text-sm text-zinc-400">${i('search')}Search or start a chat</label></div>
+      <div class="px-3 pb-2 flex gap-1.5 text-sm">${['All', 'Unread', 'Mira is replying', 'Mine'].map((t, n) => `<button class="px-3 py-1 rounded-full ${n === 0 ? 'bg-emerald-100 text-emerald-800 font-semibold' : 'bg-zinc-100 text-zinc-600'}">${t}</button>`).join('')}</div>
+      <div class="flex-1 overflow-y-auto px-2">${chats.map((c, n) => chatRow(c, n === 0, true)).join('')}</div>
+    </aside>
+    <section class="flex-1 min-w-0 hidden md:flex flex-col dots bg-zinc-50">
+      <header class="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-zinc-200">${avatar('Asha Menon')}<div><h2 class="text-sm font-semibold">Asha Menon</h2><p class="text-xs text-zinc-500">Mira is replying</p></div><div class="ml-auto flex text-zinc-600"><button aria-label="Search in chat" class="w-9 h-9 inline-flex items-center justify-center">${i('search', 'w-5 h-5')}</button><button aria-label="Menu" class="w-9 h-9 inline-flex items-center justify-center">${i('ellipsis-vertical', 'w-5 h-5')}</button></div></header>
+      <div class="flex-1 overflow-y-auto p-5 flex flex-col gap-3 max-w-3xl w-full mx-auto">${conversation()}</div>
+      ${composer('Type a message')}
+    </section>
+  </div>`;
+
+mocks.keyboard = () => `
+  <div class="flex flex-1 min-h-0 relative">
+    <nav class="w-48 shrink-0 border-r border-zinc-200 p-3 hidden md:flex flex-col gap-0.5 text-sm text-zinc-600">
+      <div class="px-2 pb-3 font-semibold text-zinc-900 flex items-center gap-2">Lumen ${i('chevron-down', 'w-3.5 h-3.5')}</div>
+      ${['Inbox', 'My chats', 'Unassigned', 'Mira is handling'].map((t, n) => `<button class="text-left px-2 py-1 rounded ${n === 0 ? 'bg-zinc-100 text-zinc-900 font-medium' : 'hover:bg-zinc-50'}">${t}</button>`).join('')}
+      <div class="px-2 pt-4 pb-1 text-xs text-zinc-400">Workspace</div>
+      ${['Contacts', 'Agents', 'Workers', 'Campaigns', 'Insights'].map((t) => `<button class="text-left px-2 py-1 rounded hover:bg-zinc-50">${t}</button>`).join('')}
+    </nav>
+    <div class="flex-1 min-w-0 flex flex-col">
+      <header class="h-11 px-4 flex items-center gap-3 border-b border-zinc-200 text-sm"><span class="font-medium">Inbox</span><span class="text-zinc-400">38</span><span class="ml-auto text-zinc-400 inline-flex items-center gap-2">${i('filter', 'w-3.5 h-3.5')}Filter</span></header>
+      <div class="flex-1 overflow-y-auto text-sm">
+        ${chats.concat(chats.slice(0, 5)).map((c, n) => `<div class="h-9 px-4 flex items-center gap-3 border-b border-zinc-100 ${n === 1 ? 'bg-zinc-50' : ''}"><span class="w-2 h-2 rounded-full ${c.who === 'Needs you' ? 'bg-rose-500' : c.who === 'Mira' ? 'bg-amber-400' : 'bg-zinc-300'}"></span><span class="w-36 truncate font-medium">${c.name}</span><span class="flex-1 truncate text-zinc-500">${c.preview}</span><span class="hidden lg:inline w-20 text-zinc-400">${c.ch}</span><span class="hidden sm:inline w-20 text-zinc-500">${c.who}</span><span class="w-12 text-right text-zinc-400">${c.time}</span></div>`).join('')}
+      </div>
+      <footer class="h-8 px-4 flex items-center gap-4 border-t border-zinc-200 text-xs text-zinc-500">${[['J K', 'move'], ['Enter', 'open'], ['A', 'assign'], ['T', 'take over'], ['⌘K', 'commands']].map(([k, l]) => `<span><kbd class="px-1 rounded border border-zinc-300 bg-zinc-50 font-sans">${k}</kbd> ${l}</span>`).join('')}</footer>
+    </div>
+    <div class="absolute inset-0 bg-zinc-900/20 flex items-start justify-center pt-20 px-4">
+      <div class="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-zinc-200 overflow-hidden">
+        <div class="flex items-center gap-2 px-4 h-12 border-b border-zinc-200">${i('search', 'w-4 h-4 text-zinc-400')}<span class="text-sm">take</span><span class="w-px h-4 bg-zinc-900 animate-pulse"></span></div>
+        <ul class="p-1.5 text-sm">
+          ${[['user-check', 'Take over from Mira', 'T', true], ['user-plus', 'Assign to…', 'A'], ['file-text', 'Send a template…', 'S'], ['building-2', 'Switch to Downtown branch', ''], ['bot', 'Open Mira’s settings', '']].map(([ic, l, k, on]) => `<li class="flex items-center gap-3 px-3 h-9 rounded-lg ${on ? 'bg-zinc-100' : ''}">${i(ic, 'w-4 h-4 text-zinc-500')}<span class="flex-1">${l}</span>${k ? `<kbd class="px-1.5 rounded border border-zinc-300 text-xs text-zinc-500 font-sans">${k}</kbd>` : ''}</li>`).join('')}
+        </ul>
+      </div>
+    </div>
+  </div>`;
+
+mocks.triage = () => `
+  <div class="flex flex-1 min-h-0">
+    ${rail(0)}
+    <div class="flex-1 overflow-y-auto bg-zinc-50">
+      <div class="max-w-2xl mx-auto px-5 py-10 flex flex-col gap-5">
+        <div class="flex items-end justify-between"><div><h1 class="text-2xl font-semibold tracking-tight">3 decisions left</h1><p class="text-sm text-zinc-500">Everything else at Marina is handled.</p></div><div class="flex gap-1">${[1, 1, 0, 0, 0].map((d) => `<span class="w-8 h-1.5 rounded-full ${d ? 'bg-emerald-500' : 'bg-zinc-300'}"></span>`).join('')}</div></div>
+        <article class="rounded-2xl bg-white border border-zinc-200 shadow-sm overflow-hidden">
+          <div class="p-5 flex flex-col gap-4">
+            <div class="flex items-center gap-3">${avatar('Daniel Okafor')}<div><h2 class="font-semibold">Daniel Okafor wants a refund</h2><p class="text-sm text-zinc-500">Instagram, 4 minutes ago. Mira stopped and asked you.</p></div></div>
+            <div class="rounded-xl bg-zinc-50 p-3 flex flex-col gap-2">${bubble('in', 'I was charged twice for the whitening. Can I get a refund?')}</div>
+            <div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm"><div class="flex items-center gap-1.5 font-semibold text-amber-900 mb-1">${i('bot')}Mira suggests</div><p class="text-amber-950">“Sorry about that, Daniel. I can see two charges of AED 450 on 9 Nov. I’ve refunded one; it reaches your card in 3 to 5 days.”</p></div>
+          </div>
+          <div class="px-5 py-3 border-t border-zinc-200 bg-zinc-50 flex flex-wrap gap-2">${btn('Approve and send', true)}${btn('Edit reply')}${btn('Reply myself')}<span class="ml-auto">${btn('Later')}</span></div>
+        </article>
+        ${needs.slice(1).map((n) => `<div class="rounded-xl bg-white border border-zinc-200 px-4 py-3 flex items-center gap-3 opacity-80"><span class="w-9 h-9 rounded-lg bg-amber-100 text-amber-800 inline-flex items-center justify-center">${i(n.icon)}</span><div class="min-w-0"><div class="text-sm font-semibold truncate">${n.title}</div><div class="text-sm text-zinc-500 truncate">${n.detail}</div></div></div>`).join('')}
+        <p class="text-center text-sm text-zinc-400">When this list is empty, nothing needs you.</p>
+      </div>
+    </div>
+  </div>`;
+
+mocks.today = () => `
+  <div class="flex flex-1 min-h-0">
+    ${sidebar(-1, `<button class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-sm bg-zinc-200 font-semibold">${i('home')}Home</button>`)}
+    <div class="flex-1 overflow-y-auto">
+      <div class="max-w-5xl mx-auto px-5 py-8 grid lg:grid-cols-[minmax(0,1fr)_260px] gap-6">
+        <div class="flex flex-col gap-4">
+          <div><h1 class="text-2xl font-semibold tracking-tight">Tuesday at Marina</h1><p class="text-zinc-500">Good morning, Priya. Here’s what happened and what’s next.</p></div>
+          <section class="rounded-xl border-2 border-emerald-500 overflow-hidden"><h2 class="px-4 py-3 text-sm font-semibold border-b border-zinc-200 flex items-center gap-2">${i('bell-ring')}3 things need you</h2><ul>${needsList()}</ul></section>
+          <section class="rounded-xl border border-zinc-200 p-4 flex items-start gap-3">${face()}<div class="flex-1"><h2 class="text-sm font-semibold">Mira booked 9 appointments today</h2><p class="text-sm text-zinc-500">6 cleanings, 2 check-ups, 1 whitening. Saturday is now full.</p></div>${btn('See bookings')}</section>
+          <section class="rounded-xl border border-zinc-200 p-4 flex items-start gap-3"><span class="w-9 h-9 rounded-lg bg-zinc-100 inline-flex items-center justify-center">${i('megaphone')}</span><div class="flex-1"><h2 class="text-sm font-semibold">“Winter check-up” reached 412 customers</h2><p class="text-sm text-zinc-500">388 delivered, 201 read, 23 replied. 7 booked from it so far.</p><div class="mt-2 h-2 rounded-full bg-zinc-100 overflow-hidden flex"><span class="bg-emerald-600" style="width:49%"></span><span class="bg-emerald-300" style="width:45%"></span></div></div></section>
+          <section class="rounded-xl border border-dashed border-zinc-300 p-4 flex items-start gap-3"><span class="w-9 h-9 rounded-lg bg-zinc-100 inline-flex items-center justify-center">${i('lightbulb')}</span><div class="flex-1"><h2 class="text-sm font-semibold">Suggestion: tell customers about Sunday hours</h2><p class="text-sm text-zinc-500">8 people asked this week and Mira had to say she wasn’t sure.</p></div>${btn('Add answer')}</section>
+        </div>
+        <aside class="flex flex-col gap-3">
+          ${[['47', 'chats today', '+12% on last Tuesday'], ['89%', 'answered by Mira', '5 went to your team'], ['1m 40s', 'to first reply', 'target is under 5 min'], ['9', 'appointments booked', 'AED 3,150 expected']].map(([v, l, s]) => `<div class="rounded-xl border border-zinc-200 p-4"><div class="text-2xl font-semibold tracking-tight">${v}</div><div class="text-sm">${l}</div><div class="text-xs text-zinc-500 mt-1">${s}</div></div>`).join('')}
+        </aside>
+      </div>
+    </div>
+  </div>`;
+
+const node = (x, y, ic, title, sub, sel, tone = 'bg-white border-zinc-300') => `
+  <div class="absolute w-52 rounded-xl border ${sel ? 'border-emerald-500 ring-4 ring-emerald-100' : ''} ${tone} shadow-sm p-3" style="left:${x}px;top:${y}px">
+    <div class="flex items-center gap-2 text-sm font-semibold">${i(ic)}${title}</div><div class="text-xs text-zinc-500 mt-0.5">${sub}</div>
+  </div>`;
+
+mocks.canvas = () => `
+  <div class="flex flex-col flex-1 min-h-0">
+    <header class="h-12 px-4 flex items-center gap-3 border-b border-zinc-200"><button aria-label="Back" class="text-zinc-500">${i('arrow-left')}</button><span class="font-semibold text-sm">Appointment booking</span>${chip('Draft')}<div class="ml-auto flex gap-2">${btn('Test')}${btn('Publish', true)}</div></header>
+    <div class="flex flex-1 min-h-0">
+      <aside class="w-48 shrink-0 border-r border-zinc-200 p-3 hidden md:block text-sm"><h2 class="text-xs font-semibold text-zinc-500 mb-2">Add a step</h2>${[['message-circle', 'Send message'], ['help-circle', 'Ask a question'], ['bot', 'Let AI agent reply'], ['git-branch', 'Condition'], ['clock', 'Wait'], ['calendar', 'Book a slot'], ['user-check', 'Hand to team'], ['globe', 'Call an API']].map(([ic, l]) => `<div class="flex items-center gap-2 px-2 py-2 mb-1 rounded-lg border border-zinc-200 bg-white">${i(ic, 'w-4 h-4 text-zinc-500')}${l}</div>`).join('')}</aside>
+      <div class="flex-1 min-w-0 relative dots bg-zinc-50 overflow-auto">
+        <div class="relative" style="width:760px;height:520px">
+          <svg class="absolute inset-0" width="760" height="520" fill="none" stroke="#a1a1aa" stroke-width="1.5"><path d="M144 92 C144 130 284 110 284 150"/><path d="M284 212 C284 250 144 240 144 280"/><path d="M284 212 C284 250 424 240 424 280"/><path d="M144 342 C144 380 144 380 144 410"/><path d="M424 342 C424 380 584 370 584 410"/></svg>
+          ${node(40, 30, 'zap', 'Customer writes', 'Any message on WhatsApp', false, 'bg-emerald-50 border-emerald-300')}
+          ${node(180, 150, 'bot', 'Mira understands', 'What does the customer want?', true)}
+          ${node(40, 280, 'calendar', 'Offer two free slots', 'From the Marina calendar')}
+          ${node(320, 280, 'git-branch', 'Is it a refund?', 'Yes / No')}
+          ${node(40, 410, 'check', 'Book and confirm', 'Then send a reminder')}
+          ${node(480, 410, 'user-check', 'Hand to front desk', 'Marina team')}
+        </div>
+      </div>
+      <aside class="w-72 shrink-0 border-l border-zinc-200 p-4 hidden lg:flex flex-col gap-4 text-sm">
+        <h2 class="font-semibold flex items-center gap-2">${i('bot')}Mira understands</h2>
+        <label class="flex flex-col gap-1.5"><span class="font-medium">Agent</span><span class="h-9 px-3 rounded-lg border border-zinc-200 flex items-center justify-between">Mira ${i('chevron-down', 'w-4 h-4 text-zinc-400')}</span></label>
+        <label class="flex flex-col gap-1.5"><span class="font-medium">Save the answer as</span><span class="h-9 px-3 rounded-lg border border-zinc-200 flex items-center font-mono text-xs">{{intent}}</span></label>
+        <div class="flex flex-col gap-1.5"><span class="font-medium">Possible outcomes</span>${['Wants to book', 'Wants a refund', 'Something else'].map((o) => `<span class="h-9 px-3 rounded-lg bg-zinc-100 flex items-center">${o}</span>`).join('')}</div>
+        <label class="flex items-center justify-between"><span>Retry if it fails</span><span class="w-9 h-5 rounded-full bg-emerald-600 relative"><span class="absolute right-0.5 top-0.5 w-4 h-4 rounded-full bg-white"></span></span></label>
+      </aside>
+    </div>
+  </div>`;
+
+mocks.conversational = () => `
+  <div class="flex flex-1 min-h-0">
+    <aside class="w-56 shrink-0 border-r border-zinc-200 bg-zinc-50 p-3 hidden md:flex flex-col gap-1 text-sm">
+      <button class="h-9 px-3 mb-2 rounded-lg bg-white border border-zinc-200 flex items-center gap-2 font-semibold">${i('plus')}New request</button>
+      <h2 class="px-2 pt-2 pb-1 text-xs font-semibold text-zinc-500">Today</h2>
+      ${['Cleaning offer for lapsed patients', 'Why did Mira hand over 5 chats?'].map((t, n) => `<button class="text-left px-2 py-1.5 rounded-lg truncate ${n === 0 ? 'bg-zinc-200 font-medium' : 'text-zinc-600'}">${t}</button>`).join('')}
+      <h2 class="px-2 pt-3 pb-1 text-xs font-semibold text-zinc-500">This week</h2>
+      ${['Add Downtown branch', 'Teach Mira the price list', 'Reminder message rejected', 'Weekly numbers'].map((t) => `<button class="text-left px-2 py-1.5 rounded-lg truncate text-zinc-600">${t}</button>`).join('')}
+    </aside>
+    <div class="flex-1 min-w-0 flex flex-col">
+      <div class="flex-1 overflow-y-auto"><div class="max-w-2xl mx-auto px-5 py-8 flex flex-col gap-5">
+        <div class="self-end max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-md bg-zinc-900 text-white text-sm">Send a 10% cleaning offer to patients who haven’t visited Marina in 6 months.</div>
+        <div class="flex gap-3">${face('w-8 h-8')}<div class="flex-1 flex flex-col gap-3 text-sm leading-relaxed">
+          <p>I found <strong>412 patients</strong> at Marina whose last visit was before 12 May. Here’s a campaign ready to send. WhatsApp needs an approved template for this, so I reused “Seasonal offer”, which is already approved.</p>
+          <div class="rounded-xl border border-zinc-200 overflow-hidden">
+            <div class="px-4 py-2.5 bg-zinc-50 border-b border-zinc-200 flex items-center gap-2 font-semibold">${i('megaphone')}Campaign draft: Winter cleaning offer</div>
+            <div class="p-4 grid sm:grid-cols-2 gap-4">
+              <dl class="flex flex-col gap-2">${[['Audience', '412 patients, Marina'], ['Channel', 'WhatsApp'], ['When', 'Today, 5:00 pm'], ['Estimated cost', 'AED 62']].map(([k, v]) => `<div class="flex justify-between gap-3"><dt class="text-zinc-500">${k}</dt><dd class="font-medium text-right">${v}</dd></div>`).join('')}</dl>
+              <div class="rounded-xl bg-emerald-50 p-3 text-emerald-950">Hi Asha, it’s been a while. Book a cleaning at Lumen Marina before Sunday and get 10% off. Reply BOOK to choose a time.</div>
+            </div>
+            <div class="px-4 py-3 border-t border-zinc-200 flex gap-2">${btn('Send at 5:00 pm', true)}${btn('Edit')}${btn('Send me a test')}</div>
+          </div>
+          <p>Mira will handle the replies and book the slots. Want me to cap it at 100 a day so the front desk isn’t swamped?</p>
+        </div></div>
+      </div></div>
+      <div class="max-w-2xl w-full mx-auto px-5 pb-5">${askBox('Ask for anything: a campaign, a report, a change to Mira')}</div>
+    </div>
+  </div>`;
+
+mocks.board = () => {
+  const cols = [['New enquiry', [['Tom Becker', 'Child check-up price?', 'Instagram', 'Mira'], ['Website visitor', 'Open on Sundays?', 'Website', 'Mira'], ['Nora Aziz', 'Do you do braces?', 'WhatsApp', 'Mira']]], ['Talking', [['Asha Menon', 'Choosing a Saturday slot', 'WhatsApp', 'Mira'], ['Daniel Okafor', 'Refund request', 'Instagram', 'Needs you']]], ['Booked', [['Rahul Verma', 'Mon 10:30, cleaning', 'WhatsApp', 'Mira'], ['Leila Haddad', 'Wed 4:00, check-up', 'WhatsApp', 'Sameer'], ['Omar Said', 'Thu 9:00, whitening', 'WhatsApp', 'Mira']]], ['Visited', [['Fatima Noor', 'Invoice sent', 'WhatsApp', 'Priya'], ['Ivy Chen', 'Asked for review', 'WhatsApp', 'Mira']]]];
+  return `
+  <div class="flex flex-1 min-h-0">
+    ${rail(1)}
+    <div class="flex-1 min-w-0 flex flex-col">
+      <header class="px-4 py-3 flex items-center gap-3 border-b border-zinc-200"><h1 class="text-lg font-semibold">Customers</h1><div class="flex rounded-lg bg-zinc-100 p-0.5 text-sm">${['Board', 'Table'].map((t, n) => `<button class="px-3 py-1 rounded-md ${n === 0 ? 'bg-white shadow-sm font-semibold' : 'text-zinc-600'}">${t}</button>`).join('')}</div><div class="ml-auto flex gap-2">${btn('Filter')}${btn('Add customer', true)}</div></header>
+      <div class="flex-1 overflow-auto p-4 bg-zinc-50"><div class="flex gap-4 h-full min-w-[820px]">
+        ${cols.map(([title, cards]) => `<section class="flex-1 flex flex-col gap-2 rounded-xl bg-zinc-100 p-2"><h2 class="px-2 py-1 text-sm font-semibold flex justify-between">${title}<span class="text-zinc-400">${cards.length}</span></h2>${cards.map(([n, s, ch, w]) => `<article class="rounded-lg bg-white border border-zinc-200 p-3 shadow-sm"><div class="flex items-center gap-2">${avatar(n, 'w-7 h-7 text-[10px]')}<h3 class="text-sm font-semibold truncate">${n}</h3></div><p class="text-sm text-zinc-500 mt-1.5">${s}</p><div class="mt-2 flex items-center justify-between"><span class="inline-flex items-center gap-1 text-xs text-zinc-500">${i(chIcon[ch], 'w-3 h-3')}${ch}</span>${whoChip(w)}</div></article>`).join('')}<button class="text-sm text-zinc-500 py-1.5 rounded-lg hover:bg-zinc-200">Add</button></section>`).join('')}
+      </div></div>
+    </div>
+  </div>`;
+};
+
+mocks.workspace = () => `
+  <div class="flex flex-1 min-h-0">
+    <aside class="w-60 shrink-0 border-r border-zinc-200 bg-zinc-50 p-3 hidden md:flex flex-col gap-0.5 text-sm text-zinc-700">
+      <div class="px-2 pb-2 font-semibold flex items-center gap-2">${i('building-2')}Lumen Clinics, Marina</div>
+      ${[['inbox', 'Inbox', 0], ['megaphone', 'Campaigns', 0]].map(([ic, l]) => `<button class="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-zinc-100">${i(ic, 'w-4 h-4 text-zinc-500')}${l}</button>`).join('')}
+      <div class="px-2 pt-4 pb-1 text-xs font-semibold text-zinc-500">Mira’s handbook</div>
+      ${['About the clinic', 'Services and prices', 'How we book appointments', 'Refunds and complaints', 'Opening hours', 'Insurance we accept'].map((p, n) => `<button class="flex items-center gap-2 px-2 py-1.5 rounded-lg text-left ${n === 2 ? 'bg-zinc-200 font-semibold' : 'hover:bg-zinc-100'}">${i('file-text', 'w-4 h-4 text-zinc-400')}<span class="truncate">${p}</span></button>`).join('')}
+      <button class="flex items-center gap-2 px-2 py-1.5 rounded-lg text-zinc-500">${i('plus', 'w-4 h-4')}New page</button>
+    </aside>
+    <div class="flex-1 overflow-y-auto">
+      <article class="max-w-2xl mx-auto px-6 py-12 flex flex-col gap-5 leading-relaxed">
+        <div class="flex items-center gap-2 text-xs text-zinc-500">${chip('Live', 'bg-emerald-100 text-emerald-800')}Mira used this page 42 times this week</div>
+        <h1 class="text-4xl font-semibold tracking-tight">How we book appointments</h1>
+        <p class="text-zinc-600">Write this the way you’d explain it to a new receptionist. Mira follows it in order.</p>
+        <ol class="flex flex-col gap-3 list-decimal pl-5 marker:text-zinc-400">
+          <li>Ask which service they need. If they aren’t sure, suggest a check-up.</li>
+          <li>Offer the two nearest free slots at <span class="px-1.5 py-0.5 rounded bg-zinc-100 font-medium">this branch</span>. Never offer Fridays.</li>
+          <li>Book the slot and confirm the time and the dentist’s name.</li>
+          <li>The day before, send the <span class="px-1.5 py-0.5 rounded bg-zinc-100 font-medium">Appointment reminder</span> message.</li>
+        </ol>
+        <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm flex gap-3">${face('w-8 h-8')}<div><p class="font-semibold text-amber-900">Mira has a question about this page</p><p class="text-amber-950">Should I offer Downtown when Marina is full? Customers asked twice today.</p><div class="mt-2 flex gap-2">${btn('Answer')}${btn('Not now')}</div></div></div>
+        <h2 class="text-xl font-semibold tracking-tight pt-2">If the customer wants to cancel</h2>
+        <p>Cancel without a fee if it’s more than 24 hours away. Otherwise hand the chat to the front desk.</p>
+        <p class="text-zinc-400">Type “/” to add a step, a condition or a handover.</p>
+      </article>
+    </div>
+    <aside class="w-72 shrink-0 border-l border-zinc-200 hidden xl:flex flex-col"><h2 class="px-4 py-3 text-sm font-semibold border-b border-zinc-200 flex items-center gap-2">${i('play')}Try this page</h2><div class="flex-1 p-4 flex flex-col gap-3">${bubble('out', 'I want a cleaning this weekend')}${bubble('in', 'Happy to help. Saturday has 11:00 and 3:30 free at Marina. Which would you like?')}<p class="text-xs text-zinc-500">Followed step 2</p></div></aside>
+  </div>`;
+
+const phone = (title, body, tab) => `
+  <div class="w-[270px] h-[560px] shrink-0 rounded-[2.2rem] border-[7px] border-zinc-900 bg-white overflow-hidden flex flex-col shadow-xl">
+    <div class="h-6 flex justify-center items-end"><span class="w-20 h-1.5 rounded-full bg-zinc-200"></span></div>
+    <div class="px-4 py-2 flex items-center justify-between"><h2 class="text-lg font-semibold">${title}</h2><span class="text-xs px-2 py-1 rounded-full bg-zinc-100">Marina</span></div>
+    <div class="flex-1 overflow-hidden px-3 flex flex-col gap-2.5">${body}</div>
+    <nav class="h-14 border-t border-zinc-200 flex justify-around items-center text-[10px] text-zinc-500">${[['home', 'Home'], ['message-circle', 'Chats'], ['bot', 'Mira'], ['menu', 'More']].map(([ic, l], n) => `<span class="flex flex-col items-center gap-0.5 ${n === tab ? 'text-emerald-700 font-semibold' : ''}">${i(ic, 'w-5 h-5')}${l}</span>`).join('')}</nav>
+  </div>`;
+
+mocks.phone = () => `
+  <div class="flex-1 overflow-auto bg-zinc-100 flex items-center justify-start lg:justify-center gap-6 p-6">
+    ${phone('Good morning', `
+      <div class="rounded-2xl bg-emerald-600 text-white p-4"><div class="text-xs opacity-80">Needs you</div><div class="text-base font-semibold mt-0.5">Daniel is asking for a refund</div><div class="mt-3 flex gap-2"><span class="px-3 py-1.5 rounded-lg bg-white text-emerald-800 text-sm font-semibold">Open chat</span><span class="px-3 py-1.5 rounded-lg bg-emerald-700 text-sm">Later</span></div></div>
+      <div class="rounded-2xl border border-zinc-200 p-3"><div class="text-sm font-semibold">Mira couldn’t answer a question</div><div class="text-sm text-zinc-500">“Do you take Aetna insurance?”</div></div>
+      <div class="rounded-2xl border border-zinc-200 p-3"><div class="text-sm font-semibold">Reminder message rejected</div><div class="text-sm text-zinc-500">A small rewording fixes it.</div></div>
+      <div class="grid grid-cols-2 gap-2.5"><div class="rounded-2xl bg-zinc-100 p-3"><div class="text-xl font-semibold">47</div><div class="text-xs text-zinc-500">chats today</div></div><div class="rounded-2xl bg-zinc-100 p-3"><div class="text-xl font-semibold">9</div><div class="text-xs text-zinc-500">bookings</div></div></div>`, 0)}
+    ${phone('Chats', chats.slice(0, 6).map((c) => `<div class="flex items-center gap-2.5">${avatar(c.name, 'w-10 h-10 text-xs')}<div class="min-w-0 flex-1"><div class="flex justify-between"><span class="text-sm font-semibold truncate">${c.name}</span><span class="text-[11px] text-zinc-400">${c.time}</span></div><div class="text-xs text-zinc-500 truncate">${c.preview}</div></div></div>`).join(''), 1)}
+    ${phone('Mira', `
+      <div class="flex flex-col items-center gap-2 py-2">${face('w-14 h-14')}<div class="text-sm text-zinc-500">Live, answering at Marina</div></div>
+      <div class="rounded-2xl border border-zinc-200 divide-y divide-zinc-100 text-sm">${[['Teach', 'Knowledge and procedures'], ['Try', 'Chat with your draft'], ['Go live', 'Version 3 is live'], ['Improve', '3 suggestions']].map(([t, s]) => `<div class="p-3 flex justify-between items-center"><span><span class="block font-semibold">${t}</span><span class="block text-xs text-zinc-500">${s}</span></span>${i('chevron-right', 'w-4 h-4 text-zinc-400')}</div>`).join('')}</div>
+      <div class="rounded-2xl bg-zinc-100 p-3 text-sm text-zinc-500">Ask Mira anything…</div>`, 2)}
+  </div>`;
+
+let role = 'owner';
+mocks.roles = () => `
+  <div class="flex flex-col flex-1 min-h-0">
+    <div class="px-4 py-2 border-b border-zinc-200 bg-amber-50 flex flex-wrap items-center gap-3 text-sm">
+      <span class="font-semibold text-amber-900">Signed in as</span>
+      <div class="flex rounded-lg bg-white border border-amber-200 p-0.5">${[['owner', 'Priya, owner'], ['team', 'Sameer, front desk']].map(([id, l]) => `<button data-role="${id}" class="px-3 py-1 rounded-md ${role === id ? 'bg-amber-300 font-semibold' : 'text-zinc-600'}">${l}</button>`).join('')}</div>
+      <span class="text-amber-900">Same chats and customers, a different home for each.</span>
+    </div>
+    ${role === 'owner' ? `
+    <div class="flex flex-col flex-1 min-h-0">
+      <header class="h-12 px-4 flex items-center gap-4 border-b border-zinc-200 text-sm"><span class="w-7 h-7 rounded-lg bg-emerald-500 text-white inline-flex items-center justify-center">${i('message-circle')}</span>${['Today', 'Chats', 'Mira', 'Customers', 'Campaigns'].map((t, n) => `<button class="${n === 0 ? 'font-semibold' : 'text-zinc-500'}">${t}</button>`).join('')}<span class="ml-auto px-3 py-1.5 rounded-lg bg-zinc-100 inline-flex items-center gap-2">All branches ${i('chevrons-up-down', 'w-3.5 h-3.5 text-zinc-400')}</span></header>
+      <div class="flex-1 overflow-y-auto bg-zinc-50"><div class="max-w-2xl mx-auto px-5 py-8 flex flex-col gap-5">
+        <div><h1 class="text-2xl font-semibold tracking-tight">Good morning, Priya</h1><p class="text-zinc-500">Mira answered 78 of 86 chats across both branches today.</p></div>
+        <section class="rounded-xl bg-white border-2 border-emerald-500 overflow-hidden"><h2 class="px-4 py-3 text-sm font-semibold border-b border-zinc-200">3 decisions left</h2><ul>${needsList()}</ul></section>
+        ${askBox('Ask for a campaign, a report, or a change to Mira')}
+        <div class="grid sm:grid-cols-2 gap-3">${[['Marina', '47 chats, 9 bookings', 'All handled'], ['Downtown', '39 chats, 6 bookings', '1 chat waiting 12 min']].map(([b, s, st]) => `<div class="rounded-xl bg-white border border-zinc-200 p-4"><div class="font-semibold">${b}</div><div class="text-sm text-zinc-500">${s}</div><div class="text-sm mt-2 ${st.startsWith('All') ? 'text-emerald-700' : 'text-rose-700'}">${st}</div></div>`).join('')}</div>
+      </div></div>
+    </div>` : `
+    <div class="flex flex-1 min-h-0">
+      <aside class="w-full md:w-80 shrink-0 border-r border-zinc-200 flex flex-col">
+        <div class="px-3 py-3 flex items-center gap-2"><h1 class="text-lg font-semibold flex-1">Marina chats</h1>${chip('Sameer', 'bg-zinc-900 text-white')}</div>
+        <div class="px-3 pb-2 flex gap-1.5 text-sm">${[['Needs a person', 2], ['Mira', 31], ['Mine', 5]].map(([t, c], n) => `<button class="px-3 py-1 rounded-full ${n === 0 ? 'bg-rose-100 text-rose-800 font-semibold' : 'bg-zinc-100 text-zinc-600'}">${t} ${c}</button>`).join('')}</div>
+        <div class="flex-1 overflow-y-auto px-2">${[chats[1], chats[0], chats[4], chats[3], chats[6]].map((c, n) => chatRow(c, n === 0)).join('')}</div>
+      </aside>
+      <section class="flex-1 min-w-0 hidden md:flex flex-col bg-zinc-50">
+        <header class="flex items-center gap-3 px-4 py-2.5 border-b border-zinc-200 bg-white">${avatar('Daniel Okafor')}<div><h2 class="text-sm font-semibold">Daniel Okafor</h2><p class="text-xs text-zinc-500">Instagram. Mira handed over: refund needs a person</p></div><div class="ml-auto flex gap-2">${btn('Customer details')}${btn('Done', true)}</div></header>
+        <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">${bubble('in', 'I was charged twice for the whitening. Can I get a refund?')}<p class="text-center text-xs text-zinc-500">Mira handed this chat to the Marina front desk</p></div>
+        <div class="mx-3 mb-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm flex items-start gap-3">${face('w-8 h-8')}<div class="flex-1"><div class="font-semibold text-amber-900">Mira drafted a reply</div><p class="text-amber-950">Sorry about that, Daniel. I can see two charges of AED 450 on 9 Nov. I’ll refund one now.</p></div>${btn('Use draft')}</div>
+        ${composer('Write a reply')}
+      </section>
+    </div>`}
+  </div>`;
+
+/* ----------------------------------------------------------- approaches */
+const approaches = [
+  { id: 'console', name: 'Operator console', idea: 'Three panels side by side: chat list, open chat, customer details.', first: 'The inbox with the newest chat selected.', ex: [['Intercom', 'https://www.intercom.com/helpdesk/inbox'], ['Front', 'https://front.com/blog/the-new-front-inbox'], ['Chatwoot', 'https://www.chatwoot.com/blog/a-clearer-chatlist-and-a-faster-help-center']], good: 'Trained staff reply fast. Familiar to anyone who has used a helpdesk.', bad: 'An owner sees a queue, not whether the business is fine. Setup areas look like admin screens.', owner: 'Weak', team: 'Strong' },
+  { id: 'agent', name: 'Agent-first workspace', idea: 'The AI agent is the centre. Navigation follows its life: teach, try, go live, improve.', first: 'Your agent, what it handled, and what it needs from you.', ex: [['Intercom Fin', 'https://www.intercom.com/help/en/articles/7120684'], ['Sierra', 'https://sierra.ai/product/agent-studio'], ['Decagon', 'https://decagon.ai/product/aop']], good: 'Answers what owners ask: is it handling things, and what does it need from me.', bad: 'The face, name and ask box are now a common template. Poor for staff whose job is replying.', owner: 'Strong', team: 'Weak' },
+  { id: 'messenger', name: 'Messenger-native', idea: 'Looks and behaves like a messaging app. One chat list, the conversation, little else.', first: 'Your chats, like opening WhatsApp.', ex: [['WhatsApp Business', 'https://whatsappbusiness.com/products/business-app/'], ['Telegram Business', 'https://telegram.org/blog/telegram-business'], ['Beeper', 'https://www.beeper.com/']], good: 'Nothing to learn. Calm; nobody calls it an admin panel.', bad: 'No natural place for branches, assignment, agent setup or campaigns.', owner: 'Strong', team: 'Partial' },
+  { id: 'keyboard', name: 'Keyboard-first minimal', idea: 'One calm, dense list and a command bar. More a style than a structure.', first: 'A single list, with commands one keystroke away.', ex: [['Linear', 'https://linear.app/now/how-we-redesigned-the-linear-ui'], ['Superhuman', 'https://superhuman.com/'], ['Plain', 'https://plain.support.site/article/what-is-plain']], good: 'Power users love it. Dense without feeling busy.', bad: 'Doesn’t carry to phones. Intimidating for non-technical owners.', owner: 'Weak', team: 'Strong' },
+  { id: 'triage', name: 'Triage queue', idea: 'The first screen holds only things that need a decision. You work it down to empty.', first: 'A short stack of decisions with fixed actions.', ex: [['Linear Triage', 'https://linear.app/docs/triage'], ['HEY', 'https://www.hey.com/features/'], ['Zapier Agents', 'https://zapier.com/blog/zapier-agents-pods-dashboards']], good: 'Best fit for “the AI does most of it, a person approves the rest”. A clear finish line.', bad: 'Hides the bigger picture. A plain “needs you” list alone is now common.', owner: 'Strong', team: 'Partial' },
+  { id: 'today', name: 'Today briefing', idea: 'A home page that says what happened and what to do next, in ranked plain sentences.', first: 'A personal summary of today, next actions on top.', ex: [['Shopify', 'https://www.shopify.com/news/winter-26-edition-renaissance'], ['Square', 'https://squareup.com/us/en/press/square-releases-ai'], ['Stripe', 'https://support.stripe.com/questions/customize-your-dashboard-home-page-charts-for-better-business-insights']], good: 'Best for owners who check in a few times a day. Proven with small businesses.', bad: 'Not a place to work. Easily becomes a cluttered dashboard.', owner: 'Strong', team: 'Weak' },
+  { id: 'canvas', name: 'Canvas-first builder', idea: 'The builder is the product. You draw how conversations go and everything hangs off that.', first: 'A flow, open on a canvas.', ex: [['n8n', 'https://docs.n8n.io/advanced-ai/ai-workflow-builder'], ['Zapier Canvas', 'https://zapier.com/blog/zapier-canvas-guide/'], ['Voiceflow', 'https://www.voiceflow.com/']], good: 'The logic is visible. Best for debugging a branching flow.', bad: 'Says “tool for builders”. Owners don’t come back after setup. FlowFlex is close to this today.', owner: 'Weak', team: 'Weak' },
+  { id: 'conversational', name: 'Conversational shell', idea: 'The whole app is one chat with an assistant that builds and runs things for you.', first: 'A chat asking what you want to do.', ex: [['v0', 'https://v0.app/'], ['Manus', 'https://manus.im/'], ['Agentforce Builder', 'https://www.salesforce.com/agentforce/agent-builder/']], good: 'Lowest barrier to start. Excellent for setup and one-off requests.', bad: 'A blank box hides what the product can do. Nowhere to see 200 chats at once.', owner: 'Partial', team: 'Weak' },
+  { id: 'board', name: 'Board and pipeline', idea: 'Customers are cards moving through stages. The chat lives inside the card.', first: 'Columns: new enquiry, talking, booked, visited.', ex: [['Kommo', 'https://www.kommo.com/'], ['Attio', 'https://attio.com/help/reference/managing-your-data/views'], ['Trengo Boards', 'https://trengo.com/blog/trengos-2025-year-in-review']], good: 'Understood instantly. Suits enquiry-to-booking businesses.', bad: 'Shows where things are, not what to do next. Poor for high reply volume.', owner: 'Partial', team: 'Partial' },
+  { id: 'workspace', name: 'Workspace and pages', idea: 'Everything is a page you write. You teach the agent by writing how your business works.', first: 'A page tree, like a notebook.', ex: [['Notion', 'https://www.notion.com/releases/2025-09-18'], ['Notion Mail', 'https://www.notion.com/product/mail'], ['Decagon procedures', 'https://decagon.ai/product/aop']], good: 'Natural for owners who already keep written procedures.', bad: 'Starts blank and organising it is the owner’s job. Weak for live queues.', owner: 'Partial', team: 'Weak' },
+  { id: 'phone', name: 'Phone-first cards', idea: 'Designed for the phone first: bottom tabs and a stack of cards. The web app is the same, wider.', first: 'A card stack with the most urgent item on top.', ex: [['WhatsApp Business', 'https://whatsappbusiness.com/products/business-app/'], ['Square', 'https://squareup.com/us/en/press/square-releases-ai'], ['Shopify Sidekick', 'https://www.shopify.com/sidekick']], good: 'Owners really do check on phones. Forces ruthless prioritising.', bad: 'Teaching the agent is painful on a phone. Team features are hard to fit.', owner: 'Strong', team: 'Weak' },
+  { id: 'roles', name: 'Different home per role', idea: 'One set of chats and customers, with a different home and menu for owner and team.', first: 'A briefing for the owner, the chat queue for the team. Switch roles in the mock.', ex: [['Intercom', 'https://www.intercom.com/helpdesk/inbox'], ['Zendesk', 'https://www.zendesk.com/service/agent-workspace/'], ['Square', 'https://squareup.com/us/en/press/square-releases-ai']], good: 'Each person gets a structure that fits their job. The only one strong for both.', bad: 'More to design and keep consistent.', owner: 'Strong', team: 'Strong' },
+];
+
+/* --------------------------------------------------------------- render */
+let current = (location.hash || '#console').slice(1);
+if (!approaches.some((a) => a.id === current)) current = 'console';
+const fitCls = { Strong: 'bg-emerald-100 text-emerald-800', Partial: 'bg-amber-100 text-amber-900', Weak: 'bg-zinc-200 text-zinc-600' };
+
+let full = new URLSearchParams(location.search).has('full');
+
+function applyFull() {
+  document.getElementById('chrome').classList.toggle('hidden', full);
+  document.getElementById('full-off').classList.toggle('hidden', !full);
+  document.getElementById('main').className = full ? 'flex-1 min-h-0' : 'flex-1 min-h-0 p-3 sm:p-4';
+  document.getElementById('stage').className = full
+    ? 'h-screen bg-white overflow-hidden flex flex-col'
+    : 'h-[720px] lg:h-full bg-white rounded-xl border border-zinc-300 shadow-sm overflow-hidden flex flex-col';
+}
+
+function setFull(on) {
+  full = on;
+  render();
+}
+
+function render() {
+  const a = approaches.find((x) => x.id === current);
+  document.getElementById('tabs').innerHTML = approaches.map((x, n) => `<button data-id="${x.id}" aria-pressed="${x.id === current}" class="shrink-0 px-3 py-1.5 rounded-full text-sm ${x.id === current ? 'bg-zinc-900 text-white font-semibold' : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200'}">${n + 1}. ${x.name}</button>`).join('');
+  document.getElementById('info').innerHTML = `
+    <div class="grid gap-x-8 gap-y-2 lg:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_minmax(0,3fr)] text-sm">
+      <div><p class="font-semibold">${a.idea}</p><p class="text-zinc-500">First screen: ${a.first}</p></div>
+      <div><p><span class="font-semibold text-emerald-700">Works well:</span> ${a.good}</p><p><span class="font-semibold text-rose-700">Works badly:</span> ${a.bad}</p></div>
+      <div class="flex flex-col gap-1"><p class="flex flex-wrap items-center gap-1.5">Owner ${chip(a.owner, fitCls[a.owner])} Team ${chip(a.team, fitCls[a.team])}</p><p class="text-zinc-500">Like: ${a.ex.map(([n, u]) => `<a href="${u}" target="_blank" rel="noreferrer" class="underline underline-offset-2 text-zinc-800">${n}</a>`).join(', ')}</p></div>
+    </div>`;
+  document.getElementById('stage').innerHTML = mocks[current]();
+  lucide.createIcons();
+  applyFull();
+  history.replaceState(null, '', (full ? '?full' : location.pathname) + '#' + current);
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#full-on')) { setFull(true); return; }
+  if (e.target.closest('#full-off')) { setFull(false); return; }
+  const tab = e.target.closest('[data-id]');
+  if (tab) { current = tab.dataset.id; render(); return; }
+  const r = e.target.closest('[data-role]');
+  if (r) { role = r.dataset.role; render(); }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && full) { setFull(false); return; }
+  if (e.target.matches('input, textarea')) return;
+  if (e.key === 'f' || e.key === 'F') { setFull(!full); return; }
+  const n = approaches.findIndex((a) => a.id === current);
+  if (e.key === 'ArrowRight') { current = approaches[(n + 1) % approaches.length].id; render(); }
+  if (e.key === 'ArrowLeft') { current = approaches[(n + approaches.length - 1) % approaches.length].id; render(); }
+});
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+/* Dev-only design mock. Every colour comes from the mode's variables below. */
+.d-root {
+  --canvas: #101113;
+  --frame: #17181b;
+  --surface: #1e2024;
+  --surface-2: #26292e;
+  --line: #2e3238;
+  --ink: #f2f3f5;
+  --muted: #9ba1ac;
+  --primary: #f5b63f;
+  --primary-ink: #2b1d00;
+  --good: #5bd6a0;
+  --ai-bg: #2a2416;
+  --ai-ink: #f5d58a;
+  --you-bg: #f2f3f5;
+  --you-ink: #17181b;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-figtree), system-ui, sans-serif;
+}
+.d-root[data-mode="light"] {
+  --canvas: #efefeb;
+  --frame: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f4f4f0;
+  --line: #e2e2dc;
+  --ink: #17181b;
+  --muted: #666b74;
+  --primary: #f5b63f;
+  --primary-ink: #2b1d00;
+  --good: #128a5b;
+  --ai-bg: #fff3d1;
+  --ai-ink: #5a3e00;
+  --you-bg: #17181b;
+  --you-ink: #ffffff;
+}
+.d-head {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.d-frame {
+  background: var(--frame);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.d-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.d-muted {
+  color: var(--muted);
+}
+.d-line {
+  border-color: var(--line);
+}
+.d-btn {
+  background: var(--primary);
+  color: var(--primary-ink);
+  border-radius: 9px;
+  font-weight: 600;
+}
+.d-btn-quiet {
+  background: var(--surface-2);
+  color: var(--ink);
+  border-radius: 9px;
+  font-weight: 600;
+}
+.d-row:hover,
+.d-nav:hover {
+  background: var(--surface-2);
+}
+.d-nav[aria-current="page"] {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.d-root :focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.d-root input::placeholder,
+.d-root textarea::placeholder {
+  color: var(--muted);
+}
