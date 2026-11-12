@@ -9,14 +9,15 @@ export function createContext() {
   const { db, sql } = createDb(config.DATABASE_URL);
   const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
   const webhookQueue = new Queue(queues.webhooks, { connection: redis });
+  const outboxQueue = new Queue(queues.outbox, { connection: redis });
 
   return {
     config,
     db,
     redis,
-    queues: { webhooks: webhookQueue },
+    queues: { webhooks: webhookQueue, outbox: outboxQueue },
     async close() {
-      await webhookQueue.close();
+      await Promise.all([webhookQueue.close(), outboxQueue.close()]);
       redis.disconnect();
       await sql.end();
     },

@@ -4,6 +4,7 @@ import { createDb } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
 import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
 
 const config = env();
@@ -24,6 +25,15 @@ const webhooks = new Worker<WebhookJob>(queues.webhooks, createWebhookProcessor(
   connection,
   concurrency: 10,
 });
+/* Outbound channel messages, with per-number throttling and safe retries. */
+const outbox = new Worker<OutboxJob>(queues.outbox, createOutboxProcessor({ db, redis: connection }), {
+  connection,
+  concurrency: 20,
+});
+outbox.on("failed", (job, err) =>
+  console.error(`send ${job?.data.messageId} failed (attempt ${job?.attemptsMade}): ${err.message}`),
+);
+
 webhooks.on("failed", (job, err) =>
   console.error(`webhook ${job?.data.eventId} failed (attempt ${job?.attemptsMade})`, err.message),
 );
@@ -31,15 +41,20 @@ webhooks.on("failed", (job, err) =>
 /* Health check for the process manager (and the local launcher): 200 while the workers run. */
 const port = Number(process.env.WORKER_PORT ?? 3202);
 const health = createServer((_req, res) => {
-  const ok = emails.isRunning() && webhooks.isRunning();
+  const ok = emails.isRunning() && webhooks.isRunning() && outbox.isRunning();
   res.writeHead(ok ? 200 : 503, { "content-type": "application/json" });
-  res.end(JSON.stringify({ ok, workers: { emails: emails.isRunning(), webhooks: webhooks.isRunning() } }));
+  res.end(
+    JSON.stringify({
+      ok,
+      workers: { emails: emails.isRunning(), webhooks: webhooks.isRunning(), outbox: outbox.isRunning() },
+    }),
+  );
 });
 health.listen(port, () => console.log(`worker health on :${port}`));
 
 async function shutdown() {
   health.close();
-  await Promise.all([emails.close(), webhooks.close(), mediaQueue.close()]);
+  await Promise.all([emails.close(), webhooks.close(), outbox.close(), mediaQueue.close()]);
   connection.disconnect();
   await sql.end();
   process.exit(0);

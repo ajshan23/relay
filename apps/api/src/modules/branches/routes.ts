@@ -24,7 +24,7 @@ const updateBody = z.object({ name: name.optional(), timezone: timezone.optional
 const memberBody = z.object({ role: z.enum(schema.branchRoles) });
 
 /** Parses the JSON body with the schema; returns the data or a 422 response. */
-async function parseBody<T extends z.ZodType>(c: Context, body: T) {
+export async function parseBody<T extends z.ZodType>(c: Context, body: T) {
   const raw = await c.req.json().catch(() => undefined);
   const parsed = body.safeParse(raw);
   if (parsed.success) return { data: parsed.data as z.infer<T> };

@@ -23,6 +23,8 @@ const schema = z.object({
   // Pinned Graph API version. Override the base URL only to point tests at a fake Graph server.
   META_GRAPH_VERSION: z.string().default("v26.0"),
   META_GRAPH_URL: z.string().url().default("https://graph.facebook.com"),
+  // How long to wait for Meta before treating a send as uncertain (never resent blindly).
+  META_GRAPH_TIMEOUT_MS: z.coerce.number().default(15_000),
   // 32 bytes, base64 (openssl rand -base64 32). Encrypts channel access tokens in the database.
   CHANNEL_SECRET_KEY: z.string().optional(),
   // Where downloaded media is kept until object storage (S3/R2) is added.
