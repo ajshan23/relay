@@ -1,0 +1,282 @@
+import type {
+  ChannelIdentity,
+  DeliveryStatus,
+  MediaRef,
+  MessageContent,
+  MessageContext,
+  NormalizedEvent,
+  ProviderError,
+} from "../types";
+
+/*
+ * Turns a WhatsApp Cloud API webhook into Relay events. Iterates every entry, change, message and
+ * status (never index 0 only), tolerates missing optional fields, and keeps unknown message types
+ * as "unsupported" instead of dropping them. Field names: research/01-whatsapp-cloud-api.md and
+ * ~/Desktop/flowflex/META_WHATSAPP_WEBHOOK_PAYLOADS.md.
+ */
+
+type Json = Record<string, unknown>;
+
+const asObject = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
+const asArray = (v: unknown): Json[] => (Array.isArray(v) ? v.map(asObject) : []);
+const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+const num = (v: unknown): number | null => {
+  const n = typeof v === "string" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+};
+const seconds = (v: unknown): Date => new Date((num(v) ?? 0) * 1000);
+
+function errorsOf(v: unknown): ProviderError[] {
+  return asArray(v).map((e) => ({
+    code: num(e.code) ?? 0,
+    title: str(e.title),
+    message: str(e.message),
+    details: str(asObject(e.error_data).details),
+  }));
+}
+
+function media(v: unknown): MediaRef {
+  const m = asObject(v);
+  return {
+    providerMediaId: str(m.id) ?? "",
+    mimeType: str(m.mime_type),
+    sha256: str(m.sha256),
+    fileName: str(m.filename),
+    caption: str(m.caption),
+  };
+}
+
+function content(msg: Json): MessageContent {
+  const type = str(msg.type) ?? "unsupported";
+  switch (type) {
+    case "text":
+      return { type: "text", text: str(asObject(msg.text).body) ?? "" };
+    case "image":
+    case "video":
+      return { type, media: media(msg[type]) };
+    case "sticker":
+      return {
+        type: "sticker",
+        media: media(msg.sticker),
+        animated: asObject(msg.sticker).animated === true,
+      };
+    case "audio":
+      return { type: "audio", media: media(msg.audio), voice: asObject(msg.audio).voice === true };
+    case "document":
+      return { type: "document", media: media(msg.document) };
+    case "location": {
+      const l = asObject(msg.location);
+      return {
+        type: "location",
+        latitude: num(l.latitude) ?? 0,
+        longitude: num(l.longitude) ?? 0,
+        name: str(l.name),
+        address: str(l.address),
+        url: str(l.url),
+      };
+    }
+    case "contacts":
+      return { type: "contacts", contacts: asArray(msg.contacts) };
+    case "button": {
+      const b = asObject(msg.button);
+      return { type: "button", payload: str(b.payload) ?? "", text: str(b.text) ?? "" };
+    }
+    case "interactive":
+      return interactive(asObject(msg.interactive));
+    case "order": {
+      const o = asObject(msg.order);
+      return {
+        type: "order",
+        catalogId: str(o.catalog_id),
+        text: str(o.text),
+        items: asArray(o.product_items).map((i) => ({
+          productId: str(i.product_retailer_id) ?? "",
+          quantity: num(i.quantity) ?? 0,
+          price: num(i.item_price) ?? 0,
+          currency: str(i.currency) ?? "",
+        })),
+      };
+    }
+    default: {
+      const reason = str(asObject(msg.unsupported).type) ?? (type === "unsupported" ? null : type);
+      return { type: "unsupported", reason };
+    }
+  }
+}
+
+function interactive(i: Json): MessageContent {
+  const kind = str(i.type);
+  if (kind === "button_reply" || kind === "list_reply") {
+    const r = asObject(i[kind]);
+    return {
+      type: "interactive",
+      kind,
+      id: str(r.id) ?? "",
+      title: str(r.title) ?? "",
+      description: str(r.description),
+    };
+  }
+  if (kind === "nfm_reply") {
+    const r = asObject(i.nfm_reply);
+    const raw = str(r.response_json) ?? "";
+    let response: Record<string, unknown> | null = null;
+    try {
+      response = raw ? asObject(JSON.parse(raw)) : null;
+    } catch {
+      response = null;
+    }
+    return { type: "interactive", kind: "flow_reply", name: str(r.name) ?? "", response, responseRaw: raw };
+  }
+  if (kind === "call_permission_reply") {
+    const r = asObject(i.call_permission_reply);
+    return { type: "interactive", kind: "call_permission_reply", response: str(r.response) ?? "", data: r };
+  }
+  return { type: "unsupported", reason: kind ? `interactive:${kind}` : "interactive" };
+}
+
+function context(msg: Json): MessageContext {
+  const c = asObject(msg.context);
+  const product = asObject(c.referred_product);
+  const referral = asObject(msg.referral);
+  return {
+    replyToExternalId: str(c.id),
+    forwarded: c.forwarded === true,
+    frequentlyForwarded: c.frequently_forwarded === true,
+    referredProduct:
+      str(product.catalog_id) && str(product.product_retailer_id)
+        ? {
+            catalogId: str(product.catalog_id) as string,
+            productId: str(product.product_retailer_id) as string,
+          }
+        : null,
+    adReferral: Object.keys(referral).length ? referral : null,
+  };
+}
+
+/**
+ * The sender of a message. The business-scoped user id (BSUID) is preferred because the phone
+ * number can be hidden for username users; the phone is kept when Meta shares it.
+ */
+function identity(msg: Json, contacts: Json[], scope: string): ChannelIdentity | null {
+  const fromUserId = str(msg.from_user_id);
+  const from = str(msg.from);
+  const contact =
+    contacts.find((c) => (fromUserId && str(c.user_id) === fromUserId) || (from && str(c.wa_id) === from)) ??
+    (contacts.length === 1 ? contacts[0] : undefined) ??
+    {};
+  const userId = fromUserId ?? str(contact.user_id);
+  const phone = str(contact.wa_id) ?? from;
+  const externalId = userId ?? phone;
+  if (!externalId) return null;
+  const profile = asObject(contact.profile);
+  return { externalId, scope, phone, username: str(profile.username), profileName: str(profile.name) };
+}
+
+export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
+  const body = asObject(payload);
+  if (body.object !== "whatsapp_business_account") return [];
+  const events: NormalizedEvent[] = [];
+
+  for (const entry of asArray(body.entry)) {
+    const scope = str(entry.id) ?? "";
+    for (const change of asArray(entry.changes)) {
+      const field = str(change.field) ?? "";
+      const value = asObject(change.value);
+      const metadata = asObject(value.metadata);
+      const accountExternalId = str(metadata.phone_number_id) ?? "";
+      const base = { channel: "whatsapp" as const, accountExternalId };
+
+      if (field !== "messages") {
+        events.push({ ...base, kind: "account.update", field, data: value, errors: errorsOf(value.errors) });
+        continue;
+      }
+
+      const contacts = asArray(value.contacts);
+
+      for (const msg of asArray(value.messages)) {
+        const externalId = str(msg.id) ?? "";
+        const at = seconds(msg.timestamp);
+        const type = str(msg.type);
+
+        if (type === "system") {
+          const s = asObject(msg.system);
+          events.push({
+            ...base,
+            kind: "contact.changed",
+            at,
+            scope,
+            previousExternalId: str(s.previous_user_id) ?? str(msg.from_user_id) ?? str(msg.from),
+            newExternalId: str(s.user_id) ?? str(s.wa_id),
+            newPhone: str(s.wa_id),
+            description: str(s.body),
+          });
+          continue;
+        }
+
+        const from = identity(msg, contacts, scope);
+        if (!from) continue;
+
+        if (type === "reaction") {
+          const r = asObject(msg.reaction);
+          events.push({
+            ...base,
+            kind: "reaction",
+            externalId,
+            at,
+            from,
+            targetExternalId: str(r.message_id) ?? "",
+            emoji: str(r.emoji),
+          });
+          continue;
+        }
+
+        events.push({
+          ...base,
+          kind: "message.received",
+          externalId,
+          sentAt: at,
+          from,
+          content: content(msg),
+          context: context(msg),
+          errors: errorsOf(msg.errors),
+          groupId: str(msg.group_id),
+        });
+      }
+
+      for (const s of asArray(value.statuses)) {
+        const status = str(s.status) as DeliveryStatus | null;
+        if (!status || !["sent", "delivered", "read", "played", "failed"].includes(status)) continue;
+        const pricing = asObject(s.pricing);
+        events.push({
+          ...base,
+          kind: "message.status",
+          externalId: str(s.id) ?? "",
+          status,
+          at: seconds(s.timestamp),
+          ourMessageId: str(s.biz_opaque_callback_data),
+          recipientExternalId: str(s.recipient_user_id) ?? str(s.recipient_id),
+          errors: errorsOf(s.errors),
+          pricing: Object.keys(pricing).length
+            ? { category: str(pricing.category), type: str(pricing.type) }
+            : null,
+        });
+      }
+
+      // Top-level errors without messages or statuses (account or app problems).
+      if (
+        !asArray(value.messages).length &&
+        !asArray(value.statuses).length &&
+        asArray(value.errors).length
+      ) {
+        events.push({
+          ...base,
+          kind: "account.update",
+          field: "errors",
+          data: value,
+          errors: errorsOf(value.errors),
+        });
+      }
+    }
+  }
+  return events;
+}
