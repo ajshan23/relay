@@ -145,6 +145,7 @@ export function createIngest(db: Db) {
         organizationId: account.organizationId,
         branchId: account.defaultBranchId,
         channelAccountId: account.id,
+        kind: "direct",
         contactId: identity.contactId,
         contactIdentityId: identity.id,
       })
@@ -155,6 +156,7 @@ export function createIngest(db: Db) {
       .where(
         and(
           eq(schema.conversation.channelAccountId, account.id),
+          eq(schema.conversation.kind, "direct"),
           eq(schema.conversation.contactIdentityId, identity.id),
         ),
       )
@@ -209,6 +211,7 @@ export function createIngest(db: Db) {
           channelAccountId: account.id,
           direction: "inbound",
           senderType: "contact",
+          senderIdentityId: identity.id,
           type: isReaction ? "reaction" : event.content.type,
           content: content as Record<string, unknown>,
           externalId: event.externalId,

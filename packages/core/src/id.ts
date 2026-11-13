@@ -20,6 +20,9 @@ export const idPrefixes = {
   webhookEvent: "whe",
   outbox: "out",
   email: "eml",
+  group: "grp",
+  groupJoinRequest: "gjr",
+  receipt: "rcp",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

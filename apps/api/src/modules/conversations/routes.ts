@@ -76,16 +76,21 @@ export function conversationRoutes(ctx: AppContext) {
         channelAccountId: schema.conversation.channelAccountId,
         channelType: schema.channelAccount.type,
         channelName: schema.channelAccount.displayName,
+        kind: schema.conversation.kind,
         contactId: schema.conversation.contactId,
         contactName: schema.contact.name,
         phone: schema.contactIdentity.phone,
+        groupId: schema.conversation.groupId,
+        groupSubject: schema.channelGroup.subject,
         lastMessageAt: schema.conversation.lastMessageAt,
         windowExpiresAt: schema.conversation.windowExpiresAt,
       })
       .from(schema.conversation)
       .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.conversation.channelAccountId))
-      .innerJoin(schema.contact, eq(schema.contact.id, schema.conversation.contactId))
-      .innerJoin(schema.contactIdentity, eq(schema.contactIdentity.id, schema.conversation.contactIdentityId))
+      // Direct chats have a contact; group chats have a group instead.
+      .leftJoin(schema.contact, eq(schema.contact.id, schema.conversation.contactId))
+      .leftJoin(schema.contactIdentity, eq(schema.contactIdentity.id, schema.conversation.contactIdentityId))
+      .leftJoin(schema.channelGroup, eq(schema.channelGroup.id, schema.conversation.groupId))
       .where(
         and(
           visibleTo(access, branches),
@@ -116,6 +121,7 @@ export function conversationRoutes(ctx: AppContext) {
         direction: schema.message.direction,
         senderType: schema.message.senderType,
         senderUserId: schema.message.senderUserId,
+        senderIdentityId: schema.message.senderIdentityId,
         type: schema.message.type,
         content: schema.message.content,
         status: schema.message.status,
