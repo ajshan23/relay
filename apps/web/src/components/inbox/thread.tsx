@@ -22,6 +22,7 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScrollerScrollable,
 } from "@relay/ui/ui/message-scroller";
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { Spinner } from "@relay/ui/ui/spinner";
@@ -153,7 +154,7 @@ export function Thread({ id, onBack, className }: Props) {
                   />
                 </MessageScrollerContent>
               </MessageScrollerViewport>
-              <MessageScrollerButton className="bottom-3" />
+              <NewMessagesButton list={list} />
             </MessageScroller>
           </MessageScrollerProvider>
         )}
@@ -435,5 +436,43 @@ function ThreadSkeleton() {
       <Skeleton className="h-16 w-3/5 rounded-lg" />
       <Skeleton className="ml-auto h-10 w-2/5 rounded-lg" />
     </div>
+  );
+}
+
+/** When the newest of these messages was sent, in ms. */
+const newest = (ms: Message[]) => ms.reduce((t, m) => Math.max(t, new Date(m.sentAt).getTime()), 0);
+
+/**
+ * The scroll-down button, with how many customer messages came in while you were scrolled up (like
+ * WhatsApp's). Scrolling back to the bottom, or tapping it, clears the count. Your team's own sends
+ * don't count, and neither do earlier messages loaded at the top.
+ */
+function NewMessagesButton({ list }: { list: Message[] }) {
+  const { end: scrolledUp } = useMessageScrollerScrollable();
+  // The newest message you had at the bottom; anything incoming after it is new to you.
+  const [seenUpTo, setSeenUpTo] = useState(() => newest(list));
+  useEffect(() => {
+    if (!scrolledUp) setSeenUpTo(newest(list));
+  }, [scrolledUp, list]);
+  const unread = scrolledUp
+    ? list.filter((m) => m.direction === "inbound" && new Date(m.sentAt).getTime() > seenUpTo).length
+    : 0;
+  return (
+    <MessageScrollerButton className="bottom-3 overflow-visible">
+      <Icon name="arrowDown" />
+      <span className="sr-only">
+        {unread
+          ? `${unread} new ${unread === 1 ? "message" : "messages"}, scroll to the latest`
+          : "Scroll to the latest"}
+      </span>
+      {unread ? (
+        <span
+          aria-hidden
+          className="absolute -top-2 -right-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-semibold tabular-nums text-primary-foreground"
+        >
+          {unread > 99 ? "99+" : unread}
+        </span>
+      ) : null}
+    </MessageScrollerButton>
   );
 }
