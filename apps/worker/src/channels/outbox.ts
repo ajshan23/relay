@@ -166,7 +166,9 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       await fail(message.id, { reason: "channel_unavailable", message: `The channel is ${account.status}` });
       throw new UnrecoverableError("channel not active");
     }
-    if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date()) {
+    // Templates are what channels allow outside the window; everything else needs it open.
+    const isTemplate = message.type === "template";
+    if (!isTemplate && (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date())) {
       await fail(message.id, {
         reason: "window_closed",
         message: "The reply window closed before the message was sent",
@@ -190,8 +192,8 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         });
         throw new UnrecoverableError("group not active");
       }
-      const allowed = adapter.capabilities.groups?.outboundTypes ?? [];
-      if (!allowed.includes((message.content as { type: OutboundMessage["type"] }).type)) {
+      const allowed: string[] = adapter.capabilities.groups?.outboundTypes ?? [];
+      if (!allowed.includes(message.type)) {
         await fail(message.id, {
           reason: "unsupported_in_group",
           message: `This channel cannot send ${message.type} messages to groups`,
@@ -221,10 +223,59 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         })
       : null;
 
+    // A template with a picture, video or file header hands that file to the channel first.
+    let headerMedia: Extract<OutboundMessage, { type: "template" }>["headerMedia"];
+    const header = (message.content as { header?: { kind: string; attachmentId?: string | null } | null })
+      .header;
+    if (isTemplate && header && header.kind !== "text" && header.attachmentId) {
+      const [file] = await db
+        .select()
+        .from(schema.attachment)
+        .where(eq(schema.attachment.id, header.attachmentId))
+        .limit(1);
+      if (!file?.storageKey) {
+        await fail(message.id, { reason: "error", message: "The template's header file is missing." });
+        throw new UnrecoverableError("template header file missing");
+      }
+      const { providerMediaId } = await adapter
+        .uploadMedia(accountRef(account), {
+          bytes: await storage.get(file.storageKey),
+          mimeType: file.mimeType ?? "application/octet-stream",
+          fileName: file.fileName ?? file.id,
+        })
+        .catch(async (err) => {
+          // Nothing was sent yet, so temporary failures retry; a refusal fails the message.
+          const temporary =
+            err instanceof GraphUncertainError ||
+            (err instanceof GraphError && (err.kind === "retryable" || err.kind === "rateLimited"));
+          const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          if (temporary && !lastAttempt)
+            throw err instanceof GraphUncertainError ? new Error(err.message) : err;
+          await fail(message.id, {
+            reason: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          throw new UnrecoverableError("template header upload failed");
+        });
+      headerMedia = {
+        kind: header.kind as "image" | "video" | "document",
+        providerMediaId,
+        fileName: file.fileName ?? undefined,
+      };
+    }
+
     await throttle(job, account.id, token);
     await db.update(schema.message).set({ status: "sending" }).where(eq(schema.message.id, message.id));
 
-    const content = message.content as { type: string; text?: string; caption?: string | null };
+    const content = message.content as {
+      type: string;
+      text?: string;
+      caption?: string | null;
+      name?: string;
+      language?: string;
+      values?: Record<string, string>;
+      header?: { kind: string; attachmentId?: string | null } | null;
+    };
     let replyToExternalId: string | undefined;
     if (message.replyToMessageId) {
       const [target] = await db
@@ -234,15 +285,24 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         .limit(1);
       replyToExternalId = target?.externalId ?? undefined;
     }
-    const outbound: OutboundMessage = media
+    const outbound: OutboundMessage = isTemplate
       ? {
-          type: message.type as "image" | "video" | "audio" | "document" | "sticker",
-          providerMediaId: media.id,
-          caption: content.caption ?? undefined,
-          fileName: media.file.fileName ?? undefined,
+          type: "template",
+          name: content.name ?? "",
+          language: content.language ?? "en",
+          values: content.values ?? {},
+          headerMedia,
           replyToExternalId,
         }
-      : { type: "text", text: content.text ?? "", replyToExternalId };
+      : media
+        ? {
+            type: message.type as "image" | "video" | "audio" | "document" | "sticker",
+            providerMediaId: media.id,
+            caption: content.caption ?? undefined,
+            fileName: media.file.fileName ?? undefined,
+            replyToExternalId,
+          }
+        : { type: "text", text: content.text ?? "", replyToExternalId };
 
     try {
       const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);

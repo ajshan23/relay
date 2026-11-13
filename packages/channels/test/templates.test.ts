@@ -43,10 +43,13 @@ describe("WhatsApp templates", () => {
       main?.text,
       "Hi {{customer_name}}, your visit is on {{date}} at our clinic. Reply to confirm.",
     );
-    assert.deepEqual((main?.example as { body_text_named_params: unknown[] }).body_text_named_params, [
-      { param_name: "customer_name", example: "Sara" },
-      { param_name: "date", example: "Saturday" },
-    ]);
+    assert.deepEqual(
+      (main?.example as { body_text_named_params: unknown[] } | undefined)?.body_text_named_params,
+      [
+        { param_name: "customer_name", example: "Sara" },
+        { param_name: "date", example: "Saturday" },
+      ],
+    );
     assert.equal(footer?.text, "Reply STOP to stop reminders");
     assert.deepEqual(buttons?.buttons, [
       { type: "QUICK_REPLY", text: "Confirm" },

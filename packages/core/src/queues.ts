@@ -5,6 +5,8 @@ export const queues = {
   outbox: "outbox",
   emails: "emails",
   media: "media",
+  /** Publishing, editing, removing and importing message templates on channels. */
+  templates: "templates",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];

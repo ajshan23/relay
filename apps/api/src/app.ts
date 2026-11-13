@@ -12,6 +12,7 @@ import { fileRoutes } from "./modules/files/routes";
 import { groupRoutes } from "./modules/groups/routes";
 import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
+import { templateRoutes } from "./modules/templates/routes";
 import { metaWebhookRoutes } from "./modules/webhooks/meta";
 
 /**
@@ -35,6 +36,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/conversations", conversationRoutes(ctx));
   app.route("/api/channels", channelRoutes(ctx));
   app.route("/api/groups", groupRoutes(ctx));
+  app.route("/api/templates", templateRoutes(ctx));
   app.route("/api/events", eventRoutes(ctx));
   app.route("/api", fileRoutes(ctx));
 

@@ -20,7 +20,12 @@ export function channels(): ChannelRegistry {
   if (!registry) {
     const config = env();
     registry = createChannelRegistry({
-      meta: { baseUrl: config.META_GRAPH_URL, version: config.META_GRAPH_VERSION, timeoutMs: 15_000 },
+      meta: {
+        baseUrl: config.META_GRAPH_URL,
+        version: config.META_GRAPH_VERSION,
+        timeoutMs: 15_000,
+        appId: config.META_APP_ID,
+      },
     });
   }
   return registry;

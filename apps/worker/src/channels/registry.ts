@@ -17,6 +17,7 @@ export function channels(): ChannelRegistry {
         baseUrl: config.META_GRAPH_URL,
         version: config.META_GRAPH_VERSION,
         timeoutMs: config.META_GRAPH_TIMEOUT_MS,
+        appId: config.META_APP_ID,
       },
     });
   }

@@ -9,6 +9,7 @@ import {
   type ReactionEvent,
   type StoredStatus,
   shouldApplyStatus,
+  type TemplateStatusEvent,
   toStoredStatus,
   windowExpiresAt,
 } from "@relay/channels";
@@ -58,7 +59,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   const accounts = new Map<string, { account: Account; until: number }>();
   const ACCOUNT_CACHE_MS = 30_000;
 
-  async function findAccount(event: NormalizedEvent): Promise<Account | null> {
+  async function findAccount(event: Exclude<NormalizedEvent, TemplateStatusEvent>): Promise<Account | null> {
     const key = `${event.channel}:${event.accountExternalId}`;
     const cached = accounts.get(key);
     if (cached && cached.until > Date.now()) return cached.account;
@@ -665,11 +666,46 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     }
   }
 
+  /**
+   * A channel finished reviewing a template. Every channel copy with that id is updated (numbers that
+   * share templates share the id).
+   */
+  async function templateReviewed(event: TemplateStatusEvent) {
+    const decided = event.status === "ready" || event.status === "needs_changes";
+    const rows = await db
+      .update(schema.templateChannel)
+      .set({
+        status: event.status,
+        reason: event.status === "ready" ? null : event.reason,
+        error: null,
+        ...(decided ? { decidedAt: event.at } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.templateChannel.externalId, event.templateExternalId))
+      .returning({
+        templateId: schema.templateChannel.templateId,
+        organizationId: schema.templateChannel.organizationId,
+      });
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (seen.has(r.templateId)) continue;
+      seen.add(r.templateId);
+      changed.push({
+        organizationId: r.organizationId,
+        event: { type: "template.updated", templateId: r.templateId },
+      });
+    }
+  }
+
   /** Applies every event in one stored webhook. */
   async function ingest(events: NormalizedEvent[]): Promise<IngestResult> {
     changed = [];
     const result: IngestResult = { events: events.length, unrouted: 0, media: [], changed };
     for (const event of events) {
+      if (event.kind === "template.status_changed") {
+        await templateReviewed(event);
+        continue;
+      }
       const account = await findAccount(event);
       if (!account) {
         result.unrouted++;

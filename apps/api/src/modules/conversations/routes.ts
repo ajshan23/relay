@@ -1,4 +1,5 @@
 import { type InboxEvent, messagePreview, newId, publishInboxEvent } from "@relay/core";
+import { fillVariables, type TemplateContent, templateVariables } from "@relay/core/templates";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -51,9 +52,12 @@ const sendBody = z
   .object({
     text: z.string().trim().max(4096, "Messages can be up to 4096 characters").optional(),
     uploadId: z.string().optional(),
+    /** Send a ready template, with a value for each of its details. Allowed outside the window. */
+    templateId: z.string().optional(),
+    values: z.record(z.string(), z.string().max(1000)).optional(),
     replyToMessageId: z.string().optional(),
   })
-  .refine((b) => b.uploadId || b.text, { message: "Write a message or attach a file" });
+  .refine((b) => b.uploadId || b.text || b.templateId, { message: "Write a message or attach a file" });
 
 const patchBody = z.object({
   assignedUserId: z.string().nullable().optional(),
@@ -283,7 +287,7 @@ export function conversationRoutes(ctx: AppContext) {
         outboundTypes:
           conversation.kind === "group"
             ? (caps.groups?.outboundTypes ?? [])
-            : ["text", "image", "video", "audio", "document", "sticker"],
+            : ["text", "image", "video", "audio", "document", "sticker", "template"],
         reactions: caps.reactions,
       },
       branch,
@@ -584,7 +588,8 @@ export function conversationRoutes(ctx: AppContext) {
     if (!conversation) return fail(c, 404, "not_found");
     if (!(await canWork(ctx, access, conversation)))
       return fail(c, 403, "forbidden", "Viewers can read conversations but not reply.");
-    if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date()) {
+    const templateId = parsed.data.templateId;
+    if (!templateId && (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date())) {
       return fail(
         c,
         409,
@@ -603,7 +608,7 @@ export function conversationRoutes(ctx: AppContext) {
     const allowed =
       conversation.kind === "group"
         ? (caps.groups?.outboundTypes ?? [])
-        : ["text", "image", "video", "audio", "document", "sticker"];
+        : ["text", "image", "video", "audio", "document", "sticker", "template"];
 
     const { text, uploadId } = parsed.data;
     if (text && text.length > caps.maxTextLength)
@@ -630,7 +635,57 @@ export function conversationRoutes(ctx: AppContext) {
       if (!row) return fail(c, 422, "invalid_upload", "That file was not found or was already sent.");
       upload = row;
     }
-    const type = upload ? upload.kind : "text";
+    // A template: it must be ready on this conversation's channel, with every detail filled in.
+    let templateContent: Record<string, unknown> | null = null;
+    if (templateId) {
+      const [row] = await ctx.db
+        .select({ template: schema.messageTemplate, copy: schema.templateChannel })
+        .from(schema.messageTemplate)
+        .innerJoin(
+          schema.templateChannel,
+          and(
+            eq(schema.templateChannel.templateId, schema.messageTemplate.id),
+            eq(schema.templateChannel.channelAccountId, conversation.channelAccountId),
+          ),
+        )
+        .where(
+          and(
+            eq(schema.messageTemplate.id, templateId),
+            eq(schema.messageTemplate.organizationId, conversation.organizationId),
+          ),
+        )
+        .limit(1);
+      if (!row)
+        return fail(c, 422, "template_not_on_channel", "That template isn't published on this channel.");
+      if (row.copy.status !== "ready")
+        return fail(c, 409, "template_not_ready", "That template isn't approved on this channel yet.");
+      const tc = row.template.content as unknown as TemplateContent;
+      const values: Record<string, string> = {};
+      const missing: string[] = [];
+      for (const name of templateVariables(tc)) {
+        const v = parsed.data.values?.[name]?.trim();
+        if (v) values[name] = v;
+        else missing.push(name.replace(/_/g, " "));
+      }
+      if (missing.length) return fail(c, 422, "missing_values", `Fill in: ${missing.join(", ")}.`);
+      templateContent = {
+        type: "template",
+        templateId: row.template.id,
+        templateName: row.template.name,
+        name: row.template.slug,
+        language: row.template.language,
+        values,
+        header:
+          tc.header?.kind === "text"
+            ? { kind: "text", text: fillVariables(tc.header.text, values) }
+            : (tc.header ?? null),
+        body: fillVariables(tc.body, values),
+        footer: tc.footer,
+        buttons: tc.buttons,
+      };
+    }
+
+    const type = templateContent ? "template" : upload ? upload.kind : "text";
     if (!allowed.includes(type))
       return fail(c, 422, "unsupported_type", `This conversation can't receive ${type} messages.`);
 
@@ -652,19 +707,21 @@ export function conversationRoutes(ctx: AppContext) {
 
     const now = new Date();
     const id = newId("message");
-    const content: Record<string, unknown> = upload
-      ? {
-          type,
-          caption: text ?? null,
-          media: {
-            providerMediaId: null,
-            mimeType: upload.mimeType,
-            fileName: upload.fileName,
-            sha256: upload.sha256,
+    const content: Record<string, unknown> = templateContent
+      ? templateContent
+      : upload
+        ? {
+            type,
             caption: text ?? null,
-          },
-        }
-      : { type: "text", text };
+            media: {
+              providerMediaId: null,
+              mimeType: upload.mimeType,
+              fileName: upload.fileName,
+              sha256: upload.sha256,
+              caption: text ?? null,
+            },
+          }
+        : { type: "text", text };
     const [user] = await ctx.db
       .select({ name: schema.user.name })
       .from(schema.user)

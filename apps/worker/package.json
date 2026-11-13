@@ -10,7 +10,7 @@
     "dev:channel": "tsx --env-file=../../.env scripts/dev-channel.ts",
     "simulate": "tsx --env-file=../../.env scripts/simulate-meta-webhook.ts",
     "replay": "tsx --env-file=../../.env scripts/replay-webhooks.ts",
-    "fake-graph": "tsx scripts/fake-graph.ts"
+    "fake-graph": "tsx --env-file=../../.env scripts/fake-graph.ts"
   },
   "dependencies": {
     "@relay/core": "workspace:*",

@@ -30,6 +30,8 @@ export function previewText(content: Record<string, unknown>): string | null {
       return str(content.title) ?? str(content.name);
     case "order":
       return str(content.text);
+    case "template":
+      return str(content.body);
     default:
       return media ? (str(media.caption) ?? str(media.fileName)) : str(content.caption);
   }
@@ -50,7 +52,9 @@ export type InboxEvent =
   /** A message changed (status, attachment stored) without a new message arriving. */
   | { type: "message.updated"; conversationId: string; branchId: string | null; messageId: string }
   /** One person read a conversation. Only that person's unread count changes. */
-  | { type: "conversation.read"; conversationId: string; branchId: string | null; userId: string };
+  | { type: "conversation.read"; conversationId: string; branchId: string | null; userId: string }
+  /** A template or its review state on a channel changed. Templates are organization-wide. */
+  | { type: "template.updated"; templateId: string };
 
 /** Anything with Redis's publish (ioredis client). */
 export type Publisher = { publish(channel: string, message: string): Promise<unknown> };

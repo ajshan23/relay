@@ -42,7 +42,7 @@ export const whatsappCapabilities: ChannelCapabilities = {
     canRemoveParticipants: true,
     canRename: true,
     maxParticipants: 8,
-    outboundTypes: ["text", "image", "video", "audio", "document"],
+    outboundTypes: ["text", "image", "video", "audio", "document", "template"],
     perParticipantReceipts: true,
     // Meta does not document the group window length; 24 h assumed until confirmed on a live group.
     replyWindowHours: 24,

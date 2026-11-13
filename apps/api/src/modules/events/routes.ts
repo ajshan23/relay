@@ -38,6 +38,7 @@ export function eventRoutes(ctx: AppContext) {
       let closed = false;
 
       const allowed = async (event: InboxEvent) => {
+        if (event.type === "template.updated") return true; // templates are organization-wide
         if (event.type === "conversation.read" && event.userId !== access.userId) return false;
         if (Date.now() - branchesAt > BRANCHES_REFRESH_MS) {
           branches = await reachableBranches(ctx, access);

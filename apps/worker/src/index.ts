@@ -6,6 +6,7 @@ import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createMediaProcessor } from "./channels/media";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
+import { createTemplateProcessor, type TemplateJob } from "./channels/templates";
 import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
 
 const config = env();
@@ -52,10 +53,28 @@ webhooks.on("failed", (job, err) =>
   console.error(`webhook ${job?.data.eventId} failed (attempt ${job?.attemptsMade})`, err.message),
 );
 
+/* Message templates: publishing to channels, removing, importing. */
+const templates = new Worker<TemplateJob>(
+  queues.templates,
+  createTemplateProcessor({ db, redis: connection }),
+  {
+    connection,
+    concurrency: 5,
+  },
+);
+templates.on("failed", (job, err) =>
+  console.error(`template ${job?.data.action} failed (attempt ${job?.attemptsMade}): ${err.message}`),
+);
+
 /* Health check for the process manager (and the local launcher): 200 while the workers run. */
 const port = Number(process.env.WORKER_PORT ?? 3202);
 const health = createServer((_req, res) => {
-  const ok = emails.isRunning() && webhooks.isRunning() && outbox.isRunning() && media.isRunning();
+  const ok =
+    emails.isRunning() &&
+    webhooks.isRunning() &&
+    outbox.isRunning() &&
+    media.isRunning() &&
+    templates.isRunning();
   res.writeHead(ok ? 200 : 503, { "content-type": "application/json" });
   res.end(
     JSON.stringify({
@@ -65,6 +84,7 @@ const health = createServer((_req, res) => {
         webhooks: webhooks.isRunning(),
         outbox: outbox.isRunning(),
         media: media.isRunning(),
+        templates: templates.isRunning(),
       },
     }),
   );
@@ -73,7 +93,14 @@ health.listen(port, () => console.log(`worker health on :${port}`));
 
 async function shutdown() {
   health.close();
-  await Promise.all([emails.close(), webhooks.close(), outbox.close(), media.close(), mediaQueue.close()]);
+  await Promise.all([
+    emails.close(),
+    webhooks.close(),
+    outbox.close(),
+    media.close(),
+    templates.close(),
+    mediaQueue.close(),
+  ]);
   connection.disconnect();
   await sql.end();
   process.exit(0);
