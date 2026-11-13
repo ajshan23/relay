@@ -386,6 +386,73 @@ function BranchList() {
   );
 }
 
+/** The second column: a title with a close button, then the section's own links. */
+function SubMenuFrame({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="scroll-thin flex w-[196px] shrink-0 flex-col overflow-y-auto border-l border-nav-border px-2.5 pt-3 pb-2">
+      <div className="mb-2 flex h-7 items-center gap-1">
+        <h2 className="min-w-0 flex-1 truncate px-2 text-[13px] font-semibold">{title}</h2>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button" aria-label="Close the sub-menu" onClick={onClose} className={sideIcon}>
+              <ChevronsLeft className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Close the sub-menu</TooltipContent>
+        </Tooltip>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Settings pages, grouped. Each is its own route, so the current one comes from the path. */
+const settingsGroups = [
+  {
+    label: "Business",
+    items: [
+      { label: "Branches", href: "/settings/branches" },
+      { label: "Team", href: "/settings/team" },
+    ],
+  },
+  { label: "Messaging", items: [{ label: "Templates", href: "/settings/templates" }] },
+];
+
+function SettingsSubMenu({ pathname, onClose }: { pathname: string; onClose: () => void }) {
+  return (
+    <SubMenuFrame title="Settings" onClose={onClose}>
+      <nav aria-label="Settings pages" className="flex flex-col">
+        {settingsGroups.map((g, gi) => (
+          <div key={g.label} className={cn("flex flex-col gap-px", gi > 0 && "mt-4")}>
+            <p className="mb-0.5 px-2 text-xs text-nav-muted">{g.label}</p>
+            {g.items.map((item) => {
+              const active = isActive(pathname, item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  aria-current={active ? "page" : undefined}
+                  className={sideItem(active)}
+                >
+                  <span className="truncate">{item.label}</span>
+                </Link>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
+    </SubMenuFrame>
+  );
+}
+
 function SubMenu({ section, onClose }: { section: Section; onClose: () => void }) {
   return (
     <div className="scroll-thin flex w-[196px] shrink-0 flex-col overflow-y-auto border-l border-nav-border px-2.5 pt-3 pb-2">
@@ -438,6 +505,7 @@ function SubMenuHandle({ onOpen }: { onOpen: () => void }) {
 export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const pathname = usePathname();
   const section = sectionForPath(pathname);
+  const inSettings = isActive(pathname, "/settings");
   const [collapsed, setCollapsed] = useStoredFlag("relay.sidebar.collapsed", false);
   const [subOpen, setSubOpen] = useStoredFlag("relay.sidebar.submenu-open", true);
 
@@ -451,11 +519,13 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
       ) : (
         <FullNav onCollapse={() => setCollapsed(true)} onOpenPalette={onOpenPalette} />
       )}
-      {section ? (
-        subOpen ? (
+      {section || inSettings ? (
+        !subOpen ? (
+          <SubMenuHandle onOpen={() => setSubOpen(true)} />
+        ) : section ? (
           <SubMenu section={section} onClose={() => setSubOpen(false)} />
         ) : (
-          <SubMenuHandle onOpen={() => setSubOpen(true)} />
+          <SettingsSubMenu pathname={pathname} onClose={() => setSubOpen(false)} />
         )
       ) : null}
     </aside>

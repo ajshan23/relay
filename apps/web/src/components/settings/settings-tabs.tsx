@@ -11,13 +11,14 @@ const tabs = [
 ] as const;
 
 /**
- * The tab switch under the Settings title. Built from tokens here because the design system
+ * The tab switch under the Settings title, for phones only: wider screens use the sidebar's
+ * Settings sub-menu. Built from tokens here because the design system
  * has no link-tabs component yet (Segmented is a radio group, not navigation).
  */
 export function SettingsTabs() {
   const pathname = usePathname();
   return (
-    <nav aria-label="Settings" className="border-b border-border px-5 sm:px-8">
+    <nav aria-label="Settings" className="border-b border-border px-5 sm:px-8 md:hidden">
       <ul className="-mb-px flex gap-5">
         {tabs.map((tab) => {
           const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
