@@ -244,7 +244,8 @@ function Messages({
     return (
       <Fragment key={m.id}>
         {newDay ? <DateSeparator label={dayLabel(m.sentAt)} className="py-3" /> : null}
-        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-2" : "pt-0")}>
+        {/* Follow-ups in a run sit close, but never touch: photos and videos have no padding of their own. */}
+        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-2" : "pt-1")}>
           <MessageBubble
             message={m}
             first={first}
