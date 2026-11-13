@@ -79,6 +79,21 @@ app.delete("/:version/:groupId", async (c) => {
   return c.json({ request_id: requestId() });
 });
 
+// File uploads for outbound media. A file named "*fail*" is refused, to test the error path.
+app.post("/:version/:phoneId/media", async (c) => {
+  const form = await c.req.formData();
+  const file = form.get("file") as File | null;
+  received.push({
+    at: new Date().toISOString(),
+    path: c.req.path,
+    body: { upload: file?.name ?? null, type: form.get("type"), size: file?.size ?? 0 },
+  });
+  if (!file) return graphError(100, "file is required");
+  if (file.name.includes("fail")) return graphError(131053, "Media upload error: unsupported file");
+  counter++;
+  return c.json({ id: `media.fake.${Date.now()}.${counter}` });
+});
+
 app.post("/:version/:phoneId/messages", async (c) => {
   const body = (await c.req.json()) as {
     text?: { body?: string };

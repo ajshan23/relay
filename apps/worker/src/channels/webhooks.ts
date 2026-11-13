@@ -1,3 +1,4 @@
+import { type Publisher, publishInboxEvent } from "@relay/core";
 import { type createDb, eq, schema, sql } from "@relay/db";
 import type { Job, Queue } from "bullmq";
 import { createIngest } from "./ingest";
@@ -11,7 +12,15 @@ export type MediaJob = { attachmentId: string };
  * Processes one stored webhook: parse, ingest, queue media downloads, and record the outcome on the
  * webhook_event row. Throwing makes the queue retry; the raw event stays stored for replay.
  */
-export function createWebhookProcessor({ db, mediaQueue }: { db: Db; mediaQueue: Queue<MediaJob> }) {
+export function createWebhookProcessor({
+  db,
+  mediaQueue,
+  redis,
+}: {
+  db: Db;
+  mediaQueue: Queue<MediaJob>;
+  redis: Publisher;
+}) {
   const { ingest } = createIngest(db, channels());
 
   return async function processWebhook(job: Job<WebhookJob>) {
@@ -45,6 +54,14 @@ export function createWebhookProcessor({ db, mediaQueue }: { db: Db; mediaQueue:
           unrouted: result.unrouted > 0,
         })
         .where(eq(schema.webhookEvent.id, event.id));
+      // Tell open inboxes, once per conversation and kind of change.
+      const seen = new Set<string>();
+      for (const { organizationId, event: change } of result.changed) {
+        const key = JSON.stringify(change);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        await publishInboxEvent(redis, organizationId, change);
+      }
     } catch (err) {
       await db
         .update(schema.webhookEvent)

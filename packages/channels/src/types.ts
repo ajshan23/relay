@@ -237,7 +237,11 @@ export type ChannelCapabilities = {
   maxReplyButtons: number;
   maxListRows: number;
   maxTextLength: number;
-  media: Record<"image" | "video" | "audio" | "document" | "sticker", { maxBytes: number }>;
+  /** File kinds this channel sends, with the size limit and accepted types of each. */
+  media: Record<
+    "image" | "video" | "audio" | "document" | "sticker",
+    { maxBytes: number; mimeTypes: string[] }
+  >;
   readReceipts: boolean;
   typingIndicator: boolean;
   reactions: boolean;

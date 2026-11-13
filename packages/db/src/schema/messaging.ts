@@ -15,6 +15,15 @@ import { branch } from "./branches";
 import { channelAccount, channelType } from "./channels";
 import { channelGroup } from "./groups";
 
+/** The newest message of a conversation, as the conversation list shows it (see @relay/core inbox.ts). */
+type MessagePreview = {
+  type: string;
+  text: string | null;
+  direction: "inbound" | "outbound";
+  /** Who wrote it, when that matters (group members, teammates). */
+  senderName: string | null;
+};
+
 /** A customer: our own record of a person, with no channel id on it. */
 export const contact = pgTable(
   "contact",
@@ -87,6 +96,10 @@ export const conversation = pgTable(
     }),
     groupId: text("group_id").references(() => channelGroup.id, { onDelete: "cascade" }),
     status: conversationStatus("status").notNull().default("open"),
+    /** The teammate handling it. Null: unassigned. */
+    assignedUserId: text("assigned_user_id").references(() => user.id, { onDelete: "set null" }),
+    /** The newest message in short form, for the conversation list. Kept current on every new message. */
+    lastMessagePreview: jsonb("last_message_preview").$type<MessagePreview>(),
     lastMessageAt: timestamp("last_message_at"),
     lastInboundAt: timestamp("last_inbound_at"),
     /** End of the reply window (WhatsApp: 24 h after the customer's last message; groups: after any member's). Null when it never opened. */
@@ -100,6 +113,7 @@ export const conversation = pgTable(
       .where(sql`${t.kind} = 'direct'`),
     uniqueIndex("conversation_group_uidx").on(t.channelAccountId, t.groupId).where(sql`${t.kind} = 'group'`),
     index("conversation_org_branch_idx").on(t.organizationId, t.branchId, t.lastMessageAt),
+    index("conversation_assignee_idx").on(t.organizationId, t.assignedUserId, t.lastMessageAt),
     check(
       "conversation_kind_complete",
       sql`(${t.kind} = 'direct' and ${t.contactIdentityId} is not null and ${t.contactId} is not null) or (${t.kind} = 'group' and ${t.groupId} is not null)`,
@@ -179,9 +193,10 @@ export const attachment = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    messageId: text("message_id")
-      .notNull()
-      .references(() => message.id, { onDelete: "cascade" }),
+    /** Null while a teammate's upload waits to be sent. */
+    messageId: text("message_id").references(() => message.id, { onDelete: "cascade" }),
+    /** The teammate who uploaded it (outbound files only). */
+    uploadedByUserId: text("uploaded_by_user_id").references(() => user.id, { onDelete: "set null" }),
     /** image, audio, video, document, sticker */
     kind: text("kind").notNull(),
     mimeType: text("mime_type"),
@@ -223,4 +238,19 @@ export const messageReceipt = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [uniqueIndex("message_receipt_uidx").on(t.messageId, t.contactIdentityId)],
+);
+
+/** When each teammate last looked at a conversation. Unread counts are per person. */
+export const conversationRead = pgTable(
+  "conversation_read",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversation.id, { onDelete: "cascade" }),
+    lastReadAt: timestamp("last_read_at").notNull(),
+  },
+  (t) => [uniqueIndex("conversation_read_uidx").on(t.userId, t.conversationId)],
 );

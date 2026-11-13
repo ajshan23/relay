@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GraphError } from "@relay/channels";
-import { env, localFileStorage } from "@relay/core";
+import { env, localFileStorage, type Publisher, publishInboxEvent } from "@relay/core";
 import { type createDb, eq, schema } from "@relay/db";
 import { type Job, UnrecoverableError } from "bullmq";
 import { accountRef, channels } from "./registry";
@@ -25,20 +25,32 @@ const extensions: Record<string, string> = {
  * Copies one customer file from the channel into our storage, through its adapter. Provider links
  * expire quickly (WhatsApp: 5 minutes, ids 7 days), so this runs right after the message arrives.
  */
-export function createMediaProcessor({ db }: { db: Db }) {
+export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }) {
   const config = env();
   const storage = localFileStorage(config.MEDIA_DIR);
 
   return async function downloadMedia(job: Job<MediaJob>) {
     const [row] = await db
-      .select({ attachment: schema.attachment, account: schema.channelAccount })
+      .select({
+        attachment: schema.attachment,
+        account: schema.channelAccount,
+        conversation: schema.conversation,
+      })
       .from(schema.attachment)
       .innerJoin(schema.message, eq(schema.message.id, schema.attachment.messageId))
       .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.message.channelAccountId))
+      .innerJoin(schema.conversation, eq(schema.conversation.id, schema.message.conversationId))
       .where(eq(schema.attachment.id, job.data.attachmentId))
       .limit(1);
     if (!row || row.attachment.status === "stored") return;
-    const { attachment, account } = row;
+    const { attachment, account, conversation } = row;
+    const announce = () =>
+      publishInboxEvent(redis, conversation.organizationId, {
+        type: "message.updated",
+        conversationId: conversation.id,
+        branchId: conversation.branchId,
+        messageId: attachment.messageId ?? "",
+      });
     const mediaId = attachment.providerMediaId;
     if (!mediaId) return;
 
@@ -72,14 +84,19 @@ export function createMediaProcessor({ db }: { db: Db }) {
           error: null,
         })
         .where(eq(schema.attachment.id, attachment.id));
+      await announce();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       if (err instanceof GraphError && (err.kind === "permanent" || err.kind === "authFailed")) {
         await markFailed(message);
+        await announce();
         throw new UnrecoverableError(message);
       }
-      if (lastAttempt) await markFailed(message);
+      if (lastAttempt) {
+        await markFailed(message);
+        await announce();
+      }
       throw err;
     }
   };

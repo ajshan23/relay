@@ -12,7 +12,7 @@ import {
   toStoredStatus,
   windowExpiresAt,
 } from "@relay/channels";
-import { newId } from "@relay/core";
+import { type InboxEvent, messagePreview, newId } from "@relay/core";
 import { type AnyColumn, and, type createDb, eq, inArray, or, schema, sql } from "@relay/db";
 
 /*
@@ -34,9 +34,25 @@ function latest(column: AnyColumn, at: Date) {
   return sql`greatest(${column}, ${at.toISOString()}::timestamptz at time zone 'UTC')`;
 }
 
-export type IngestResult = { events: number; unrouted: number; media: string[] };
+export type IngestResult = {
+  events: number;
+  unrouted: number;
+  media: string[];
+  /** What changed, for live updates in open inboxes. */
+  changed: { organizationId: string; event: InboxEvent }[];
+};
 
 export function createIngest(db: Db, registry: ChannelRegistry) {
+  /** Changes made while ingesting the current webhook; reset per ingest() call. */
+  let changed: IngestResult["changed"] = [];
+  const touched = (c: { id: string; organizationId: string; branchId: string | null }, messageId?: string) =>
+    changed.push({
+      organizationId: c.organizationId,
+      event: messageId
+        ? { type: "message.updated", conversationId: c.id, branchId: c.branchId, messageId }
+        : { type: "conversation.updated", conversationId: c.id, branchId: c.branchId },
+    });
+
   // Found channels are remembered briefly (a number can be disconnected); misses are never
   // remembered, so a number connected a moment ago is picked up straight away.
   const accounts = new Map<string, { account: Account; until: number }>();
@@ -264,7 +280,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   async function received(account: Account, event: MessageReceived | ReactionEvent): Promise<string[]> {
     const identity = await upsertIdentity(account, event.from);
     const sentAt = event.kind === "reaction" ? event.at : event.sentAt;
-    let conversation: { id: string };
+    let conversation: typeof schema.conversation.$inferSelect;
     if (event.conversation.kind === "group") {
       const group = await findOrCreateGroup(account, event.conversation.groupExternalId);
       conversation = await upsertGroupConversation(account, group);
@@ -316,6 +332,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         .onConflictDoNothing()
         .returning({ id: schema.message.id });
       if (!inserted.length) return []; // Already stored: a repeated webhook.
+      touched(conversation);
 
       await tx
         .update(schema.conversation)
@@ -324,6 +341,12 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
           lastMessageAt: latest(schema.conversation.lastMessageAt, sentAt),
           lastInboundAt: latest(schema.conversation.lastInboundAt, sentAt),
           ...(window ? { windowExpiresAt: latest(schema.conversation.windowExpiresAt, window) } : {}),
+          lastMessagePreview: messagePreview(
+            isReaction ? "reaction" : event.content.type,
+            content as Record<string, unknown>,
+            "inbound",
+            event.conversation.kind === "group" ? (identity.profileName ?? identity.phone) : null,
+          ),
           updatedAt: new Date(),
         })
         .where(eq(schema.conversation.id, conversation.id));
@@ -400,7 +423,10 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
           });
       }
     }
-    if (!shouldApplyStatus(row.status as StoredStatus, next)) return;
+    if (!shouldApplyStatus(row.status as StoredStatus, next)) {
+      if (event.recipient.kind === "group") await messageChanged(row); // a receipt may have changed
+      return;
+    }
     const stamp = {
       sent: {},
       delivered: { deliveredAt: event.at },
@@ -416,6 +442,16 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         ...(event.errors.length ? { error: { errors: event.errors } } : {}),
       })
       .where(eq(schema.message.id, row.id));
+    await messageChanged(row);
+  }
+
+  async function messageChanged(row: { id: string; conversationId: string }) {
+    const [c] = await db
+      .select()
+      .from(schema.conversation)
+      .where(eq(schema.conversation.id, row.conversationId))
+      .limit(1);
+    if (c) touched(c, row.id);
   }
 
   /** The customer changed their number or WhatsApp id: their identity keeps its history. */
@@ -463,6 +499,16 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   async function groupEvent(account: Account, event: GroupEvent) {
     const group = await groupFor(account, event);
     if (!group) return;
+    await applyGroupEvent(account, event, group);
+    const [c] = await db
+      .select()
+      .from(schema.conversation)
+      .where(and(eq(schema.conversation.kind, "group"), eq(schema.conversation.groupId, group.id)))
+      .limit(1);
+    if (c) touched(c);
+  }
+
+  async function applyGroupEvent(account: Account, event: GroupEvent, group: Group) {
     switch (event.kind) {
       case "group.created": {
         const externalId = event.groupExternalId ?? group.externalId;
@@ -621,7 +667,8 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
 
   /** Applies every event in one stored webhook. */
   async function ingest(events: NormalizedEvent[]): Promise<IngestResult> {
-    const result: IngestResult = { events: events.length, unrouted: 0, media: [] };
+    changed = [];
+    const result: IngestResult = { events: events.length, unrouted: 0, media: [], changed };
     for (const event of events) {
       const account = await findAccount(event);
       if (!account) {

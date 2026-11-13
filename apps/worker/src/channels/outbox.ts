@@ -1,4 +1,11 @@
-import { GraphError, GraphUncertainError, type OutboundMessage, type Recipient } from "@relay/channels";
+import {
+  type ChannelAdapter,
+  GraphError,
+  GraphUncertainError,
+  type OutboundMessage,
+  type Recipient,
+} from "@relay/channels";
+import { env, localFileStorage, publishInboxEvent } from "@relay/core";
 import { and, type createDb, eq, inArray, schema, sql } from "@relay/db";
 import { DelayedError, type Job, UnrecoverableError } from "bullmq";
 import type { Redis } from "ioredis";
@@ -16,7 +23,39 @@ const PER_NUMBER_PER_SECOND = 70;
  * Retries only when Meta said so or the request never left; a request that may have gone through
  * (timeout) is marked failed instead of resent, because a duplicate message is worse than a missing one.
  */
+const mediaTypes = new Set(["image", "video", "audio", "document", "sticker"]);
+
 export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
+  const storage = localFileStorage(env().MEDIA_DIR);
+
+  /** The file of an outbound media message, handed to the channel once (the id is kept for retries). */
+  async function providerMediaFor(
+    messageId: string,
+    adapter: ChannelAdapter,
+    account: typeof schema.channelAccount.$inferSelect,
+  ) {
+    const [file] = await db
+      .select()
+      .from(schema.attachment)
+      .where(eq(schema.attachment.messageId, messageId))
+      .limit(1);
+    if (!file?.storageKey) throw new UnrecoverableError("the file of this message is missing");
+    if (file.providerMediaId) return { id: file.providerMediaId, file };
+    try {
+      const { providerMediaId } = await adapter.uploadMedia(accountRef(account), {
+        bytes: await storage.get(file.storageKey),
+        mimeType: file.mimeType ?? "application/octet-stream",
+        fileName: file.fileName ?? `${file.id}`,
+      });
+      await db.update(schema.attachment).set({ providerMediaId }).where(eq(schema.attachment.id, file.id));
+      return { id: providerMediaId, file };
+    } catch (err) {
+      // An upload never reaches the customer, so an unanswered one is safe to retry.
+      if (err instanceof GraphUncertainError) throw new Error(err.message);
+      throw err;
+    }
+  }
+
   async function fail(messageId: string, error: Record<string, unknown>) {
     await db
       .update(schema.message)
@@ -64,7 +103,36 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
     }
   }
 
-  return async function sendOutbound(job: Job<OutboxJob>, token?: string) {
+  /** Tells open inboxes the message changed (accepted, failed). */
+  async function announce(messageId: string) {
+    const [row] = await db
+      .select({
+        conversationId: schema.message.conversationId,
+        organizationId: schema.conversation.organizationId,
+        branchId: schema.conversation.branchId,
+      })
+      .from(schema.message)
+      .innerJoin(schema.conversation, eq(schema.conversation.id, schema.message.conversationId))
+      .where(eq(schema.message.id, messageId))
+      .limit(1);
+    if (row)
+      await publishInboxEvent(redis, row.organizationId, {
+        type: "message.updated",
+        conversationId: row.conversationId,
+        branchId: row.branchId,
+        messageId,
+      });
+  }
+
+  return async function sendAndAnnounce(job: Job<OutboxJob>, token?: string) {
+    try {
+      return await sendOutbound(job, token);
+    } finally {
+      await announce(job.data.messageId);
+    }
+  };
+
+  async function sendOutbound(job: Job<OutboxJob>, token?: string) {
     const [row] = await db
       .select({
         message: schema.message,
@@ -140,10 +208,23 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       };
     }
 
+    // Files are handed to the channel first; that step is safe to retry, the send itself is not.
+    const media = mediaTypes.has(message.type)
+      ? await providerMediaFor(message.id, adapter, account).catch(async (err) => {
+          if (err instanceof GraphError && err.kind !== "retryable" && err.kind !== "rateLimited") {
+            await fail(message.id, { reason: err.kind, code: err.code ?? null, message: err.message });
+            throw new UnrecoverableError(err.message);
+          }
+          if (err instanceof UnrecoverableError)
+            await fail(message.id, { reason: "error", message: err.message });
+          throw err;
+        })
+      : null;
+
     await throttle(job, account.id, token);
     await db.update(schema.message).set({ status: "sending" }).where(eq(schema.message.id, message.id));
 
-    const content = message.content as { type: string; text?: string };
+    const content = message.content as { type: string; text?: string; caption?: string | null };
     let replyToExternalId: string | undefined;
     if (message.replyToMessageId) {
       const [target] = await db
@@ -153,7 +234,15 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         .limit(1);
       replyToExternalId = target?.externalId ?? undefined;
     }
-    const outbound: OutboundMessage = { type: "text", text: content.text ?? "", replyToExternalId };
+    const outbound: OutboundMessage = media
+      ? {
+          type: message.type as "image" | "video" | "audio" | "document" | "sticker",
+          providerMediaId: media.id,
+          caption: content.caption ?? undefined,
+          fileName: media.file.fileName ?? undefined,
+          replyToExternalId,
+        }
+      : { type: "text", text: content.text ?? "", replyToExternalId };
 
     try {
       const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);
@@ -199,5 +288,5 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         });
       throw err;
     }
-  };
+  }
 }

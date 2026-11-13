@@ -45,9 +45,10 @@ export function createGraphClient(config: GraphConfig) {
       method,
       headers: {
         authorization: `Bearer ${token}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        // FormData (file uploads) sets its own multipart content type.
+        ...(body === undefined || body instanceof FormData ? {} : { "content-type": "application/json" }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     });
     const text = await res.text();
     const json = text ? (JSON.parse(text) as Record<string, unknown>) : {};

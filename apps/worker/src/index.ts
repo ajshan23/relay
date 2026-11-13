@@ -22,10 +22,14 @@ emails.on("ready", () => console.log(`emails worker ready (provider: ${emailProv
 
 /* Channel webhooks: stored raw by the API, turned into contacts, conversations and messages here. */
 const mediaQueue = new Queue<MediaJob>(queues.media, { connection });
-const webhooks = new Worker<WebhookJob>(queues.webhooks, createWebhookProcessor({ db, mediaQueue }), {
-  connection,
-  concurrency: 10,
-});
+const webhooks = new Worker<WebhookJob>(
+  queues.webhooks,
+  createWebhookProcessor({ db, mediaQueue, redis: connection }),
+  {
+    connection,
+    concurrency: 10,
+  },
+);
 /* Outbound channel messages, with per-number throttling and safe retries. */
 const outbox = new Worker<OutboxJob>(queues.outbox, createOutboxProcessor({ db, redis: connection }), {
   connection,
@@ -36,7 +40,7 @@ outbox.on("failed", (job, err) =>
 );
 
 /* Customer media: copied from Meta into our storage soon after arrival. */
-const media = new Worker<MediaJob>(queues.media, createMediaProcessor({ db }), {
+const media = new Worker<MediaJob>(queues.media, createMediaProcessor({ db, redis: connection }), {
   connection,
   concurrency: 5,
 });

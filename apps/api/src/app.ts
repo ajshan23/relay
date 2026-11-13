@@ -7,6 +7,8 @@ import { authOptionsRoutes } from "./modules/auth/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { channelRoutes } from "./modules/channels/routes";
 import { conversationRoutes } from "./modules/conversations/routes";
+import { eventRoutes } from "./modules/events/routes";
+import { fileRoutes } from "./modules/files/routes";
 import { groupRoutes } from "./modules/groups/routes";
 import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
@@ -33,6 +35,8 @@ export function createApp(ctx: AppContext) {
   app.route("/api/conversations", conversationRoutes(ctx));
   app.route("/api/channels", channelRoutes(ctx));
   app.route("/api/groups", groupRoutes(ctx));
+  app.route("/api/events", eventRoutes(ctx));
+  app.route("/api", fileRoutes(ctx));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {

@@ -17,7 +17,7 @@ import {
   removeWhatsAppParticipants,
   updateWhatsAppGroup,
 } from "./whatsapp/groups";
-import { fetchWhatsAppMedia } from "./whatsapp/media";
+import { fetchWhatsAppMedia, uploadWhatsAppMedia } from "./whatsapp/media";
 import { parseWhatsAppWebhook } from "./whatsapp/parse";
 import {
   describeWhatsAppNumber,
@@ -97,6 +97,11 @@ export type ChannelAdapter = {
     mediaId: string,
     maxBytes: number,
   ): Promise<{ bytes: Uint8Array; mimeType: string | null; sha256: string | null }>;
+  /** Hands a file to the channel before sending it. Returns the id the send call uses. */
+  uploadMedia(
+    account: AccountRef,
+    file: { bytes: Uint8Array; mimeType: string; fileName: string },
+  ): Promise<{ providerMediaId: string }>;
   markRead?(account: AccountRef, externalId: string): Promise<void>;
   groups?: GroupAdapter;
 };
@@ -132,6 +137,7 @@ function whatsappAdapter(graphConfig: GraphConfig): ChannelAdapter {
     send: (account, to, message, ourMessageId) =>
       sendWhatsAppMessage(graph, wa(account), to, message, ourMessageId),
     fetchMedia: (account, mediaId, maxBytes) => fetchWhatsAppMedia(graph, wa(account), mediaId, maxBytes),
+    uploadMedia: (account, file) => uploadWhatsAppMedia(graph, wa(account), file),
     markRead: (account, externalId) => markWhatsAppRead(graph, wa(account), externalId),
     groups: {
       create: (account, input) => createWhatsAppGroup(graph, wa(account), input),
