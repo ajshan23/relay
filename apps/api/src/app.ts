@@ -5,6 +5,7 @@ import type { AppContext } from "./context";
 import { auth } from "./modules/auth/auth";
 import { authOptionsRoutes } from "./modules/auth/routes";
 import { branchRoutes } from "./modules/branches/routes";
+import { broadcastRoutes } from "./modules/broadcasts/routes";
 import { channelRoutes } from "./modules/channels/routes";
 import { contactImportRoutes } from "./modules/contacts/imports";
 import { contactListRoutes } from "./modules/contacts/lists";
@@ -41,6 +42,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/groups", groupRoutes(ctx));
   app.route("/api/templates", templateRoutes(ctx));
   app.route("/api/quick-replies", quickReplyRoutes(ctx));
+  app.route("/api/broadcasts", broadcastRoutes(ctx));
   // Sub-paths first, so "/api/contacts/:id" doesn't swallow them.
   app.route("/api/contacts/fields", contactFieldRoutes(ctx));
   app.route("/api/contacts/views", contactViewRoutes(ctx));

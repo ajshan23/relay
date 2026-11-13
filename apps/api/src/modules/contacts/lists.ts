@@ -7,6 +7,7 @@ import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
+import { broadcastsUsingList } from "../broadcasts/routes";
 import { compileFilter, FilterError } from "./filter";
 import { activeFields, type BranchEnv, canEditContacts, listsById, requireBranch } from "./shared";
 
@@ -193,6 +194,17 @@ export function contactListRoutes(ctx: AppContext) {
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
     if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    // A broadcast scheduled to start from this list would have nobody to send to.
+    const using = (await broadcastsUsingList(ctx, c2.req.param("id"))).filter(
+      (x) => x.status === "scheduled",
+    );
+    if (using.length)
+      return fail(
+        c2,
+        409,
+        "list_in_use",
+        `Broadcast "${using[0]?.name}" is scheduled to use this list. Stop it or change its audience first.`,
+      );
     const res = await ctx.db
       .delete(l)
       .where(
