@@ -29,6 +29,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, Suspense, useState, useSyncExternalStore } from "react";
+import { ContactsNav } from "@/components/contacts/contacts-nav";
 import { InboxNav } from "@/components/inbox/inbox-nav";
 import { signOut } from "@/lib/auth-client";
 import { useMe } from "@/lib/me";
@@ -480,6 +481,8 @@ function SubMenu({ section, onClose }: { section: Section; onClose: () => void }
         <Suspense fallback={<SubTopicLinks section={section} current={null} />}>
           {section.id === "conversations" ? (
             <InboxNav section={section} itemClass={sideItem} />
+          ) : section.id === "contacts" ? (
+            <ContactsNav itemClass={sideItem} />
           ) : (
             <SubTopicLinksFromUrl section={section} />
           )}
