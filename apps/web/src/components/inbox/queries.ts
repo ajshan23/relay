@@ -137,15 +137,32 @@ export function upload(conversationId: string, file: File) {
   return api<{ upload: Upload }>("/uploads", { method: "POST", body: form }).then((r) => r.upload);
 }
 
-type SendInput = { text?: string; upload?: Upload; replyToMessageId?: string; senderName: string };
+type SendInput = {
+  text?: string;
+  upload?: Upload;
+  replyToMessageId?: string;
+  senderName: string;
+  /** A ready template with its detail values; `rendered` is shown until the server confirms. */
+  template?: {
+    id: string;
+    values: Record<string, string>;
+    rendered: { header: string | null; body: string; footer: string | null; buttons: { text: string }[] };
+  };
+};
 
 export function useSend(conversationId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ text, upload, replyToMessageId }: SendInput) =>
+    mutationFn: ({ text, upload, replyToMessageId, template }: SendInput) =>
       api<{ message: { id: string } }>(`/conversations/${conversationId}/messages`, {
         method: "POST",
-        json: { text: text || undefined, uploadId: upload?.id, replyToMessageId },
+        json: {
+          text: text || undefined,
+          uploadId: upload?.id,
+          replyToMessageId,
+          templateId: template?.id,
+          values: template?.values,
+        },
       }),
     // The message appears at once with a clock; the real one replaces it when the history refreshes.
     onMutate: async (input) => {
@@ -155,10 +172,20 @@ export function useSend(conversationId: string) {
         direction: "outbound",
         senderType: "user",
         sender: { kind: "user", id: null, name: input.senderName },
-        type: input.upload?.kind ?? "text",
-        content: input.upload
-          ? { type: input.upload.kind, caption: input.text ?? null }
-          : { type: "text", text: input.text },
+        type: input.template ? "template" : (input.upload?.kind ?? "text"),
+        content: input.template
+          ? {
+              type: "template",
+              header: input.template.rendered.header
+                ? { kind: "text", text: input.template.rendered.header }
+                : null,
+              body: input.template.rendered.body,
+              footer: input.template.rendered.footer,
+              buttons: input.template.rendered.buttons,
+            }
+          : input.upload
+            ? { type: input.upload.kind, caption: input.text ?? null }
+            : { type: "text", text: input.text },
         status: "queued",
         error: null,
         sentAt: new Date().toISOString(),

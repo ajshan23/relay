@@ -289,6 +289,8 @@ export function conversationRoutes(ctx: AppContext) {
             ? (caps.groups?.outboundTypes ?? [])
             : ["text", "image", "video", "audio", "document", "sticker", "template"],
         reactions: caps.reactions,
+        /** The channel has message templates (sendable outside the window once ready). */
+        templates: !!caps.templates,
       },
       branch,
       assignee: assignee ?? null,

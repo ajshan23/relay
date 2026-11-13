@@ -65,6 +65,7 @@ const kindWords: Record<string, string> = {
   interactive: "Reply",
   button: "Reply",
   unsupported: "Unsupported message",
+  template: "Template",
 };
 
 /** One line for the conversation list. */

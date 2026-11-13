@@ -169,6 +169,46 @@ function Body({ message: m, out }: { message: Msg; out: boolean }) {
   switch (m.type) {
     case "text":
       return <p className="whitespace-pre-wrap">{str(c.text)}</p>;
+    case "template": {
+      const header = c.header as { kind?: string; text?: string } | null | undefined;
+      const buttons = (c.buttons as { text?: string }[] | undefined) ?? [];
+      return (
+        <div className="flex flex-col gap-1">
+          {header?.kind === "text" && header.text ? <p className="font-semibold">{header.text}</p> : null}
+          {header && header.kind !== "text" ? (
+            <p className="flex items-center gap-1.5 text-xs opacity-80">
+              <Icon
+                name={header.kind === "document" ? "file" : header.kind === "video" ? "video" : "image"}
+                size="xs"
+              />
+              {header.kind === "document" ? "Document" : header.kind === "video" ? "Video" : "Picture"}
+            </p>
+          ) : null}
+          <p className="whitespace-pre-wrap">{str(c.body)}</p>
+          {str(c.footer) ? <p className="text-xs opacity-70">{str(c.footer)}</p> : null}
+          {buttons.length ? (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {buttons.map((b, i) => (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a sent message's buttons never change
+                  key={i}
+                  className={cn(
+                    "rounded-md border px-2 py-0.5 text-xs font-medium",
+                    out ? "border-primary-foreground/30" : "border-border",
+                  )}
+                >
+                  {b.text}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <p className="flex items-center gap-1 text-[11px] opacity-60">
+            <Icon name="file" size="xs" />
+            Template{str(c.templateName) ? ` · ${str(c.templateName)}` : ""}
+          </p>
+        </div>
+      );
+    }
     case "image":
     case "sticker":
       return (

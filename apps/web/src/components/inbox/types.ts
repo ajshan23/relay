@@ -56,6 +56,7 @@ export type ConversationDetail = {
     media: Record<MediaKind, { maxBytes: number; mimeTypes: string[] }>;
     outboundTypes: string[];
     reactions: boolean;
+    templates: boolean;
   } | null;
   branch: { id: string; name: string } | null;
   assignee: Person | null;

@@ -19,6 +19,7 @@ import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
 import { fileSize, kindWord, windowLeft } from "./format";
 import { upload as uploadFile, useSend } from "./queries";
+import { TemplatePicker } from "./template-picker";
 import type { ConversationDetail, Message, Upload } from "./types";
 
 type Props = {
@@ -65,9 +66,18 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           ? `The group is ${detail.group?.status}. Messages can't be sent to it.`
           : !left
             ? caps.replyWindowHours
-              ? `The ${caps.replyWindowHours}-hour reply window has closed. The customer has to write first, or you can send an approved template (coming with campaigns).`
+              ? `The ${caps.replyWindowHours}-hour reply window has closed. Send a template to start the conversation again; once the customer replies, you can write freely.`
               : "Replies aren't open for this conversation."
             : null;
+
+  // Templates can still go out when only the window is closed.
+  const windowOnly =
+    !!lock && !!caps && detail.canWork && detail.channel.status === "active" && !groupDown && !left;
+  const canTemplate = !!caps?.templates && caps.outboundTypes.includes("template");
+  const [picking, setPicking] = useState(false);
+  const pickerDialog = canTemplate ? (
+    <TemplatePicker detail={detail} open={picking} onOpenChange={setPicking} />
+  ) : null;
 
   // Keep the draft per conversation while switching between chats.
   useEffect(() => {
@@ -161,6 +171,20 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   }
 
   if (lock) {
+    if (windowOnly && canTemplate)
+      return (
+        <div className="flex flex-col gap-3 rounded-lg border bg-card px-4 py-3 sm:flex-row sm:items-center">
+          <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <Icon name="clock" size="sm" />
+          </span>
+          <p className="flex-1 text-sm text-muted-foreground">{lock}</p>
+          <Button size="sm" onClick={() => setPicking(true)}>
+            <Icon name="file" />
+            Choose a template
+          </Button>
+          {pickerDialog}
+        </div>
+      );
     return (
       <div className="flex items-start gap-3 rounded-lg border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
         <Icon name="lock" size="sm" className="mt-0.5 shrink-0" />
@@ -280,6 +304,22 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
             </TooltipTrigger>
             <TooltipContent>Attach a photo, video, audio or document</TooltipContent>
           </Tooltip>
+          {canTemplate ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Send a template"
+                  onClick={() => setPicking(true)}
+                >
+                  <Icon name="file" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Send a template</TooltipContent>
+            </Tooltip>
+          ) : null}
           <span
             className={cn(
               "ml-1 inline-flex items-center gap-1 text-xs",
@@ -298,6 +338,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
       <p className="hidden px-1 text-[11px] text-muted-foreground sm:block">
         Enter to send · Shift + Enter for a new line · drop a file to attach it
       </p>
+      {pickerDialog}
     </div>
   );
 }

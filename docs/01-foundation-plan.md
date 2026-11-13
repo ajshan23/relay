@@ -219,3 +219,24 @@ Built against the fake Meta server; works unchanged with a real number once it i
 
 Open: notes and mentions, snooze, canned replies, bulk actions, notifications and sounds, templates outside
 the window, AI agent views, typing indicator, sending stickers, search inside a conversation.
+
+## 12. Templates (2026-11-13)
+
+Channel-agnostic message templates, WhatsApp first.
+
+- **Model:** `@relay/core/templates` (purpose in plain words: updates, marketing, login; header, body with
+  named details `{{customer_name}}`, footer, buttons; rules in plain words) and a 12-entry ready-made
+  library (`@relay/core/template-library`). A template is written once and published to chosen channels;
+  each `template_channel` copy has its own review state (draft, in review, ready, needs a change, paused,
+  turned off). Accounts sharing templates (WhatsApp: one business account) share one copy id ("scope").
+- **Channels:** `capabilities.templates` limits; optional adapter `templates` part (scope, submit, update,
+  remove, list); reviews arrive as `template.status_changed`. WhatsApp maps to Meta components with named
+  parameters; header examples go through Meta's resumable upload (needs `META_APP_ID`).
+- **Screens:** Settings → Templates (empty state from the library, list with per-channel status, editor
+  with live preview, review banner and toasts that update live). Inbox: the locked composer offers
+  "Choose a template"; a template button sits in the toolbar; the picker pre-fills known details.
+- **Fake review (local only):** the fake Graph approves 10 s after submission with a signed webhook
+  (names containing "reject" are rejected); the UI still says review takes up to 2 hours.
+
+Open: campaigns on top of templates, authentication-code buttons, carousels, translations of one template,
+template analytics, SMS registration.
