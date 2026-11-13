@@ -55,12 +55,12 @@ export function Inbox() {
         onSelect={(id) => setParams({ c: id })}
         onViewChange={(v) => setParams({ view: v === "open" ? null : v })}
         onSearch={setQ}
-        className={cn("w-full border-r md:w-[340px] md:shrink-0 lg:w-[360px]", selected && "hidden md:flex")}
+        className={cn("w-full border-r lg:w-[340px] lg:shrink-0 xl:w-[360px]", selected && "hidden lg:flex")}
       />
       {selected ? (
         <Thread id={selected} onBack={() => setParams({ c: null })} className="flex-1" />
       ) : (
-        <div className="hidden flex-1 items-center justify-center md:flex">
+        <div className="hidden flex-1 items-center justify-center lg:flex">
           <Empty className="border-0">
             <EmptyHeader>
               <EmptyMedia variant="icon">

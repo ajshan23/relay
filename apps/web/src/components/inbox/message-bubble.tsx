@@ -28,16 +28,78 @@ type Props = {
   onReply?: (m: Msg) => void;
 };
 
+/** Group members' names get a steady colour each, so a busy group is easy to follow. */
+const memberColours = [
+  "text-sky-700 dark:text-sky-300",
+  "text-emerald-700 dark:text-emerald-300",
+  "text-amber-700 dark:text-amber-300",
+  "text-rose-700 dark:text-rose-300",
+  "text-teal-700 dark:text-teal-300",
+  "text-fuchsia-700 dark:text-fuchsia-300",
+];
+function memberColour(key: string) {
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return memberColours[h % memberColours.length];
+}
+
+/** The little tail on the last bubble of a run, pointing at its sender's side. Our own shape. */
+function Tail({ out }: { out: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 10 14"
+      className={cn(
+        "pointer-events-none absolute bottom-0 h-3.5 w-2.5",
+        out ? "-right-2 fill-primary" : "-left-2 -scale-x-100 fill-muted",
+      )}
+    >
+      <path d="M0 0v14h10C5.5 13 1.5 9 0 0Z" />
+    </svg>
+  );
+}
+
+/** Time and ticks, tucked into the bubble's bottom corner. */
+function Meta({
+  message: m,
+  out,
+  isGroup,
+  overlay,
+}: {
+  message: Msg;
+  out: boolean;
+  isGroup: boolean;
+  overlay?: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-[11px] leading-none tabular-nums",
+        overlay
+          ? "absolute right-2 bottom-2 rounded-full bg-black/45 px-1.5 py-1 text-white"
+          : "relative top-1.5 float-right ml-3",
+        !overlay && (out ? "text-primary-foreground/75" : "text-muted-foreground"),
+      )}
+    >
+      <time dateTime={m.sentAt}>{clockTime(m.sentAt)}</time>
+      {out ? <Ticks message={m} isGroup={isGroup} onColour={!overlay} /> : null}
+    </span>
+  );
+}
+
 /** One message, built on shadcn Message and Bubble. Outbound on the right in the brand colour. */
 export function MessageBubble({ message: m, first, last, isGroup, onRetry, onReply }: Props) {
   const out = m.direction === "outbound";
   const media = ["image", "video", "sticker"].includes(m.type);
   const failed = m.status === "failed";
-  const showName = first && (out ? !!m.sender.name : isGroup);
+  // Teammates' names sit above their runs; group members' names go inside the bubble.
+  const showName = first && out && !!m.sender.name;
+  const memberName = first && isGroup && !out;
   return (
     <Message
       align={out ? "end" : "start"}
-      className={cn("group/row", !last && "pb-0")}
+      // Side padding keeps the bubble's tail inside the row, which the scroller paints on its own.
+      className={cn("group/row px-2", !last && "pb-0")}
       data-message-id={m.id}
     >
       {isGroup && !out ? (
@@ -54,12 +116,35 @@ export function MessageBubble({ message: m, first, last, isGroup, onRetry, onRep
         <div className={cn("flex max-w-full items-center gap-1", out && "flex-row-reverse")}>
           <Bubble
             align={out ? "end" : "start"}
-            variant={failed ? "destructive" : out ? "default" : "outline"}
+            variant={failed ? "destructive" : out ? "default" : "muted"}
             className={cn("max-w-[min(80%,34rem)]", m.reactions.length && "mb-3", m.pending && "opacity-80")}
           >
-            <BubbleContent className={cn("rounded-lg", media && "p-1")}>
+            <BubbleContent
+              className={cn(
+                "relative overflow-visible rounded-xl px-2.5 py-1.5",
+                last && !failed && (out ? "rounded-br-sm" : "rounded-bl-sm"),
+                media && "p-1",
+              )}
+            >
+              {memberName ? (
+                <p
+                  className={cn(
+                    "mb-0.5 text-xs font-semibold",
+                    memberColour(m.sender.id ?? m.sender.name ?? ""),
+                    media && "px-1.5 pt-0.5",
+                  )}
+                >
+                  {m.sender.name ?? "Member"}
+                </p>
+              ) : null}
               {m.replyTo ? <Quote quote={m.replyTo} out={out} /> : null}
-              <Body message={m} out={out} />
+              <div className={cn(media && "relative")}>
+                <Body message={m} out={out} />
+                {!failed ? (
+                  <Meta message={m} out={out} isGroup={isGroup} overlay={media && !hasCaption(m)} />
+                ) : null}
+              </div>
+              {last && !failed ? <Tail out={out} /> : null}
             </BubbleContent>
             {m.reactions.length ? (
               <BubbleReactions align={out ? "start" : "end"} className="text-xs">
@@ -99,20 +184,13 @@ export function MessageBubble({ message: m, first, last, isGroup, onRetry, onRep
               </Button>
             ) : null}
           </MessageFooter>
-        ) : last ? (
-          <MessageFooter className="gap-1 px-1 font-normal">
-            <time dateTime={m.sentAt} className="tabular-nums">
-              {clockTime(m.sentAt)}
-            </time>
-            {out ? <Ticks message={m} isGroup={isGroup} /> : null}
-          </MessageFooter>
         ) : null}
       </MessageContent>
     </Message>
   );
 }
 
-function Ticks({ message: m, isGroup }: { message: Msg; isGroup: boolean }) {
+function Ticks({ message: m, isGroup, onColour }: { message: Msg; isGroup: boolean; onColour: boolean }) {
   const map = {
     queued: { icon: "clock", label: "Sending" },
     sending: { icon: "clock", label: "Sending" },
@@ -131,7 +209,13 @@ function Ticks({ message: m, isGroup }: { message: Msg; isGroup: boolean }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className={cn("inline-flex", seen ? "text-primary" : "text-muted-foreground")}>
+        <span
+          className={cn(
+            "inline-flex",
+            // On the brand-coloured bubble "read" stands out by being brighter; elsewhere by colour.
+            onColour ? (seen ? "text-sky-200" : "opacity-80") : seen ? "text-sky-300" : undefined,
+          )}
+        >
           <Icon name={t.icon} size="xs" label={t.label} />
         </span>
       </TooltipTrigger>
@@ -158,6 +242,12 @@ function Quote({ quote, out }: { quote: NonNullable<Msg["replyTo"]>; out: boolea
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
+
+/** Media with a caption shows the time under the caption; without one, over the picture. */
+function hasCaption(m: Msg) {
+  const media = m.content.media as Record<string, unknown> | undefined;
+  return !!(str(m.content.caption) ?? str(media?.caption));
+}
 
 function Body({ message: m, out }: { message: Msg; out: boolean }) {
   const c = m.content;

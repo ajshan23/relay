@@ -86,7 +86,7 @@ export function Thread({ id, onBack, className }: Props) {
                 : "Check your connection and try again."}
             </EmptyDescription>
           </EmptyHeader>
-          <Button variant="outline" size="sm" onClick={onBack} className="md:hidden">
+          <Button variant="outline" size="sm" onClick={onBack} className="lg:hidden">
             Back to conversations
           </Button>
         </Empty>
@@ -247,7 +247,7 @@ function Messages({
             <MarkerContent>{dayLabel(m.sentAt)}</MarkerContent>
           </Marker>
         ) : null}
-        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-3" : "pt-1")}>
+        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-3" : "pt-0.5")}>
           <MessageBubble
             message={m}
             first={first}
@@ -316,7 +316,7 @@ function ThreadHeader({
         variant="ghost"
         size="icon-sm"
         aria-label="Back to conversations"
-        className="md:hidden"
+        className="lg:hidden"
         onClick={onBack}
       >
         <Icon name="arrowLeft" />
