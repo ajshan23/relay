@@ -14,6 +14,15 @@
  * webhook is sent to the API: APPROVED, or REJECTED when the name contains "reject". The UI tells
  * people review takes up to 2 hours; here it is quick on purpose. A ready-made hello_world exists.
  * GET /_requests lists what it received.
+ *
+ * Broadcast drills (Meta's behaviour at scale, without a real number):
+ *   - after each accepted message, signed status webhooks: sent, delivered (+0.5 s), read (+1 s)
+ *     (FAKE_STATUS_WEBHOOKS=0 turns them off)
+ *   POST /_faults   [{ code, every?, ratio?, async?, message? }]  every Nth (or a share of) messages
+ *                   fail with that Meta error: at once (HTTP error) or later (a failed status webhook)
+ *   POST /_limit    { tier: "TIER_2K" | "TIER_UNLIMITED" | ..., quality?: "GREEN" | "RED" }
+ *   POST /_webhook  { wabaId, field, value }  sends any signed webhook (template paused, quality, …)
+ *   GET  /_stats    messages accepted, the busiest second per number, and the faults hit
  */
 import { serve } from "@hono/node-server";
 import { signMetaPayload } from "@relay/channels";
@@ -65,6 +74,116 @@ const templates = new Map<string, FakeTemplate>([
 ]);
 const REVIEW_MS = Number(process.env.FAKE_TEMPLATE_REVIEW_MS ?? 10_000);
 const API = process.env.FAKE_WEBHOOK_TARGET ?? "http://localhost:3201/webhooks/meta";
+
+/** Signs and posts a webhook to Relay's API, like Meta. */
+async function deliver(payload: unknown) {
+  const body = JSON.stringify(payload);
+  const secret = process.env.META_APP_SECRET ?? "";
+  return fetch(API, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-hub-signature-256": signMetaPayload(body, secret) },
+    body,
+  }).catch((err) => console.error("webhook not delivered", err.message));
+}
+
+/* ------------------------------------------------------------------ broadcast drills */
+
+type Fault = { code: number; every?: number; ratio?: number; async?: boolean; message?: string };
+let faults: Fault[] = [];
+let tier = process.env.FAKE_TIER ?? "TIER_UNLIMITED";
+let quality = "GREEN";
+const stats = { accepted: 0, failedSync: 0, failedAsync: 0, perSecond: new Map<string, number>(), peak: 0 };
+const STATUS_WEBHOOKS = process.env.FAKE_STATUS_WEBHOOKS !== "0";
+
+app.post("/_faults", async (c) => {
+  faults = (await c.req.json()) as Fault[];
+  return c.json({ faults });
+});
+app.post("/_limit", async (c) => {
+  const b = (await c.req.json()) as { tier?: string; quality?: string };
+  tier = b.tier ?? tier;
+  quality = b.quality ?? quality;
+  return c.json({ tier, quality });
+});
+app.post("/_webhook", async (c) => {
+  const b = (await c.req.json()) as { wabaId: string; field: string; value: unknown };
+  const res = await deliver({
+    object: "whatsapp_business_account",
+    entry: [
+      { id: b.wabaId, time: Math.floor(Date.now() / 1000), changes: [{ field: b.field, value: b.value }] },
+    ],
+  });
+  return c.json({ delivered: res ? res.status : 0 });
+});
+app.get("/_stats", (c) =>
+  c.json({
+    accepted: stats.accepted,
+    failedSync: stats.failedSync,
+    failedAsync: stats.failedAsync,
+    peakPerSecond: stats.peak,
+  }),
+);
+app.post("/_reset", (c) => {
+  faults = [];
+  stats.accepted = stats.failedSync = stats.failedAsync = stats.peak = 0;
+  stats.perSecond.clear();
+  return c.json({ ok: true });
+});
+
+/** The fault (if any) this message hits. */
+function faultFor(n: number) {
+  return faults.find((f) => (f.every ? n % f.every === 0 : f.ratio ? Math.random() < f.ratio : false));
+}
+
+/** Sent, delivered, read, or failed: like Meta's status webhooks for one message. */
+function statusWebhooks(phoneId: string, wamid: string, to: string, ours: string | undefined, fail?: Fault) {
+  if (!STATUS_WEBHOOKS) return;
+  const send = (status: string, delay: number, errors?: unknown[]) =>
+    setTimeout(
+      () =>
+        void deliver({
+          object: "whatsapp_business_account",
+          entry: [
+            {
+              id: "100000000000001",
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    messaging_product: "whatsapp",
+                    metadata: { display_phone_number: "15550009999", phone_number_id: phoneId },
+                    statuses: [
+                      {
+                        id: wamid,
+                        status,
+                        timestamp: String(Math.floor(Date.now() / 1000)),
+                        recipient_id: to,
+                        ...(ours ? { biz_opaque_callback_data: ours } : {}),
+                        ...(errors ? { errors } : {}),
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      delay,
+    );
+  if (fail) {
+    send("failed", 300, [
+      {
+        code: fail.code,
+        title: fail.message ?? `Error ${fail.code}`,
+        message: fail.message ?? `Error ${fail.code}`,
+      },
+    ]);
+    return;
+  }
+  send("sent", 200);
+  send("delivered", 600);
+  send("read", 1200);
+}
 
 /** Plays Meta's reviewer: decides after a short wait and tells Relay with a signed webhook. */
 function review(wabaId: string, t: FakeTemplate) {
@@ -214,7 +333,9 @@ app.post("/:version/:phoneId/media", async (c) => {
 });
 
 app.post("/:version/:phoneId/messages", async (c) => {
+  const phoneId = c.req.param("phoneId");
   const body = (await c.req.json()) as {
+    type?: string;
     text?: { body?: string };
     biz_opaque_callback_data?: string;
     status?: string;
@@ -239,10 +360,26 @@ app.post("/:version/:phoneId/messages", async (c) => {
     if (hits === 1) return graphError(130429, "Rate limit hit");
   }
   counter++;
+  const fault = faultFor(counter);
+  if (fault && !fault.async) {
+    stats.failedSync++;
+    return graphError(fault.code, fault.message ?? `Error ${fault.code}`);
+  }
+  // Busiest second per number, to check broadcasts stay under the speed limit.
+  const second = `${phoneId}:${Math.floor(Date.now() / 1000)}`;
+  const inSecond = (stats.perSecond.get(second) ?? 0) + 1;
+  stats.perSecond.set(second, inSecond);
+  stats.peak = Math.max(stats.peak, inSecond);
+  if (stats.perSecond.size > 5000) stats.perSecond.clear();
+  stats.accepted++;
+  const wamid = `wamid.fake.${Date.now()}.${counter}`;
+  if (fault?.async) stats.failedAsync++;
+  if (body.type === "template" || !body.text?.body?.includes("#"))
+    statusWebhooks(phoneId, wamid, body.to ?? "", body.biz_opaque_callback_data, fault);
   return c.json({
     messaging_product: "whatsapp",
     contacts: [{ input: body.to ?? body.recipient, wa_id: body.to ?? "" }],
-    messages: [{ id: `wamid.fake.${Date.now()}.${counter}` }],
+    messages: [{ id: wamid }],
   });
 });
 
@@ -251,7 +388,8 @@ app.get("/:version/:id", (c) =>
     id: c.req.param("id"),
     display_phone_number: "+1 555 000 9999",
     verified_name: "Fake Business",
-    quality_rating: "GREEN",
+    quality_rating: quality,
+    whatsapp_business_manager_messaging_limit: tier,
     url: `http://localhost:3299/_media/${c.req.param("id")}`,
     mime_type: "image/png",
     sha256: "FAKE",

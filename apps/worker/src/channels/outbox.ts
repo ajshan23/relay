@@ -94,10 +94,48 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
   }
 
   async function fail(messageId: string, error: Record<string, unknown>) {
-    await db
+    const [row] = await db
       .update(schema.message)
       .set({ status: "failed", failedAt: new Date(), error })
-      .where(and(eq(schema.message.id, messageId), inArray(schema.message.status, ["queued", "sending"])));
+      .where(and(eq(schema.message.id, messageId), inArray(schema.message.status, ["queued", "sending"])))
+      .returning({
+        broadcastId: schema.message.broadcastId,
+        channelAccountId: schema.message.channelAccountId,
+      });
+    if (row?.broadcastId) await haltBroadcast(row.broadcastId, row.channelAccountId, error);
+  }
+
+  /**
+   * A broadcast message failed in a way that means the rest would fail too (a bad template) or that
+   * sending more is unsafe (spam limit, billing): pause or stop the broadcast now, not on the engine's
+   * next tick, so the messages already queued behind it are held back by the check before sending.
+   */
+  async function haltBroadcast(
+    broadcastId: string,
+    channelAccountId: string,
+    error: Record<string, unknown>,
+  ) {
+    const [account] = await db
+      .select({ type: schema.channelAccount.type })
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, channelAccountId))
+      .limit(1);
+    const action = account
+      ? channels()
+          .get(account.type)
+          ?.broadcastError?.(error.code as number | undefined, String(error.message ?? ""))
+      : undefined;
+    if (action?.action !== "stop" && action?.action !== "pause") return;
+    await db
+      .update(schema.broadcast)
+      .set({
+        status: action.action === "stop" ? "stopped" : "paused",
+        pauseReason: action.pauseReason,
+        pauseDetail: action.reason,
+        updatedAt: new Date(),
+        ...(action.action === "stop" ? { completedAt: new Date() } : {}),
+      })
+      .where(and(eq(schema.broadcast.id, broadcastId), eq(schema.broadcast.status, "sending")));
   }
 
   /**

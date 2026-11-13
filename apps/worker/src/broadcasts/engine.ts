@@ -382,7 +382,8 @@ export function createBroadcastEngine({
       .where(
         and(
           eq(r.broadcastId, bc.id),
-          sql`${r.sentAt} >= ${dayStart}`,
+          // Stored as UTC without a zone; the driver can't take a Date here.
+          sql`${r.sentAt} >= (${dayStart.toISOString()}::timestamptz at time zone 'utc')`,
           inArray(r.status, ["queued", "sent", "delivered", "read", "failed"]),
         ),
       );
@@ -816,6 +817,14 @@ export function createBroadcastEngine({
       }
     }
 
+    // Stopped elsewhere (the outbox halts a broadcast the moment a bad-template error comes back):
+    // whoever is still waiting is skipped.
+    const ended = await db.execute<{ broadcast_id: string }>(sql`
+      update broadcast_recipient set status = 'skipped', skip_reason = 'stopped', updated_at = ${utcNow}
+      where status = 'pending' and broadcast_id in (select id from broadcast where status in ('stopped', 'failed'))
+      returning broadcast_id`);
+    for (const id of new Set(ended.map((x) => x.broadcast_id))) await rollup(id);
+
     const active = await db
       .select()
       .from(b)
@@ -842,7 +851,12 @@ export function createBroadcastEngine({
       const recent = await db
         .select({ id: b.id })
         .from(b)
-        .where(and(eq(b.status, "completed"), sql`${b.completedAt} > ${utcNow} - interval '3 days'`));
+        .where(
+          and(
+            inArray(b.status, ["completed", "stopped"]),
+            sql`${b.completedAt} > ${utcNow} - interval '3 days'`,
+          ),
+        );
       for (const x of recent) {
         const bc = await one(x.id);
         if (!bc) continue;
