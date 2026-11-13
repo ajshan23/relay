@@ -222,6 +222,8 @@ export const message = pgTable(
     /** Provider errors, kept as received. */
     error: jsonb("error").$type<Record<string, unknown>>(),
     replyToMessageId: text("reply_to_message_id"),
+    /** Sent by a broadcast (see broadcasts.ts). No foreign key: broadcasts.ts imports this file. */
+    broadcastId: text("broadcast_id"),
     /** When the customer sent it (inbound) or when we asked to send it (outbound). */
     sentAt: timestamp("sent_at").notNull(),
     acceptedAt: timestamp("accepted_at"),
@@ -233,6 +235,7 @@ export const message = pgTable(
   (t) => [
     uniqueIndex("message_account_external_uidx").on(t.channelAccountId, t.externalId),
     index("message_conversation_idx").on(t.conversationId, t.sentAt),
+    index("message_broadcast_idx").on(t.broadcastId),
     // Search inside a conversation: message text and media captions.
     index("message_text_trgm").using(
       "gin",

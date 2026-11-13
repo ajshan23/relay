@@ -33,6 +33,8 @@ export const whatsappCapabilities: ChannelCapabilities = {
   },
   readReceipts: true,
   typingIndicator: true,
+  // Broadcasts send approved templates; the daily cap is per business portfolio (all its numbers).
+  broadcast: { content: "template", addressKind: "phone", dailyLimit: "portfolio", perSecond: 70 },
   reactions: true,
   // WhatsApp Groups API: Official Business Account numbers only; business-created, invite-link only.
   groups: {

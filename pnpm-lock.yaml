@@ -246,6 +246,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@relay/core':
+        specifier: workspace:*
+        version: link:../core
       drizzle-orm:
         specifier: ^0.45.4
         version: 0.45.4(kysely@0.29.9)(postgres@4.1.1)

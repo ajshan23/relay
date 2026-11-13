@@ -36,6 +36,8 @@ export const idPrefixes = {
   mention: "men",
   quickReply: "qr",
   storedFile: "file",
+  broadcast: "bc",
+  broadcastRecipient: "bcr",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

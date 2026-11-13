@@ -276,7 +276,38 @@ export type ChannelCapabilities = {
   groups: GroupCapabilities | null;
   /** What this channel's message templates can hold, or null when it has none. */
   templates: TemplateLimits | null;
+  /** How broadcasts work on this channel, or null when it has none. */
+  broadcast: BroadcastCapabilities | null;
 };
+
+/** What a broadcast on this channel sends, to which address, and what limits it. */
+export type BroadcastCapabilities = {
+  /** "template": an approved template (WhatsApp); "text": plain text (SMS); "email": subject and body. */
+  content: "template" | "text" | "email";
+  /** Where a contact is reached: their phone or their email. */
+  addressKind: "phone" | "email";
+  /**
+   * "portfolio": the provider caps how many people the business (all its numbers together) may start
+   * conversations with per rolling 24 h; "none": no such cap.
+   */
+  dailyLimit: "portfolio" | "none";
+  /** Most messages per second per sender. */
+  perSecond: number;
+};
+
+/**
+ * What a broadcast does when sending to one person fails, decided per channel from the provider's
+ * error. "retry": try this person again later; "final": this person can't be reached; "opt_out": they
+ * stopped this kind of message (recorded); "pause": stop sending and tell the team; "stop": every
+ * message would fail, end the broadcast; "slow": the provider wants fewer messages per second.
+ */
+export type BroadcastErrorAction =
+  | { action: "retry"; afterMs: number; reason: string }
+  | { action: "final"; reason: string }
+  | { action: "opt_out"; reason: string }
+  | { action: "pause"; pauseReason: string; reason: string }
+  | { action: "stop"; pauseReason: string; reason: string }
+  | { action: "slow"; afterMs: number; reason: string };
 
 export type GroupCapabilities = {
   /** The business can create groups through the channel. */

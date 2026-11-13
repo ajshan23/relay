@@ -4,7 +4,8 @@ import { and, eq, inArray, isNull, schema, sql } from "@relay/db";
 import type { MiddlewareHandler } from "hono";
 import type { AppContext } from "../../context";
 import { type Access, type AccessEnv, fail, isOrgAdmin } from "../branches/access";
-import type { ListsById } from "./filter";
+
+export { activeFields, listsById } from "@relay/db";
 
 /* Pieces the contacts routes, lists and imports share. */
 
@@ -119,24 +120,6 @@ export async function setOptOut(
         channelAccountId ? eq(o.channelAccountId, channelAccountId) : undefined,
       ),
     );
-}
-
-/** Every list of the business, for filters that say "in list". */
-export async function listsById(db: Db, orgId: string, branchId: string): Promise<ListsById> {
-  const rows = await db
-    .select({ id: schema.contactList.id, kind: schema.contactList.kind, filter: schema.contactList.filter })
-    .from(schema.contactList)
-    .where(and(eq(schema.contactList.organizationId, orgId), eq(schema.contactList.branchId, branchId)));
-  return new Map(rows.map((r) => [r.id, { kind: r.kind, filter: r.filter }]));
-}
-
-/** The business's active fields, in order. */
-export async function activeFields(db: Db, orgId: string) {
-  return db
-    .select()
-    .from(schema.contactField)
-    .where(and(eq(schema.contactField.organizationId, orgId), isNull(schema.contactField.archivedAt)))
-    .orderBy(schema.contactField.position, schema.contactField.createdAt);
 }
 
 /** Requests that work inside one branch: contacts, lists, saved views and imports. */

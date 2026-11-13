@@ -1,6 +1,7 @@
 import type { TemplateDefinition, TemplateStatus } from "@relay/core/templates";
 import { createGraphClient, type GraphConfig } from "./meta/graph";
 import type {
+  BroadcastErrorAction,
   ChannelCapabilities,
   ChannelIdentity,
   ChannelType,
@@ -8,6 +9,7 @@ import type {
   OutboundMessage,
   Recipient,
 } from "./types";
+import { whatsappBroadcastError, whatsappTier } from "./whatsapp/broadcast-errors";
 import { whatsappCapabilities } from "./whatsapp/capabilities";
 import {
   createWhatsAppGroup,
@@ -146,6 +148,15 @@ export type ChannelAdapter = {
    * the business is typing a reply (WhatsApp: up to 25 s, or until the reply arrives).
    */
   markRead?(account: AccountRef, externalId: string, opts?: { typing?: boolean }): Promise<void>;
+  /** What a broadcast does with a failed send, from the provider's error (see BroadcastErrorAction). */
+  broadcastError?(code: number | string | null | undefined, message?: string): BroadcastErrorAction;
+  /**
+   * The account's sending health: how many people the business may message per rolling 24 h
+   * (-1 for unlimited, null when the channel has no such cap) and its quality.
+   */
+  health?(
+    account: AccountRef,
+  ): Promise<{ dailyLimit: number | null; quality: "GREEN" | "YELLOW" | "RED" | null }>;
   groups?: GroupAdapter;
   templates?: TemplateAdapter;
 };
@@ -189,6 +200,21 @@ function whatsappAdapter(graphConfig: GraphConfig): ChannelAdapter {
     uploadMedia: (account, file) => uploadWhatsAppMedia(graph, wa(account), file),
     markRead: (account, externalId, opts) =>
       markWhatsAppRead(graph, wa(account), externalId, opts?.typing ?? false),
+    broadcastError: whatsappBroadcastError,
+    async health(account) {
+      const res = await graph.request<{
+        whatsapp_business_manager_messaging_limit?: string;
+        quality_rating?: string;
+      }>(
+        "GET",
+        `${account.externalId}?fields=whatsapp_business_manager_messaging_limit,quality_rating`,
+        account.credentials.accessToken,
+      );
+      return {
+        dailyLimit: whatsappTier(res.whatsapp_business_manager_messaging_limit),
+        quality: (["GREEN", "YELLOW", "RED"] as const).find((q) => q === res.quality_rating) ?? null,
+      };
+    },
     groups: {
       create: (account, input) => createWhatsAppGroup(graph, wa(account), input),
       update: (account, groupId, input) => updateWhatsAppGroup(graph, wa(account), groupId, input),
