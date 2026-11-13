@@ -9,5 +9,8 @@
   "scripts": {
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@relay/core": "workspace:*"
   }
 }

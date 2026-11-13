@@ -1,3 +1,4 @@
+import type { TemplateDefinition, TemplateStatus } from "@relay/core/templates";
 import { createGraphClient, type GraphConfig } from "./meta/graph";
 import type {
   ChannelCapabilities,
@@ -25,6 +26,12 @@ import {
   sendWhatsAppMessage,
   subscribeWhatsAppAccount,
 } from "./whatsapp/send";
+import {
+  deleteWhatsAppTemplate,
+  listWhatsAppTemplates,
+  submitWhatsAppTemplate,
+  updateWhatsAppTemplate,
+} from "./whatsapp/templates";
 
 /*
  * Every channel is an adapter with the same shape. The worker and the API only talk to adapters,
@@ -75,6 +82,38 @@ export type GroupAdapter = {
   ): Promise<void>;
 };
 
+type HeaderFile = { bytes: Uint8Array; mimeType: string; fileName: string };
+
+/**
+ * Message templates on a channel. Channels that review templates return "in_review" and report the
+ * result later as a template.status_changed event; channels without review return "ready" at once.
+ */
+export type TemplateAdapter = {
+  /**
+   * Accounts with the same scope share their templates (WhatsApp: numbers of one business account),
+   * so a template is published once per scope and every account in it uses that copy.
+   */
+  scope(account: AccountRef): string;
+  submit(
+    account: AccountRef,
+    template: TemplateDefinition,
+    headerFile?: HeaderFile | null,
+  ): Promise<{ externalId: string; status: TemplateStatus }>;
+  update(
+    account: AccountRef,
+    externalId: string,
+    template: TemplateDefinition,
+    headerFile?: HeaderFile | null,
+  ): Promise<{ status: TemplateStatus }>;
+  remove(account: AccountRef, externalId: string, slug: string): Promise<void>;
+  /** Templates that already exist on the channel (made elsewhere), to import. */
+  list(
+    account: AccountRef,
+  ): Promise<
+    { externalId: string; definition: TemplateDefinition; status: TemplateStatus; reason: string | null }[]
+  >;
+};
+
 export type ChannelAdapter = {
   type: ChannelType;
   capabilities: ChannelCapabilities;
@@ -104,6 +143,7 @@ export type ChannelAdapter = {
   ): Promise<{ providerMediaId: string }>;
   markRead?(account: AccountRef, externalId: string): Promise<void>;
   groups?: GroupAdapter;
+  templates?: TemplateAdapter;
 };
 
 /** Identity → the reference the provider wants (WhatsApp: BSUID when known, otherwise phone). */
@@ -115,6 +155,11 @@ const waPerson = (p: ChannelIdentity) => ({
 function whatsappAdapter(graphConfig: GraphConfig): ChannelAdapter {
   const graph = createGraphClient(graphConfig);
   const wa = (a: AccountRef) => ({ phoneNumberId: a.externalId, accessToken: a.credentials.accessToken });
+  const waba = (a: AccountRef) => {
+    const wabaId = String(a.providerMeta.wabaId ?? "");
+    if (!wabaId) throw new Error("This WhatsApp number has no business account id; reconnect it.");
+    return { wabaId, accessToken: a.credentials.accessToken };
+  };
   return {
     type: "whatsapp",
     capabilities: whatsappCapabilities,
@@ -162,6 +207,14 @@ function whatsappAdapter(graphConfig: GraphConfig): ChannelAdapter {
       },
       decideJoinRequests: (account, groupId, ids, approve) =>
         decideWhatsAppJoinRequests(graph, wa(account), groupId, ids, approve),
+    },
+    templates: {
+      scope: (account) => `waba:${String(account.providerMeta.wabaId ?? account.externalId)}`,
+      submit: (account, t, file) => submitWhatsAppTemplate(graph, waba(account), t, file),
+      update: (account, id, t, file) =>
+        updateWhatsAppTemplate(graph, account.credentials.accessToken, id, t, file),
+      remove: (account, id, slug) => deleteWhatsAppTemplate(graph, waba(account), id, slug),
+      list: (account) => listWhatsAppTemplates(graph, waba(account)),
     },
   };
 }

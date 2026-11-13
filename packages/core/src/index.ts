@@ -4,3 +4,4 @@ export * from "./inbox";
 export * from "./queues";
 export * from "./secrets";
 export * from "./storage";
+export * from "./templates";

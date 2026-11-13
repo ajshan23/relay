@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@relay/ui"],
+  transpilePackages: ["@relay/ui", "@relay/core"],
   // The browser talks to the API through the web app's own origin, so sign-in cookies are first-party.
   async rewrites() {
     const api = process.env.API_URL ?? "http://localhost:3201";

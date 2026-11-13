@@ -1,5 +1,6 @@
 import type { GraphClient } from "../meta/graph";
 import type { OutboundMessage, Recipient } from "../types";
+import { buildWhatsAppTemplateMessage } from "./templates";
 
 /** What a WhatsApp channel account needs to send: its phone number id and access token. */
 export type WhatsAppAccount = { phoneNumberId: string; accessToken: string };
@@ -22,6 +23,9 @@ export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, o
   if (message.type === "text") {
     body.type = "text";
     body.text = { body: message.text, preview_url: message.previewUrl ?? false };
+  } else if (message.type === "template") {
+    body.type = "template";
+    body.template = buildWhatsAppTemplateMessage(message);
   } else {
     body.type = message.type;
     body[message.type] = {

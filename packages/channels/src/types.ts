@@ -1,3 +1,5 @@
+import type { TemplateLimits, TemplateStatus } from "@relay/core/templates";
+
 /*
  * Relay's channel-agnostic shapes. Every channel adapter turns its provider's webhooks into
  * NormalizedEvent values and sends OutboundMessage values. Nothing outside an adapter ever sees a
@@ -201,13 +203,26 @@ export type GroupEvent =
       participant: ChannelIdentity;
     });
 
+/** A channel's review of a template changed (approved, needs changes, paused…). */
+export type TemplateStatusEvent = {
+  channel: ChannelType;
+  kind: "template.status_changed";
+  /** The provider's template id. Routes the event to the template's channel copies. */
+  templateExternalId: string;
+  status: TemplateStatus;
+  /** The reviewer's reason, in plain words, when there is one. */
+  reason: string | null;
+  at: Date;
+};
+
 export type NormalizedEvent =
   | MessageReceived
   | MessageStatusEvent
   | ReactionEvent
   | ContactChangedEvent
   | AccountEvent
-  | GroupEvent;
+  | GroupEvent
+  | TemplateStatusEvent;
 
 /** Who a message goes to: one customer (by phone or channel id), or a group. */
 export type Recipient =
@@ -217,6 +232,16 @@ export type Recipient =
 /** What Relay asks a channel to send. */
 export type OutboundMessage = (
   | { type: "text"; text: string; previewUrl?: boolean }
+  | {
+      type: "template";
+      /** The channel-safe template name and language it was published under. */
+      name: string;
+      language: string;
+      /** Detail values by name. */
+      values: Record<string, string>;
+      /** For templates with a picture, video or file header: the file handed to the channel. */
+      headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string };
+    }
   | {
       type: "image" | "video" | "audio" | "document" | "sticker";
       providerMediaId: string;
@@ -247,6 +272,8 @@ export type ChannelCapabilities = {
   reactions: boolean;
   /** What this channel's group chats can do, or null when the channel has no groups. */
   groups: GroupCapabilities | null;
+  /** What this channel's message templates can hold, or null when it has none. */
+  templates: TemplateLimits | null;
 };
 
 export type GroupCapabilities = {

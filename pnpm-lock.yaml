@@ -114,6 +114,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@relay/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@relay/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -206,7 +209,11 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
 
-  packages/channels: {}
+  packages/channels:
+    dependencies:
+      '@relay/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/core:
     dependencies:

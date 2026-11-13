@@ -47,4 +47,19 @@ export const whatsappCapabilities: ChannelCapabilities = {
     // Meta does not document the group window length; 24 h assumed until confirmed on a live group.
     replyWindowHours: 24,
   },
+  // Message templates: reviewed by Meta, usually within minutes, at most about a day.
+  templates: {
+    requiresApproval: true,
+    reviewEstimate: "up to 2 hours",
+    purposes: ["updates", "marketing", "login"],
+    headerKinds: ["text", "image", "video", "document"],
+    buttonKinds: ["reply", "link", "call"],
+    maxButtons: 3,
+    maxBodyLength: 1024,
+    maxHeaderTextLength: 60,
+    maxFooterLength: 60,
+    maxButtonTextLength: 25,
+    editNote:
+      "WhatsApp reviews every change again, and an approved template can be changed about once a day.",
+  },
 };

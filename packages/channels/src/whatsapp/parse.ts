@@ -9,6 +9,7 @@ import type {
   NormalizedEvent,
   ProviderError,
 } from "../types";
+import { whatsappReason, whatsappTemplateStatus } from "./templates";
 
 /*
  * Turns a WhatsApp Cloud API webhook into Relay events. Iterates every entry, change, message and
@@ -310,6 +311,22 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
       const accountExternalId = str(metadata.phone_number_id) ?? "";
       const base = { channel: "whatsapp" as const, accountExternalId };
 
+      // Template reviews arrive on the business account, not a number.
+      if (field === "message_template_status_update") {
+        const id =
+          str(value.message_template_id) ??
+          (typeof value.message_template_id === "number" ? String(value.message_template_id) : null);
+        if (id)
+          events.push({
+            channel: "whatsapp",
+            kind: "template.status_changed",
+            templateExternalId: id,
+            status: whatsappTemplateStatus(str(value.event) ?? undefined),
+            reason: whatsappReason(str(value.reason), str(asObject(value.other_info).description)),
+            at: new Date(),
+          });
+        continue;
+      }
       if (groupFields.has(field)) {
         events.push(...groupEvents(base, value, scope));
         continue;

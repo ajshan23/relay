@@ -9,6 +9,7 @@ export {
   type ConnectResult,
   createChannelRegistry,
   type GroupAdapter,
+  type TemplateAdapter,
 } from "./adapter";
 export * from "./meta/errors";
 export { createGraphClient, type GraphClient, type GraphConfig } from "./meta/graph";
@@ -26,3 +27,8 @@ export {
   subscribeWhatsAppAccount,
   type WhatsAppAccount,
 } from "./whatsapp/send";
+export {
+  buildWhatsAppTemplate,
+  buildWhatsAppTemplateMessage,
+  parseWhatsAppTemplate,
+} from "./whatsapp/templates";

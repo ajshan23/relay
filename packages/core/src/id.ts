@@ -24,6 +24,8 @@ export const idPrefixes = {
   groupParticipant: "gpt",
   groupJoinRequest: "gjr",
   receipt: "rcp",
+  template: "tpl",
+  templateChannel: "tpc",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

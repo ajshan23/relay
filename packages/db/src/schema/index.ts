@@ -5,3 +5,4 @@ export * from "./channels";
 export * from "./email";
 export * from "./groups";
 export * from "./messaging";
+export * from "./templates";
