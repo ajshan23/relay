@@ -29,6 +29,7 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, Suspense, useState, useSyncExternalStore } from "react";
+import { InboxNav } from "@/components/inbox/inbox-nav";
 import { signOut } from "@/lib/auth-client";
 import { useMe } from "@/lib/me";
 import { useBranch } from "./branch-context";
@@ -401,7 +402,11 @@ function SubMenu({ section, onClose }: { section: Section; onClose: () => void }
       </div>
       <nav aria-label={`${section.label} views`} className="flex flex-col">
         <Suspense fallback={<SubTopicLinks section={section} current={null} />}>
-          <SubTopicLinksFromUrl section={section} />
+          {section.id === "conversations" ? (
+            <InboxNav section={section} itemClass={sideItem} />
+          ) : (
+            <SubTopicLinksFromUrl section={section} />
+          )}
         </Suspense>
       </nav>
       <BranchList />

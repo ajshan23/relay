@@ -20,6 +20,13 @@ const BRANCHES_REFRESH_MS = 60_000;
 export function eventRoutes(ctx: AppContext) {
   const app = new Hono<AccessEnv>();
   app.use(requireSession, requireOrg(ctx));
+  // Proxies (the web app's /api rewrite in development, CDNs later) must pass events through as they
+  // come: no compression (no-transform), no buffering. Set after the handler; streamSSE sets its own.
+  app.use(async (c, next) => {
+    await next();
+    c.res.headers.set("Cache-Control", "no-cache, no-transform");
+    c.res.headers.set("X-Accel-Buffering", "no");
+  });
 
   app.get("/", (c) => {
     const access = c.var.access;

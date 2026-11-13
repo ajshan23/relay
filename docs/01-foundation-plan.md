@@ -197,3 +197,25 @@ Instagram accounts, several Facebook Pages, several website widgets, later sever
 - The same customer can talk to two of our numbers; that is two conversations with one contact.
 - Screens let people choose which channel to send from wherever more than one could apply
   (replies default to the channel the customer wrote on).
+
+## 11. Step 4 done: inbox (2026-11-13)
+
+Built against the fake Meta server; works unchanged with a real number once it is connected.
+
+- **Layout:** the approved Board inbox, two panes (chat list + conversation), customer or group details in
+  the side panel; phone width shows one pane at a time. URL state: `/conversations?view=&channel=&c=`.
+- **Views:** Open, Assigned to me, Unassigned, Closed, with live counts in the sidebar; the sidebar's
+  Channels group lists the business's connected channel accounts; the branch switcher filters the inbox.
+- **Conversation:** shadcn Message/Bubble/MessageScroller; day separators; runs grouped by sender; group
+  members' names and avatars; photos, video, voice notes, documents, locations; reactions on the bubble
+  they react to; quoted replies; ticks (sending, sent, delivered, read; per-member counts in groups);
+  failures in plain words with "Try again" (asks first when the message may already have gone out).
+- **Composer:** Enter sends, files by button or drag and drop (checked against channel capabilities),
+  reply-to, drafts kept per conversation, reply-window countdown; locked with the reason when the window
+  closed, the group is gone, the channel is down or the person is a viewer.
+- **Team:** assign (owners, admins, the branch's managers and agents), close/reopen, unread per person.
+- **Live:** `/api/events` (SSE) fed by Redis pub/sub hints from the API and worker; the browser refetches.
+  The stream must not be compressed by proxies (`Cache-Control: no-transform`).
+
+Open: notes and mentions, snooze, canned replies, bulk actions, notifications and sounds, templates outside
+the window, AI agent views, typing indicator, sending stickers, search inside a conversation.

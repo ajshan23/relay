@@ -35,7 +35,7 @@ function section(
   label: string,
   icon: LucideIcon,
   summary: string,
-  groups: { label: string; items: string[] }[],
+  groups: { label: string; items: (string | { label: string; view: string })[] }[],
 ): Section {
   const href = `/${id}` as const;
   return {
@@ -46,7 +46,10 @@ function section(
     summary,
     groups: groups.map((g) => ({
       label: g.label,
-      items: g.items.map((item) => ({ label: item, view: slug(item), href: `${href}?view=${slug(item)}` })),
+      items: g.items.map((item) => {
+        const { label: text, view } = typeof item === "string" ? { label: item, view: slug(item) } : item;
+        return { label: text, view, href: `${href}?view=${view}` };
+      }),
     })),
   };
 }
@@ -68,8 +71,16 @@ export const sections: Section[] = [
     MessageCircle,
     "Every WhatsApp, Instagram and website chat in one inbox.",
     [
-      { label: "Conversations", items: ["All open", "Needs a person", "Mira is handling", "Mine", "Closed"] },
-      { label: "Channels", items: ["WhatsApp", "Instagram", "Website chat"] },
+      // The inbox's own sub-menu (inbox-nav.tsx) adds live counts and the business's channels.
+      {
+        label: "Conversations",
+        items: [
+          { label: "Open", view: "open" },
+          { label: "Assigned to me", view: "mine" },
+          { label: "Unassigned", view: "unassigned" },
+          { label: "Closed", view: "closed" },
+        ],
+      },
     ],
   ),
   section("customers", "Customers", Users, "Everyone who has talked to you, with their history and lists.", [
