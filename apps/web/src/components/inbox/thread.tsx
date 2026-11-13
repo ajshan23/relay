@@ -34,6 +34,7 @@ import { DateSeparator } from "@/components/ui/whatsapp/date-separator";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
+import { ChatSearch } from "./chat-search";
 import { Composer } from "./composer";
 import { channelIcon } from "./conversation-list";
 import { DetailsPanel } from "./details-panel";
@@ -62,6 +63,21 @@ export function Thread({ id, onBack, className }: Props) {
   const [dropped, setDropped] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [details, setDetails] = useState(false);
+  /** Searching inside this chat, and the match to highlight. */
+  const [searching, setSearching] = useState(false);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new conversation closes the search
+  useEffect(() => {
+    setSearching(false);
+    setHighlight(null);
+  }, [id]);
+  useEffect(() => {
+    const onKey = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "search") setSearching(true);
+    };
+    window.addEventListener("relay:inbox-shortcut", onKey);
+    return () => window.removeEventListener("relay:inbox-shortcut", onKey);
+  }, []);
 
   const list = useMemo(
     () => (messages.data ? [...messages.data.pages].reverse().flatMap((p) => p.messages) : []),
@@ -159,13 +175,34 @@ export function Thread({ id, onBack, className }: Props) {
       }}
       onDrop={onDrop}
     >
-      <ThreadHeader detail={d} onBack={onBack} onDetails={() => setDetails(true)} />
+      <ThreadHeader
+        detail={d}
+        onBack={onBack}
+        onDetails={() => setDetails(true)}
+        onSearch={() => setSearching((s) => !s)}
+      />
 
       <div className="relative min-h-0 flex-1">
         {messages.isPending || !d ? (
           <ThreadSkeleton />
         ) : (
           <MessageScrollerProvider key={id} autoScroll defaultScrollPosition="end">
+            {searching ? (
+              <ChatSearch
+                conversationId={id}
+                list={list}
+                loadOlder={async () => {
+                  if (!messages.hasNextPage) return false;
+                  await messages.fetchNextPage();
+                  return true;
+                }}
+                onHighlight={setHighlight}
+                onClose={() => {
+                  setSearching(false);
+                  setHighlight(null);
+                }}
+              />
+            ) : null}
             <MessageScroller>
               <MessageScrollerViewport preserveScrollOnPrepend>
                 <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-0 px-4 py-4 sm:px-6">
@@ -191,6 +228,7 @@ export function Thread({ id, onBack, className }: Props) {
                   <Messages
                     list={list}
                     unread={unread}
+                    highlight={highlight}
                     detail={d}
                     onReply={d.canWork && d.conversation.windowOpen ? setReplyTo : undefined}
                   />
@@ -230,12 +268,15 @@ export function Thread({ id, onBack, className }: Props) {
 function Messages({
   list,
   unread,
+  highlight,
   detail,
   onReply,
 }: {
   list: Message[];
   /** Where the new messages start, and how many: shown as a divider. */
   unread: { fromId: string; count: number } | null;
+  /** A search match to point out. */
+  highlight: string | null;
   detail: ConversationDetail;
   onReply?: (m: Message) => void;
 }) {
@@ -309,7 +350,14 @@ function Messages({
           </Marker>
         ) : null}
         {/* Follow-ups in a run sit close, but never touch: photos and videos have no padding of their own. */}
-        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-2" : "pt-1")}>
+        <MessageScrollerItem
+          messageId={m.id}
+          className={cn(
+            first ? "pt-2" : "pt-1",
+            "rounded-lg transition-colors duration-500",
+            highlight === m.id && "bg-primary/10",
+          )}
+        >
           <MessageBubble
             message={m}
             first={first}
@@ -335,10 +383,12 @@ function ThreadHeader({
   detail: d,
   onBack,
   onDetails,
+  onSearch,
 }: {
   detail: ConversationDetail | undefined;
   onBack: () => void;
   onDetails: () => void;
+  onSearch: () => void;
 }) {
   const update = useUpdateConversation(d?.conversation.id ?? "");
   const { me } = useMe();
@@ -410,6 +460,15 @@ function ThreadHeader({
 
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
         <TeammatesHere conversationId={c.id} />
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Search this conversation"
+          title="Search (Ctrl F)"
+          onClick={onSearch}
+        >
+          <Icon name="search" />
+        </Button>
         {d.canWork ? (
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>

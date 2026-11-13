@@ -649,6 +649,44 @@ export function conversationRoutes(ctx: AppContext) {
     return c.json({ previousReadAt: previous?.at ?? null });
   });
 
+  // Search this conversation's whole history: message text and media captions, notes included.
+  app.get("/:id/messages/search", async (c) => {
+    const conversation = await findConversation(ctx, c.var.access, c.req.param("id"));
+    if (!conversation) return fail(c, 404, "not_found");
+    const q = (c.req.query("q") ?? "").trim().slice(0, 100);
+    if (q.length < 2) return c.json({ matches: [] });
+    const m = schema.message;
+    const text = sql`(coalesce(${m.content} ->> 'text', '') || ' ' || coalesce(${m.content} -> 'media' ->> 'caption', ''))`;
+    const rows = await ctx.db
+      .select({
+        id: m.id,
+        sentAt: m.sentAt,
+        type: m.type,
+        direction: m.direction,
+        text: sql<string>`${text}`,
+      })
+      .from(m)
+      .where(
+        and(
+          eq(m.conversationId, conversation.id),
+          sql`${m.type} <> 'reaction'`,
+          sql`${text} ilike ${`%${q.replace(/[%_\\]/g, "\\$&")}%`}`,
+        ),
+      )
+      .orderBy(desc(m.sentAt), desc(m.id))
+      .limit(50);
+    const lower = q.toLowerCase();
+    return c.json({
+      matches: rows.map((r) => {
+        const t = r.text.trim();
+        const at = t.toLowerCase().indexOf(lower);
+        const from = Math.max(0, at - 40);
+        const snippet = `${from > 0 ? "…" : ""}${t.slice(from, at + q.length + 60)}${at + q.length + 60 < t.length ? "…" : ""}`;
+        return { id: r.id, sentAt: r.sentAt, type: r.type, direction: r.direction, snippet };
+      }),
+    });
+  });
+
   // History, newest page first. ?before=<message id> for older messages.
   app.get("/:id/messages", async (c) => {
     const conversation = await findConversation(ctx, c.var.access, c.req.param("id"));
