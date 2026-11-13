@@ -119,7 +119,7 @@ export function Thread({ id, onBack, className }: Props) {
     >
       <ThreadHeader detail={d} onBack={onBack} onDetails={() => setDetails(true)} />
 
-      <div className="relative min-h-0 flex-1 bg-wa-conversation-bg">
+      <div className="relative min-h-0 flex-1">
         {messages.isPending || !d ? (
           <ThreadSkeleton />
         ) : (
