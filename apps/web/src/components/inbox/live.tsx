@@ -41,6 +41,9 @@ function LiveUpdates() {
       timer ??= setTimeout(flush, 150);
     };
 
+    const onTemplate = () => {
+      void qc.invalidateQueries({ queryKey: ["templates"] });
+    };
     const onHint = (e: MessageEvent<string>) => {
       try {
         const hint = JSON.parse(e.data) as Hint;
@@ -61,6 +64,7 @@ function LiveUpdates() {
       });
       for (const type of ["conversation.updated", "message.updated", "conversation.read"])
         source.addEventListener(type, onHint as EventListener);
+      source.addEventListener("template.updated", onTemplate);
       source.onerror = () => {
         // The browser retries on its own unless the stream was refused (closed); then retry later.
         if (source?.readyState === EventSource.CLOSED) {

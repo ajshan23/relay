@@ -7,10 +7,11 @@ import { usePathname } from "next/navigation";
 const tabs = [
   { href: "/settings/branches", label: "Branches" },
   { href: "/settings/team", label: "Team" },
+  { href: "/settings/templates", label: "Templates" },
 ] as const;
 
 /**
- * The two-tab switch under the Settings title. Built from tokens here because the design system
+ * The tab switch under the Settings title. Built from tokens here because the design system
  * has no link-tabs component yet (Segmented is a radio group, not navigation).
  */
 export function SettingsTabs() {

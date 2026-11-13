@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { localFileStorage, newId } from "@relay/core";
-import { and, eq, schema } from "@relay/db";
+import { and, eq, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { channels } from "../../channels";
 import type { AppContext } from "../../context";
@@ -42,17 +42,30 @@ export function fileRoutes(ctx: AppContext) {
     const form = await c.req.formData().catch(() => null);
     const file = form?.get("file");
     const conversationId = form?.get("conversationId");
-    if (!(file instanceof File) || typeof conversationId !== "string")
+    // A template header picture or file is uploaded before any conversation: check it against the
+    // business's channels that have templates.
+    const forTemplate = form?.get("use") === "template";
+    if (!(file instanceof File) || (!forTemplate && typeof conversationId !== "string"))
       return fail(c, 422, "invalid_input", "Send a file and the conversation it is for.");
-    const conversation = await findConversation(ctx, access, conversationId);
-    if (!conversation) return fail(c, 404, "not_found");
-    if (!(await canWork(ctx, access, conversation))) return fail(c, 403, "forbidden");
-    const [account] = await ctx.db
-      .select({ type: schema.channelAccount.type })
-      .from(schema.channelAccount)
-      .where(eq(schema.channelAccount.id, conversation.channelAccountId))
-      .limit(1);
-    const caps = account ? channels().get(account.type)?.capabilities : null;
+    let accountType: string | null = null;
+    if (forTemplate) {
+      const accounts = await ctx.db
+        .select({ type: schema.channelAccount.type })
+        .from(schema.channelAccount)
+        .where(eq(schema.channelAccount.organizationId, access.orgId));
+      accountType = accounts.find((a) => channels().get(a.type)?.capabilities.templates)?.type ?? null;
+    } else {
+      const conversation = await findConversation(ctx, access, String(conversationId));
+      if (!conversation) return fail(c, 404, "not_found");
+      if (!(await canWork(ctx, access, conversation))) return fail(c, 403, "forbidden");
+      const [account] = await ctx.db
+        .select({ type: schema.channelAccount.type })
+        .from(schema.channelAccount)
+        .where(eq(schema.channelAccount.id, conversation.channelAccountId))
+        .limit(1);
+      accountType = account?.type ?? null;
+    }
+    const caps = accountType ? channels().get(accountType as never)?.capabilities : null;
     if (!caps) return fail(c, 409, "unsupported_channel", "Files can't be sent on this channel yet.");
 
     const mimeType = (file.type || "application/octet-stream").split(";")[0]?.trim() ?? "";
@@ -133,7 +146,18 @@ export function fileRoutes(ctx: AppContext) {
       if (!message || !(await findConversation(ctx, access, message.conversationId)))
         return fail(c, 404, "not_found");
     } else if (file.uploadedByUserId !== access.userId) {
-      return fail(c, 404, "not_found"); // An unsent upload is only its uploader's.
+      // An unsent upload is only its uploader's, unless it is a template's header file.
+      const [usedBy] = await ctx.db
+        .select({ id: schema.messageTemplate.id })
+        .from(schema.messageTemplate)
+        .where(
+          and(
+            eq(schema.messageTemplate.organizationId, access.orgId),
+            sql`${schema.messageTemplate.content}->'header'->>'attachmentId' = ${file.id}`,
+          ),
+        )
+        .limit(1);
+      if (!usedBy) return fail(c, 404, "not_found");
     }
     if (file.status === "pending") return fail(c, 409, "not_ready", "The file is still being downloaded.");
     if (file.status === "failed" || !file.storageKey)
