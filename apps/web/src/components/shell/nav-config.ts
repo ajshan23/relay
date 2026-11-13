@@ -106,7 +106,7 @@ export const sections: Section[] = [
     { label: "Knowledge", items: ["Website", "Files", "Questions and answers"] },
   ]),
   section("broadcasts", "Broadcasts", Megaphone, "Messages you send to many contacts at once.", [
-    { label: "Broadcasts", items: ["All", "Drafts", "Scheduled", "Sent"] },
+    { label: "Broadcasts", items: ["All", "Drafts", "Scheduled", "Sending", "Done"] },
   ]),
   section(
     "insights",

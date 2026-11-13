@@ -1,5 +1,8 @@
-import { SectionPlaceholder } from "@/components/shell/section-placeholder";
+import { BroadcastsPage } from "@/components/broadcasts/list";
 
-export default function Page({ searchParams }: PageProps<"/broadcasts">) {
-  return <SectionPlaceholder id="broadcasts" searchParams={searchParams} />;
+/** Driven by the URL (?view=) and live data: nothing to prerender. */
+export const instant = false;
+
+export default function Page() {
+  return <BroadcastsPage />;
 }
