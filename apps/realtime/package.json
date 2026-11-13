@@ -1,0 +1,11 @@
+{
+  "name": "@relay/realtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Live update streams (/api/events) as their own process. The code lives in apps/api (src/realtime.ts); this package only runs it.",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env ../api/src/realtime.ts",
+    "start": "tsx --env-file=../../.env ../api/src/realtime.ts"
+  }
+}

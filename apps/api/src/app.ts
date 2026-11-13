@@ -10,7 +10,6 @@ import { contactImportRoutes } from "./modules/contacts/imports";
 import { contactListRoutes } from "./modules/contacts/lists";
 import { contactFieldRoutes, contactRoutes, contactViewRoutes, tagRoutes } from "./modules/contacts/routes";
 import { conversationRoutes } from "./modules/conversations/routes";
-import { eventRoutes } from "./modules/events/routes";
 import { fileRoutes } from "./modules/files/routes";
 import { groupRoutes } from "./modules/groups/routes";
 import { healthRoutes } from "./modules/health/routes";
@@ -47,7 +46,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/contacts/imports", contactImportRoutes(ctx));
   app.route("/api/tags", tagRoutes(ctx));
   app.route("/api/contacts", contactRoutes(ctx));
-  app.route("/api/events", eventRoutes(ctx));
+  // Live updates (/api/events) are served by their own process: see src/realtime.ts.
   app.route("/api", fileRoutes(ctx));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));

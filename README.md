@@ -7,6 +7,7 @@ Customer conversations, AI agents and automation. Built from scratch as a succes
 ```
 apps/web       Next.js + shadcn/ui      http://localhost:3200
 apps/api       Hono API                 http://localhost:3201
+apps/realtime  Live update streams      http://localhost:3203  (code in apps/api/src/realtime.ts)
 apps/worker    BullMQ worker
 apps/lab       Design lab: one MVP in six structures and six colour designs   http://localhost:3210
 packages/core  env validation, IDs, queue names

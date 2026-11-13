@@ -15,15 +15,45 @@ import { createEventHub } from "./hub";
  *
  * `?branch=` limits the stream to the branch the browser shows (the app always passes it), so a busy
  * branch never makes the other branches' inboxes refetch.
+ *
+ * Served by its own process (src/realtime.ts), not the main API: thousands of open tabs never compete
+ * with ordinary requests, and deploying the API doesn't drop everyone's live connection.
  */
 
 const HEARTBEAT_MS = 25_000;
 const BRANCHES_REFRESH_MS = 60_000;
 
+/**
+ * Which branches each person can reach, shared by all their open tabs on this process and refreshed
+ * once a minute: one query per person, not one per tab.
+ */
+function createAccessCache(ctx: AppContext) {
+  const entries = new Map<string, { at: number; branches: Promise<string[] | null> }>();
+  // Drop people who closed their tabs a while ago.
+  setInterval(() => {
+    const cutoff = Date.now() - BRANCHES_REFRESH_MS * 5;
+    for (const [key, e] of entries) if (e.at < cutoff) entries.delete(key);
+  }, BRANCHES_REFRESH_MS * 5).unref();
+  return {
+    branches(access: AccessEnv["Variables"]["access"]) {
+      const key = `${access.orgId}:${access.userId}`;
+      const hit = entries.get(key);
+      if (hit && Date.now() - hit.at < BRANCHES_REFRESH_MS) return hit.branches;
+      const branches = reachableBranches(ctx, access);
+      // A failed lookup isn't kept, so the next event asks again.
+      branches.catch(() => entries.delete(key));
+      entries.set(key, { at: Date.now(), branches });
+      return branches;
+    },
+    size: () => entries.size,
+  };
+}
+
 export function eventRoutes(ctx: AppContext) {
   const app = new Hono<AccessEnv>();
   app.use(requireSession, requireOrg(ctx));
   const hub = createEventHub(ctx.config.REDIS_URL);
+  const reach = createAccessCache(ctx);
   // Proxies (the web app's /api rewrite in development, CDNs later) must pass events through as they
   // come: no compression (no-transform), no buffering. Set after the handler; streamSSE sets its own.
   app.use(async (c, next) => {
@@ -35,10 +65,9 @@ export function eventRoutes(ctx: AppContext) {
   app.get("/", async (c) => {
     const access = c.var.access;
     const only = c.req.query("branch") || null;
-    let branches = await reachableBranches(ctx, access);
-    if (only && branches !== null && !branches.includes(only)) return fail(c, 403, "forbidden");
+    const atStart = await reach.branches(access);
+    if (only && atStart !== null && !atStart.includes(only)) return fail(c, 403, "forbidden");
     return streamSSE(c, async (stream) => {
-      let branchesAt = Date.now();
       let closed = false;
       let queue = Promise.resolve();
 
@@ -46,10 +75,7 @@ export function eventRoutes(ctx: AppContext) {
         if (event.type === "template.updated") return true; // templates are organization-wide
         if (event.type === "conversation.read" && event.userId !== access.userId) return false;
         if (only && event.branchId !== only) return false;
-        if (Date.now() - branchesAt > BRANCHES_REFRESH_MS) {
-          branches = await reachableBranches(ctx, access);
-          branchesAt = Date.now();
-        }
+        const branches = await reach.branches(access);
         if (branches === null) return true;
         return !!event.branchId && branches.includes(event.branchId);
       };
@@ -83,5 +109,10 @@ export function eventRoutes(ctx: AppContext) {
     });
   });
 
-  return app;
+  return {
+    app,
+    /** Open streams, subscribed organizations and cached people on this process, for health checks. */
+    stats: () => ({ ...hub.stats(), people: reach.size() }),
+    close: () => hub.close(),
+  };
 }

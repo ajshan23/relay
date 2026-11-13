@@ -5,6 +5,8 @@ const schema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   API_PORT: z.coerce.number().default(3201),
+  /** Live updates (/api/events) run in their own process: apps/api/src/realtime.ts. */
+  REALTIME_PORT: z.coerce.number().default(3203),
   WEB_URL: z.string().url().default("http://localhost:3200"),
   BETTER_AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),
   // Google sign-in is offered only when both are set (empty counts as unset).
