@@ -1,4 +1,4 @@
-import { type InboxEvent, messagePreview, newId, publishInboxEvent } from "@relay/core";
+import { type InboxEvent, messagePreview, newId, publishInboxEvent, type SignalJob } from "@relay/core";
 import { fillVariables, type TemplateContent, templateVariables } from "@relay/core/templates";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, schema, sql } from "@relay/db";
 import { Hono } from "hono";
@@ -47,6 +47,9 @@ const activityAt = sql`coalesce(${schema.conversation.lastMessageAt}, ${schema.c
 
 const views = ["open", "mine", "unassigned", "closed", "all"] as const;
 type View = (typeof views)[number];
+
+/** "Typing…" lasts 25 s on WhatsApp; sending it every 20 s while someone types keeps it showing. */
+const TYPING_EVERY_MS = 20_000;
 
 const sendBody = z
   .object({
@@ -389,6 +392,84 @@ export function conversationRoutes(ctx: AppContext) {
     return c.json({ conversation: updated });
   });
 
+  /**
+   * Tells the customer's app that the team read their message ("read": blue ticks) or is typing a
+   * reply ("typing"). Only for one-to-one chats, on channels that can, when the channel's "Show
+   * customers when you've read and are typing" setting is on, and for people who can reply here.
+   * Each customer message is marked read once; typing at most every TYPING_EVERY_MS per conversation.
+   */
+  async function customerSignal(
+    access: AccessEnv["Variables"]["access"],
+    conversation: typeof schema.conversation.$inferSelect,
+    kind: "read" | "typing",
+  ) {
+    if (conversation.kind !== "direct") return false;
+    if (kind === "typing" && !(conversation.windowExpiresAt && conversation.windowExpiresAt > new Date()))
+      return false;
+    const [account] = await ctx.db
+      .select()
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, conversation.channelAccountId))
+      .limit(1);
+    if (account?.status !== "active" || account.settings.readReceipts === false) return false;
+    const adapter = channels().get(account.type);
+    if (!adapter?.markRead || !adapter.capabilities.readReceipts) return false;
+    if (!(await canWork(ctx, access, conversation))) return false;
+    const m = schema.message;
+    const [newest] = await ctx.db
+      .select({ id: m.id })
+      .from(m)
+      .where(
+        and(
+          eq(m.conversationId, conversation.id),
+          eq(m.direction, "inbound"),
+          sql`${m.externalId} is not null`,
+        ),
+      )
+      .orderBy(desc(m.sentAt))
+      .limit(1);
+    if (!newest) return false;
+    const cv = schema.conversation;
+    // Moving the marker first means two people opening the chat at once queue one receipt.
+    const moved = await ctx.db
+      .update(cv)
+      .set({ providerReadMessageId: newest.id })
+      .where(
+        and(
+          eq(cv.id, conversation.id),
+          kind === "read" ? sql`${cv.providerReadMessageId} is distinct from ${newest.id}` : undefined,
+        ),
+      )
+      .returning({ id: cv.id });
+    if (!moved.length) return false;
+    const jobId =
+      kind === "read"
+        ? `read_${newest.id}`
+        : `typing_${conversation.id}_${Math.floor(Date.now() / TYPING_EVERY_MS)}`;
+    await ctx.queues.signals.add(
+      kind,
+      { kind, conversationId: conversation.id, messageId: newest.id } satisfies SignalJob,
+      {
+        jobId,
+        attempts: 2,
+        backoff: { type: "fixed", delay: 2000 },
+        removeOnComplete: { age: 60 },
+        removeOnFail: { age: 3600 },
+      },
+    );
+    return true;
+  }
+
+  // The team member is typing a reply: show "typing…" on the customer's phone (see customerSignal).
+  app.post("/:id/typing", async (c) => {
+    const access = c.var.access;
+    const conversation = await findConversation(ctx, access, c.req.param("id"));
+    if (!conversation) return fail(c, 404, "not_found");
+    if (!(await canWork(ctx, access, conversation))) return fail(c, 403, "forbidden");
+    await customerSignal(access, conversation, "typing").catch((err) => console.warn("typing signal", err));
+    return c.body(null, 204);
+  });
+
   // The caller has seen everything up to now. Unread counts are per person.
   app.post("/:id/read", async (c) => {
     const access = c.var.access;
@@ -408,6 +489,8 @@ export function conversationRoutes(ctx: AppContext) {
       branchId: conversation.branchId,
       userId: access.userId,
     });
+    // And the customer sees blue ticks, when the channel allows it.
+    await customerSignal(access, conversation, "read").catch((err) => console.warn("read signal", err));
     return c.body(null, 204);
   });
 

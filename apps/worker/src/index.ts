@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
-import { type ExportJob, env, queues } from "@relay/core";
+import { type ExportJob, env, queues, type SignalJob } from "@relay/core";
 import { createDb } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createMediaProcessor } from "./channels/media";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
+import { createSignalProcessor } from "./channels/signals";
 import { createTemplateProcessor, type TemplateJob } from "./channels/templates";
 import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
 import { createExportProcessor } from "./contacts/export";
@@ -41,6 +42,15 @@ const outbox = new Worker<OutboxJob>(queues.outbox, createOutboxProcessor({ db, 
 });
 outbox.on("failed", (job, err) =>
   console.error(`send ${job?.data.messageId} failed (attempt ${job?.attemptsMade}): ${err.message}`),
+);
+
+/* Read receipts and "typing…" for customers: small, many, best effort. */
+const signals = new Worker<SignalJob>(queues.signals, createSignalProcessor({ db }), {
+  connection,
+  concurrency: 20,
+});
+signals.on("failed", (job, err) =>
+  console.warn(`signal ${job?.data.kind} ${job?.data.messageId}: ${err.message}`),
 );
 
 /* Customer media: copied from Meta into our storage soon after arrival. */
@@ -115,6 +125,7 @@ const health = createServer((_req, res) => {
         templates: templates.isRunning(),
         contacts: contactImports.isRunning(),
         contactFiles: contactFiles.isRunning(),
+        signals: signals.isRunning(),
       },
     }),
   );
@@ -131,6 +142,7 @@ async function shutdown() {
     templates.close(),
     contactImports.close(),
     contactFiles.close(),
+    signals.close(),
     mediaQueue.close(),
   ]);
   connection.disconnect();

@@ -18,7 +18,8 @@ import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
 import { fileSize, kindWord, windowLeft } from "./format";
-import { upload as uploadFile, useSend } from "./queries";
+import { reportTyping } from "./presence";
+import { upload as uploadFile, useSend, useTypingSignal } from "./queries";
 import { TemplatePicker } from "./template-picker";
 import type { ConversationDetail, Message, Upload } from "./types";
 
@@ -48,6 +49,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const id = detail.conversation.id;
   const send = useSend(id);
   const [text, setText] = useState("");
+  const typing = useTypingSignal(id);
   const [pending, setPending] = useState<Pending | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -56,6 +58,11 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const caps = detail.capabilities;
   const left = windowLeft(detail.conversation.windowExpiresAt, now);
   const groupDown = detail.group && detail.group.status !== "active";
+  /** Someone is writing a reply: tell the customer, inside the reply window (the server checks the channel). */
+  const onTyping = () => {
+    reportTyping(id); // teammates see "typing…" (inside Relay)
+    if (detail.canWork && !detail.group && left) typing();
+  };
   const lock = !detail.canWork
     ? "You can read this conversation but not reply. Ask a manager for agent access."
     : !caps
@@ -264,7 +271,10 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           id="reply-box"
           ref={input}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            if (e.target.value.trim()) onTyping();
+          }}
           onKeyDown={onKeyDown}
           minRows={1}
           maxRows={8}

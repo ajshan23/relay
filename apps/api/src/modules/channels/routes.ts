@@ -1,8 +1,8 @@
 import { encryptSecret, newId } from "@relay/core";
-import { and, asc, eq, inArray, isNull, schema } from "@relay/db";
+import { and, asc, eq, inArray, isNull, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
-import { channels, providerFailure } from "../../channels";
+import { providerFailure, channels as registry } from "../../channels";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
@@ -36,6 +36,7 @@ const publicColumns = {
   statusReason: schema.channelAccount.statusReason,
   defaultBranchId: schema.channelAccount.defaultBranchId,
   providerMeta: schema.channelAccount.providerMeta,
+  settings: schema.channelAccount.settings,
   createdAt: schema.channelAccount.createdAt,
 };
 
@@ -64,8 +65,33 @@ export function channelRoutes(ctx: AppContext) {
       channels: channels.map((ch) => ({
         ...ch,
         branchIds: links.filter((l) => l.channelAccountId === ch.id).map((l) => l.branchId),
+        /** Whether this kind of channel can show customers read receipts and "typing…". */
+        canShowRead: !!registry().get(ch.type)?.capabilities.readReceipts,
       })),
     });
+  });
+
+  // A channel's settings. Owners and admins only.
+  app.patch("/:id", async (c) => {
+    const access = c.var.access;
+    if (!isOrgAdmin(access.orgRole))
+      return fail(c, 403, "forbidden", "Only owners and admins can change channel settings.");
+    const parsed = await parseBody(
+      c,
+      z.object({ settings: z.object({ readReceipts: z.boolean().optional() }) }),
+    );
+    if ("error" in parsed) return parsed.error;
+    const ca = schema.channelAccount;
+    const [row] = await ctx.db
+      .update(ca)
+      .set({
+        settings: sql`${ca.settings} || ${JSON.stringify(parsed.data.settings)}::jsonb`,
+        updatedAt: new Date(),
+      } as never)
+      .where(and(eq(ca.id, c.req.param("id")), eq(ca.organizationId, access.orgId)))
+      .returning(publicColumns);
+    if (!row) return fail(c, 404, "not_found");
+    return c.json({ channel: row });
   });
 
   app.post("/whatsapp", async (c) => {
@@ -103,7 +129,7 @@ export function channelRoutes(ctx: AppContext) {
       return fail(c, 422, "invalid_input", "Unknown branch in branchIds.");
 
     // Check the credentials with the channel (and subscribe to its webhooks) before storing anything.
-    const adapter = channels().get("whatsapp");
+    const adapter = registry().get("whatsapp");
     if (!adapter) return fail(c, 501, "not_supported", "WhatsApp is not available.");
     let connected: Awaited<ReturnType<typeof adapter.connect>>;
     try {

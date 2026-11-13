@@ -1,9 +1,12 @@
-import { type InboxEvent, inboxChannel } from "@relay/core";
+import { type InboxEvent, inboxChannel, publishInboxEvent } from "@relay/core";
+import { eq, schema } from "@relay/db";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, requireOrg } from "../branches/access";
+import { parseBody } from "../branches/routes";
 import { reachableBranches } from "../conversations/access";
 import { createEventHub } from "./hub";
 
@@ -21,6 +24,9 @@ import { createEventHub } from "./hub";
  */
 
 const HEARTBEAT_MS = 25_000;
+/** Presence entries older than this are gone (browsers repeat "viewing" every 20 s). */
+const PRESENCE_TTL_S = 40;
+const presenceKey = (conversationId: string) => `relay:presence:${conversationId}`;
 const BRANCHES_REFRESH_MS = 60_000;
 
 /**
@@ -74,6 +80,8 @@ export function eventRoutes(ctx: AppContext) {
       const allowed = async (event: InboxEvent) => {
         if (event.type === "template.updated") return true; // templates are organization-wide
         if (event.type === "conversation.read" && event.userId !== access.userId) return false;
+        // Your own presence never comes back to you.
+        if (event.type === "presence" && event.userId === access.userId) return false;
         if (only && event.branchId !== only) return false;
         const branches = await reach.branches(access);
         if (branches === null) return true;
@@ -107,6 +115,88 @@ export function eventRoutes(ctx: AppContext) {
         stop();
       }
     });
+  });
+
+  /*
+   * Teammate presence: who has a conversation open, and who is typing in it. Only inside Relay (the
+   * customer never sees it). Browsers send "viewing" when they open a conversation and every 20 s,
+   * "typing" at most every 3 s while typing, and "left" when they close it. Kept in Redis for 40 s so
+   * a tab opened later sees who is already there, and published as a live event to the branch.
+   */
+  const conversationBranch = new Map<string, { at: number; orgId: string; branchId: string | null }>();
+  /** The conversation's business and branch, if the caller can see it (cached for a minute). */
+  async function reachable(access: AccessEnv["Variables"]["access"], conversationId: string) {
+    let hit = conversationBranch.get(conversationId);
+    if (!hit || Date.now() - hit.at > 60_000) {
+      const [row] = await ctx.db
+        .select({ orgId: schema.conversation.organizationId, branchId: schema.conversation.branchId })
+        .from(schema.conversation)
+        .where(eq(schema.conversation.id, conversationId))
+        .limit(1);
+      if (!row) return null;
+      hit = { at: Date.now(), ...row };
+      conversationBranch.set(conversationId, hit);
+      if (conversationBranch.size > 50_000) conversationBranch.clear();
+    }
+    if (hit.orgId !== access.orgId) return null;
+    const branches = await reach.branches(access);
+    if (branches !== null && !(hit.branchId && branches.includes(hit.branchId))) return null;
+    return hit;
+  }
+
+  const lastWrite = new Map<string, number>();
+  app.post("/presence", async (c) => {
+    const access = c.var.access;
+    const parsed = await parseBody(
+      c,
+      z.object({ conversationId: z.string().max(60), state: z.enum(["viewing", "typing", "left"]) }),
+    );
+    if ("error" in parsed) return parsed.error;
+    const { conversationId, state } = parsed.data;
+    const conv = await reachable(access, conversationId);
+    if (!conv) return fail(c, 404, "not_found");
+    // At most one write per person per conversation per second ("left" always goes through).
+    const k = `${access.userId}:${conversationId}`;
+    if (state !== "left" && Date.now() - (lastWrite.get(k) ?? 0) < 1000) return c.body(null, 204);
+    lastWrite.set(k, Date.now());
+    if (lastWrite.size > 50_000) lastWrite.clear();
+    const name = c.var.user.name || c.var.user.email;
+    const key = presenceKey(conversationId);
+    if (state === "left") await ctx.redis.hdel(key, access.userId);
+    else
+      await ctx.redis
+        .multi()
+        .hset(key, access.userId, JSON.stringify({ name, state, at: Date.now() }))
+        .expire(key, PRESENCE_TTL_S)
+        .exec();
+    await publishInboxEvent(ctx.redis, access.orgId, {
+      type: "presence",
+      conversationId,
+      branchId: conv.branchId,
+      userId: access.userId,
+      name,
+      state,
+    });
+    return c.body(null, 204);
+  });
+
+  // Who else is in a conversation right now.
+  app.get("/presence", async (c) => {
+    const access = c.var.access;
+    const conversationId = c.req.query("conversationId") ?? "";
+    if (!(await reachable(access, conversationId))) return fail(c, 404, "not_found");
+    const all = await ctx.redis.hgetall(presenceKey(conversationId));
+    const cutoff = Date.now() - PRESENCE_TTL_S * 1000;
+    const people = Object.entries(all)
+      .map(([userId, raw]) => {
+        try {
+          return { userId, ...(JSON.parse(raw) as { name: string; state: string; at: number }) };
+        } catch {
+          return null;
+        }
+      })
+      .filter((p): p is NonNullable<typeof p> => !!p && p.userId !== access.userId && p.at > cutoff);
+    return c.json({ people });
   });
 
   return {

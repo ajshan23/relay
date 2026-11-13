@@ -141,7 +141,11 @@ export type ChannelAdapter = {
     account: AccountRef,
     file: { bytes: Uint8Array; mimeType: string; fileName: string },
   ): Promise<{ providerMediaId: string }>;
-  markRead?(account: AccountRef, externalId: string): Promise<void>;
+  /**
+   * Tells the customer their message was read (WhatsApp: blue ticks). With `typing`, also shows that
+   * the business is typing a reply (WhatsApp: up to 25 s, or until the reply arrives).
+   */
+  markRead?(account: AccountRef, externalId: string, opts?: { typing?: boolean }): Promise<void>;
   groups?: GroupAdapter;
   templates?: TemplateAdapter;
 };
@@ -183,7 +187,8 @@ function whatsappAdapter(graphConfig: GraphConfig): ChannelAdapter {
       sendWhatsAppMessage(graph, wa(account), to, message, ourMessageId),
     fetchMedia: (account, mediaId, maxBytes) => fetchWhatsAppMedia(graph, wa(account), mediaId, maxBytes),
     uploadMedia: (account, file) => uploadWhatsAppMedia(graph, wa(account), file),
-    markRead: (account, externalId) => markWhatsAppRead(graph, wa(account), externalId),
+    markRead: (account, externalId, opts) =>
+      markWhatsAppRead(graph, wa(account), externalId, opts?.typing ?? false),
     groups: {
       create: (account, input) => createWhatsAppGroup(graph, wa(account), input),
       update: (account, groupId, input) => updateWhatsAppGroup(graph, wa(account), groupId, input),

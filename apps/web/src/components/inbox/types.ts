@@ -151,4 +151,9 @@ export type ChannelSummary = {
   status: string;
   /** The branch this channel's conversations and contacts belong to. */
   defaultBranchId: string | null;
+  statusReason?: string | null;
+  /** Choices made per channel. readReceipts: missing means on. */
+  settings?: { readReceipts?: boolean };
+  /** Whether this kind of channel can show customers read receipts and "typing…". */
+  canShowRead?: boolean;
 };

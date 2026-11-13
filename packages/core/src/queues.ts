@@ -14,6 +14,11 @@ export const queues = {
    * view to a file (job id export_<uuid>).
    */
   contactFiles: "contact-files",
+  /**
+   * Small signals to the customer's app: "read" (blue ticks; job id read_<message id>) and "typing"
+   * (job id typing_<conversation id>_<20 s slot>). Best effort: dropped rather than retried for long.
+   */
+  signals: "signals",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];
@@ -34,3 +39,6 @@ export type ExportJob = {
 };
 
 export type ExportResult = { storageKey: string; fileName: string; rows: number };
+
+/** A read receipt or typing signal for one conversation (queue "signals"). */
+export type SignalJob = { kind: "read" | "typing"; conversationId: string; messageId: string };

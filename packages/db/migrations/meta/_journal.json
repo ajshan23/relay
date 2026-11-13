@@ -85,6 +85,13 @@
       "when": 1794595844677,
       "tag": "0011_import_reading",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794601584361,
+      "tag": "0012_channel_settings_and_read_marker",
+      "breakpoints": true
     }
   ]
 }

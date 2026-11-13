@@ -46,6 +46,9 @@ export function messagePreview(
   return { type, text: previewText(content)?.slice(0, 160) ?? null, direction, senderName };
 }
 
+/** What a teammate is doing in a conversation. "left" clears them. */
+export type PresenceState = "viewing" | "typing" | "left";
+
 export type InboxEvent =
   /** Anything on the conversation changed: new message, assignee, status, window. */
   | { type: "conversation.updated"; conversationId: string; branchId: string | null }
@@ -53,6 +56,15 @@ export type InboxEvent =
   | { type: "message.updated"; conversationId: string; branchId: string | null; messageId: string }
   /** One person read a conversation. Only that person's unread count changes. */
   | { type: "conversation.read"; conversationId: string; branchId: string | null; userId: string }
+  /** A teammate opened, is typing in, or left a conversation. Only shown inside Relay. */
+  | {
+      type: "presence";
+      conversationId: string;
+      branchId: string | null;
+      userId: string;
+      name: string;
+      state: PresenceState;
+    }
   /** A template or its review state on a channel changed. Templates are organization-wide. */
   | { type: "template.updated"; templateId: string };
 

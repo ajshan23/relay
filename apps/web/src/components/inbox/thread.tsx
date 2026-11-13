@@ -36,6 +36,7 @@ import { channelIcon } from "./conversation-list";
 import { DetailsPanel } from "./details-panel";
 import { dayLabel, members } from "./format";
 import { MessageBubble } from "./message-bubble";
+import { names, usePresence, usePresenceReporter } from "./presence";
 import {
   useAssignees,
   useConversation,
@@ -52,6 +53,7 @@ export function Thread({ id, onBack, className }: Props) {
   const detail = useConversation(id);
   const messages = useMessages(id);
   const markRead = useMarkRead();
+  usePresenceReporter(id);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [dropped, setDropped] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -166,6 +168,7 @@ export function Thread({ id, onBack, className }: Props) {
       </div>
 
       <div className="mx-auto w-full max-w-3xl px-3 pb-3 sm:px-6 sm:pb-4">
+        <TeammatesTyping conversationId={id} />
         {d ? (
           <Composer
             detail={d}
@@ -342,6 +345,7 @@ function ThreadHeader({
       </button>
 
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <TeammatesHere conversationId={c.id} />
         {d.canWork ? (
           <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenuTrigger asChild>
@@ -475,5 +479,48 @@ function NewMessagesButton({ list }: { list: Message[] }) {
         </span>
       ) : null}
     </MessageScrollerButton>
+  );
+}
+
+/** Teammates who also have this conversation open, so two people don't answer the same customer. */
+function TeammatesHere({ conversationId }: { conversationId: string }) {
+  const people = usePresence(conversationId);
+  if (!people.length) return null;
+  const label = `${names(people)} ${people.length === 1 ? "is" : "are"} viewing`;
+  return (
+    <span className="mr-1 flex items-center gap-2" title={label}>
+      <span className="flex -space-x-1.5">
+        {people.slice(0, 3).map((p) => (
+          <Person key={p.userId} name={p.name} size="sm" decorative className="ring-2 ring-card" />
+        ))}
+      </span>
+      <span className="hidden max-w-40 truncate text-xs text-muted-foreground xl:inline" aria-live="polite">
+        {label}
+      </span>
+      <span className="sr-only xl:hidden">{label}</span>
+    </span>
+  );
+}
+
+/** "Priya is typing…" above the reply box while a teammate writes in this conversation. */
+function TeammatesTyping({ conversationId }: { conversationId: string }) {
+  const typing = usePresence(conversationId).filter((p) => p.typing);
+  return (
+    <p aria-live="polite" className="h-5 truncate px-1 text-xs text-muted-foreground">
+      {typing.length ? (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="flex gap-0.5" aria-hidden>
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="size-1 animate-bounce rounded-full bg-current"
+                style={{ animationDelay: `${i * 150}ms` }}
+              />
+            ))}
+          </span>
+          {names(typing)} {typing.length === 1 ? "is" : "are"} typing…
+        </span>
+      ) : null}
+    </p>
   );
 }

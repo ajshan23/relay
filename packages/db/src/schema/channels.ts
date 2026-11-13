@@ -28,6 +28,11 @@ export const channelStatus = pgEnum("channel_status", ["active", "disconnected",
  * One connected channel: a WhatsApp number, an Instagram account, a Facebook Page, a website widget.
  * A business can have any number of each type, so everything downstream points at a specific row here.
  */
+export type ChannelSettings = {
+  /** Show customers when the team has read their message and is typing. Missing means on. */
+  readReceipts?: boolean;
+};
+
 export const channelAccount = pgTable(
   "channel_account",
   {
@@ -48,6 +53,8 @@ export const channelAccount = pgTable(
     credentials: text("credentials").notNull(),
     /** Provider details that are not secret: WABA / messaging account id, business id, quality rating. */
     providerMeta: jsonb("provider_meta").$type<Record<string, unknown>>().notNull().default({}),
+    /** Choices the business makes per channel. readReceipts (default on): blue ticks and "typing…". */
+    settings: jsonb("settings").$type<ChannelSettings>().notNull().default({}),
     /** Branch that new conversations on this channel belong to. */
     defaultBranchId: text("default_branch_id").references(() => branch.id, { onDelete: "set null" }),
     /** Why the channel is in error, in the provider's words (for example an expired token). */

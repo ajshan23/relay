@@ -451,7 +451,13 @@ const settingsGroups = [
       { label: "Team", href: "/settings/team" },
     ],
   },
-  { label: "Messaging", items: [{ label: "Templates", href: "/settings/templates" }] },
+  {
+    label: "Messaging",
+    items: [
+      { label: "Channels", href: "/settings/channels" },
+      { label: "Templates", href: "/settings/templates" },
+    ],
+  },
 ];
 
 function SettingsSubMenu({ pathname, onClose }: { pathname: string; onClose: () => void }) {

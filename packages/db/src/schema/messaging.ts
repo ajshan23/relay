@@ -149,6 +149,8 @@ export const conversation = pgTable(
     lastMessageAt: timestamp("last_message_at"),
     lastInboundAt: timestamp("last_inbound_at"),
     /** End of the reply window (WhatsApp: 24 h after the customer's last message; groups: after any member's). Null when it never opened. */
+    /** The last customer message marked read at the channel (blue ticks), so each is sent once. */
+    providerReadMessageId: text("provider_read_message_id"),
     windowExpiresAt: timestamp("window_expires_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

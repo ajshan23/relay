@@ -9,6 +9,7 @@ const nextConfig: NextConfig = {
     const realtime = process.env.REALTIME_URL ?? "http://localhost:3203";
     return [
       { source: "/api/events", destination: `${realtime}/api/events` },
+      { source: "/api/events/:path*", destination: `${realtime}/api/events/:path*` },
       { source: "/api/:path*", destination: `${api}/api/:path*` },
     ];
   },

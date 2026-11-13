@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { useBranch } from "@/components/shell/branch-context";
+import { applyPresence } from "./presence";
 import { keys } from "./queries";
 
 /*
@@ -71,6 +72,14 @@ export function LiveUpdates() {
       for (const type of ["conversation.updated", "message.updated", "conversation.read"])
         source.addEventListener(type, onHint as EventListener);
       source.addEventListener("template.updated", onTemplate);
+      // Teammates viewing or typing: shown in the open conversation only, never a refetch.
+      source.addEventListener("presence", ((e: MessageEvent<string>) => {
+        try {
+          applyPresence(JSON.parse(e.data));
+        } catch {
+          // Ignore a malformed hint.
+        }
+      }) as EventListener);
       source.onerror = () => {
         // The browser retries on its own unless the stream was refused (closed); then retry later.
         if (source?.readyState === EventSource.CLOSED) {

@@ -7,6 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { ApiError, api } from "@/lib/api";
 import type {
   ChannelSummary,
@@ -107,6 +108,24 @@ export function useUpdateConversation(id: string) {
       api(`/conversations/${id}`, { method: "PATCH", json: body }),
     onSettled: () => qc.invalidateQueries({ queryKey: keys.all }),
   });
+}
+
+/**
+ * Call on every keystroke in the reply box: tells the customer's app "typing…", at most once every
+ * 20 s (WhatsApp shows it for 25 s). The server checks the window, the channel and its setting.
+ */
+export function useTypingSignal(id: string) {
+  const last = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new conversation starts its own clock
+  useEffect(() => {
+    last.current = 0;
+  }, [id]);
+  return () => {
+    const now = Date.now();
+    if (now - last.current < 20_000) return;
+    last.current = now;
+    void api(`/conversations/${id}/typing`, { method: "POST" }).catch(() => undefined);
+  };
 }
 
 export function useMarkRead() {
