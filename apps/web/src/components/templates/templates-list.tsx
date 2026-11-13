@@ -21,7 +21,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/lib/api";
-import { LibraryCards, LibraryDialog } from "./library";
+import { LibraryCards } from "./library";
 import { ChannelStatus, previewLine } from "./parts";
 import { type Template, useTemplateActions, useTemplates } from "./queries";
 
@@ -59,7 +59,6 @@ export function TemplatesList() {
   const data = useTemplates();
   const actions = useTemplateActions();
   const [confirm, confirmElement] = useConfirm();
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
   const [q, setQ] = useState("");
   useReviewToasts(data.data?.templates);
@@ -113,9 +112,11 @@ export function TemplatesList() {
       actions={
         canManage && templates.length ? (
           <>
-            <Button variant="outline" size="sm" onClick={() => setLibraryOpen(true)}>
-              <Icon name="sparkles" />
-              Ready-made
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/settings/templates/library">
+                <Icon name="sparkles" />
+                Ready-made
+              </Link>
             </Button>
             <Button size="sm" asChild>
               <Link href="/settings/templates/new">
@@ -179,8 +180,8 @@ export function TemplatesList() {
             <>
               <LibraryCards limit={4} onPick={(t) => router.push(`/settings/templates/new?from=${t.key}`)} />
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => setLibraryOpen(true)}>
-                  See all ready-made messages
+                <Button variant="outline" asChild>
+                  <Link href="/settings/templates/library">See all ready-made templates</Link>
                 </Button>
                 <Button variant="ghost" asChild>
                   <Link href="/settings/templates/new">Write my own</Link>
@@ -200,7 +201,6 @@ export function TemplatesList() {
             </p>
           ) : null}
         </div>
-        <LibraryDialog open={libraryOpen} onOpenChange={setLibraryOpen} />
       </div>
     );
 
@@ -318,7 +318,6 @@ export function TemplatesList() {
           </button>
         </p>
       ) : null}
-      <LibraryDialog open={libraryOpen} onOpenChange={setLibraryOpen} />
       {confirmElement}
     </div>
   );

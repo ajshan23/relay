@@ -1,9 +1,10 @@
-import type {
-  TemplateButton,
-  TemplateContent,
-  TemplateDefinition,
-  TemplatePurpose,
-  TemplateStatus,
+import {
+  authContent,
+  type TemplateButton,
+  type TemplateContent,
+  type TemplateDefinition,
+  type TemplatePurpose,
+  type TemplateStatus,
 } from "@relay/core/templates";
 import type { GraphClient } from "../meta/graph";
 import type { OutboundMessage } from "../types";
@@ -73,6 +74,7 @@ const tidy = (text: string) => text.replace(named, (_w, n: string) => `{{${n.toL
 function buttonComponent(b: TemplateButton) {
   if (b.kind === "reply") return { type: "QUICK_REPLY", text: b.text };
   if (b.kind === "link") return { type: "URL", text: b.text, url: b.url };
+  if (b.kind === "copy") return { type: "OTP", otp_type: "COPY_CODE", text: b.text };
   return { type: "PHONE_NUMBER", text: b.text, phone_number: b.phone.replace(/[^\d+]/g, "") };
 }
 
@@ -81,6 +83,25 @@ function buttonComponent(b: TemplateButton) {
  * `headerHandle` is the uploaded example for a picture, video or file header.
  */
 export function buildWhatsAppTemplate(t: TemplateDefinition, headerHandle?: string | null) {
+  // Authentication: Meta writes the text; we send only the settings.
+  const auth = t.content.auth;
+  if (t.purpose === "login" && auth) {
+    return {
+      name: t.slug,
+      language: t.language,
+      category: "AUTHENTICATION",
+      components: [
+        { type: "BODY", add_security_recommendation: auth.securityNote },
+        ...(auth.expiresInMinutes
+          ? [{ type: "FOOTER", code_expiration_minutes: auth.expiresInMinutes }]
+          : []),
+        {
+          type: "BUTTONS",
+          buttons: [{ type: "OTP", otp_type: "COPY_CODE", text: auth.buttonText || "Copy code" }],
+        },
+      ],
+    };
+  }
   const example = (n: string) => t.variables.find((v) => v.name === n)?.example ?? n;
   const components: Record<string, unknown>[] = [];
   const h = t.content.header;
@@ -145,6 +166,29 @@ export function parseWhatsAppTemplate(t: {
   reason: string | null;
 } {
   const parts = t.components ?? [];
+  if ((t.category ?? "").toUpperCase() === "AUTHENTICATION") {
+    const bodyText = parts.find((c) => c.type === "BODY")?.text ?? "";
+    const footerText = parts.find((c) => c.type === "FOOTER")?.text ?? "";
+    const minutes = Number(/(\d+)\s*minute/i.exec(footerText)?.[1] ?? 0);
+    const button = parts.find((c) => c.type === "BUTTONS")?.buttons?.[0];
+    const content = authContent({
+      securityNote: /do not share/i.test(bodyText),
+      expiresInMinutes: minutes || null,
+      buttonText: button?.text ?? "Copy code",
+    });
+    return {
+      externalId: t.id ?? "",
+      definition: {
+        slug: t.name ?? "",
+        language: t.language ?? "en",
+        purpose: "login",
+        content,
+        variables: [{ name: "code", example: "123456" }],
+      },
+      status: whatsappTemplateStatus(t.status),
+      reason: whatsappReason(t.rejected_reason),
+    };
+  }
   const header = parts.find((c) => c.type === "HEADER");
   const body = parts.find((c) => c.type === "BODY");
   const footer = parts.find((c) => c.type === "FOOTER");
@@ -192,6 +236,18 @@ export function parseWhatsAppTemplate(t: {
 
 /** The `template` object of a send call, with each detail's value. */
 export function buildWhatsAppTemplateMessage(m: Extract<OutboundMessage, { type: "template" }>) {
+  // Authentication: the code goes in the body and again in the copy-code button.
+  if (m.auth) {
+    const code = m.values.code ?? Object.values(m.values)[0] ?? "";
+    return {
+      name: m.name,
+      language: { code: m.language },
+      components: [
+        { type: "body", parameters: [{ type: "text", text: code }] },
+        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: code }] },
+      ],
+    };
+  }
   const components: Record<string, unknown>[] = [];
   if (m.headerMedia) {
     const { kind, providerMediaId, fileName } = m.headerMedia;

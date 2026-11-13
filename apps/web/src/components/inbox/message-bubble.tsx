@@ -304,7 +304,9 @@ function Body({
                 ? { type: "url", label: b.text ?? "", url: b.url }
                 : b.kind === "call"
                   ? { type: "phone_number", label: b.text ?? "", phone_number: b.phone }
-                  : { type: "quick_reply", label: b.text ?? "" },
+                  : b.kind === "copy"
+                    ? { type: "copy_code", label: b.text ?? "Copy code" }
+                    : { type: "quick_reply", label: b.text ?? "" },
           )}
         />
       );

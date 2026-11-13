@@ -239,6 +239,8 @@ export type OutboundMessage = (
       language: string;
       /** Detail values by name. */
       values: Record<string, string>;
+      /** An authentication (one-time code) template: `values.code` is the code. */
+      auth?: boolean;
       /** For templates with a picture, video or file header: the file handed to the channel. */
       headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string };
     }

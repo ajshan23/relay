@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  type AuthSettings,
+  authContent,
   checkTemplate,
   commonDetails,
   type TemplateButton,
@@ -64,6 +66,7 @@ const fallbackLimits: TemplateLimits = {
 };
 
 const emptyContent: TemplateContent = { header: null, body: "", footer: null, buttons: [] };
+const defaultAuth: AuthSettings = { securityNote: true, expiresInMinutes: 10, buttonText: "Copy code" };
 
 const languages = [
   { value: "en", label: "English" },
@@ -379,7 +382,22 @@ export function TemplateEditor({ id, fromKey }: { id: string | null; fromKey: st
                       type="button"
                       aria-pressed={draft.purpose === p}
                       disabled={!canManage}
-                      onClick={() => set({ purpose: p })}
+                      onClick={() =>
+                        setDraft((d) => {
+                          if (!d || d.purpose === p) return d;
+                          // Authentication uses the channel's fixed wording; leaving it starts a blank message.
+                          if (p === "login")
+                            return {
+                              ...d,
+                              purpose: p,
+                              content: authContent(defaultAuth),
+                              examples: { code: "482913" },
+                            };
+                          if (d.purpose === "login")
+                            return { ...d, purpose: p, content: emptyContent, examples: {} };
+                          return { ...d, purpose: p };
+                        })
+                      }
                       className={cn(
                         "flex flex-col gap-1 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                         draft.purpose === p ? "border-primary bg-primary/5" : "hover:bg-muted/60",
@@ -406,296 +424,324 @@ export function TemplateEditor({ id, fromKey }: { id: string | null; fromKey: st
             </Field>
           </FormBlock>
 
-          <FormBlock
-            title="Message"
-            hint="Write it the way you'd say it. Add details like the customer's name; they're filled in when you send."
-          >
-            <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium">
-                Header <span className="text-xs font-normal text-muted-foreground">Optional</span>
-              </p>
-              <Segmented
-                aria-label="Header"
-                size="sm"
-                value={headerKind}
-                disabled={!canManage}
-                onChange={(v) => {
-                  if (v === "none") setContent({ header: null });
-                  else if (v === "text") setContent({ header: { kind: "text", text: "" } });
-                  else {
-                    setContent({ header: { kind: v as "image" | "video" | "document", attachmentId: null } });
-                    set({ headerFileName: null, headerUrl: null });
-                  }
-                }}
-                options={headerOptions}
-              />
-              {draft.content.header?.kind === "text" ? (
-                <Field label="Header text" hideLabel error={issueFor("header")}>
-                  <TextInput
-                    value={draft.content.header.text}
-                    onChange={(e) => setContent({ header: { kind: "text", text: e.target.value } })}
-                    placeholder="Appointment reminder"
-                    maxLength={limits.maxHeaderTextLength}
-                    disabled={!canManage}
-                  />
-                </Field>
-              ) : draft.content.header ? (
-                <div className="flex flex-wrap items-center gap-3">
-                  <input
-                    ref={picker}
-                    type="file"
-                    className="hidden"
-                    accept={
-                      draft.content.header.kind === "image"
-                        ? "image/jpeg,image/png"
-                        : draft.content.header.kind === "video"
-                          ? "video/mp4"
-                          : "application/pdf"
-                    }
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      e.target.value = "";
-                      if (f) void onHeaderFile(f);
-                    }}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={uploading || !canManage}
-                    onClick={() => picker.current?.click()}
-                  >
-                    {uploading ? <Spinner /> : <Icon name="upload" />}
-                    {draft.content.header.attachmentId ? "Replace file" : "Choose file"}
-                  </Button>
-                  <span className="text-[13px] text-muted-foreground">
-                    {draft.headerFileName ??
-                      (draft.content.header.attachmentId
-                        ? "File added"
-                        : "The reviewer sees it as an example; you can choose a different one when sending.")}
-                  </span>
-                  {issueFor("header") ? (
-                    <p className="w-full text-[13px] text-destructive">{issueFor("header")}</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-
-            <Field
-              label="Message"
-              error={issueFor("body")}
-              hint={`${draft.content.body.length} / ${limits.maxBodyLength}`}
-            >
-              {(control) => (
+          {draft.purpose === "login" ? (
+            <AuthBlock
+              settings={draft.content.auth ?? defaultAuth}
+              disabled={!canManage}
+              limits={limits}
+              error={issueFor("footer") ?? issueFor("buttons")}
+              onChange={(a) =>
+                setDraft((d) =>
+                  d ? { ...d, content: authContent(a), examples: { code: d.examples.code || "482913" } } : d,
+                )
+              }
+            />
+          ) : (
+            <>
+              <FormBlock
+                title="Message"
+                hint="Write it the way you'd say it. Add details like the customer's name; they're filled in when you send."
+              >
                 <div className="flex flex-col gap-2">
-                  <TextArea
-                    {...control}
-                    ref={body}
-                    value={draft.content.body}
-                    onChange={(e) => setContent({ body: e.target.value })}
-                    minRows={5}
-                    maxRows={14}
-                    placeholder="Hi {{customer_name}}, …"
+                  <p className="text-sm font-medium">
+                    Header <span className="text-xs font-normal text-muted-foreground">Optional</span>
+                  </p>
+                  <Segmented
+                    aria-label="Header"
+                    size="sm"
+                    value={headerKind}
                     disabled={!canManage}
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" disabled={!canManage}>
-                          <Icon name="add" />
-                          Add detail
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" className="w-56">
-                        {commonDetails.map((d) => (
-                          <DropdownMenuItem key={d.name} onSelect={() => insertDetail(d.name, d.example)}>
-                            {d.label}
-                            <span className="ml-auto text-xs text-muted-foreground">{d.example}</span>
-                          </DropdownMenuItem>
-                        ))}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => setCustomOpen(true)}>
-                          Something else…
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    {customOpen ? (
-                      <span className="flex items-center gap-1.5">
-                        <TextInput
-                          size="sm"
-                          autoFocus
-                          value={customName}
-                          aria-label="Name of the detail"
-                          placeholder="e.g. treatment, doctor"
-                          onChange={(e) => setCustomName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              addCustomDetail();
-                            }
-                            if (e.key === "Escape") setCustomOpen(false);
-                          }}
-                          wrapperClassName="w-44"
-                          className="w-44"
-                        />
-                        <Button size="sm" variant="secondary" onClick={addCustomDetail}>
-                          Add
-                        </Button>
-                      </span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        Details appear as highlights in the preview.
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </Field>
-
-            <Field
-              label="Footer"
-              optional
-              hint="A small grey line under the message, such as how to stop messages."
-              error={issueFor("footer")}
-            >
-              <TextInput
-                value={draft.content.footer ?? ""}
-                onChange={(e) => setContent({ footer: e.target.value || null })}
-                placeholder="Reply STOP to stop reminders"
-                maxLength={limits.maxFooterLength}
-                disabled={!canManage}
-              />
-            </Field>
-          </FormBlock>
-
-          <FormBlock
-            title="Buttons"
-            hint="Optional. One tap to reply, open a link or call you."
-            aside={
-              canManage && draft.content.buttons.length < limits.maxButtons ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      <Icon name="add" />
-                      Add button
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {limits.buttonKinds.includes("reply") ? (
-                      <DropdownMenuItem
-                        onSelect={() => setButton(draft.content.buttons.length, { kind: "reply", text: "" })}
-                      >
-                        <Icon name="reply" size="sm" />
-                        Quick reply
-                      </DropdownMenuItem>
-                    ) : null}
-                    {limits.buttonKinds.includes("link") ? (
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          setButton(draft.content.buttons.length, { kind: "link", text: "", url: "https://" })
-                        }
-                      >
-                        <Icon name="external" size="sm" />
-                        Open a link
-                      </DropdownMenuItem>
-                    ) : null}
-                    {limits.buttonKinds.includes("call") ? (
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          setButton(draft.content.buttons.length, {
-                            kind: "call",
-                            text: "Call us",
-                            phone: "",
-                          })
-                        }
-                      >
-                        <Icon name="phone" size="sm" />
-                        Call us
-                      </DropdownMenuItem>
-                    ) : null}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null
-            }
-          >
-            {draft.content.buttons.length ? (
-              <div className="flex flex-col gap-3">
-                {draft.content.buttons.map((b, i) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: buttons are edited by position
-                  <div key={i} className="flex flex-wrap items-end gap-2 rounded-md border p-3">
-                    <Field
-                      label={
-                        b.kind === "reply" ? "Quick reply" : b.kind === "link" ? "Link button" : "Call button"
+                    onChange={(v) => {
+                      if (v === "none") setContent({ header: null });
+                      else if (v === "text") setContent({ header: { kind: "text", text: "" } });
+                      else {
+                        setContent({
+                          header: { kind: v as "image" | "video" | "document", attachmentId: null },
+                        });
+                        set({ headerFileName: null, headerUrl: null });
                       }
-                      className="min-w-40 flex-1"
-                    >
+                    }}
+                    options={headerOptions}
+                  />
+                  {draft.content.header?.kind === "text" ? (
+                    <Field label="Header text" hideLabel error={issueFor("header")}>
                       <TextInput
-                        value={b.text}
-                        maxLength={limits.maxButtonTextLength}
-                        placeholder="Label"
-                        onChange={(e) => setButton(i, { ...b, text: e.target.value })}
+                        value={draft.content.header.text}
+                        onChange={(e) => setContent({ header: { kind: "text", text: e.target.value } })}
+                        placeholder="Appointment reminder"
+                        maxLength={limits.maxHeaderTextLength}
                         disabled={!canManage}
                       />
                     </Field>
-                    {b.kind === "link" ? (
-                      <Field label="Web address" className="min-w-52 flex-[2]">
-                        <TextInput
-                          value={b.url}
-                          onChange={(e) => setButton(i, { ...b, url: e.target.value })}
-                          disabled={!canManage}
-                        />
-                      </Field>
-                    ) : b.kind === "call" ? (
-                      <Field label="Phone number" className="min-w-44 flex-[2]">
-                        <TextInput
-                          value={b.phone}
-                          placeholder="+971 4 123 4567"
-                          onChange={(e) => setButton(i, { ...b, phone: e.target.value })}
-                          disabled={!canManage}
-                        />
-                      </Field>
-                    ) : null}
-                    {canManage ? (
+                  ) : draft.content.header ? (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <input
+                        ref={picker}
+                        type="file"
+                        className="hidden"
+                        accept={
+                          draft.content.header.kind === "image"
+                            ? "image/jpeg,image/png"
+                            : draft.content.header.kind === "video"
+                              ? "video/mp4"
+                              : "application/pdf"
+                        }
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = "";
+                          if (f) void onHeaderFile(f);
+                        }}
+                      />
                       <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Remove button"
-                        onClick={() => setButton(i, null)}
+                        variant="outline"
+                        size="sm"
+                        disabled={uploading || !canManage}
+                        onClick={() => picker.current?.click()}
                       >
-                        <Icon name="delete" />
+                        {uploading ? <Spinner /> : <Icon name="upload" />}
+                        {draft.content.header.attachmentId ? "Replace file" : "Choose file"}
                       </Button>
+                      <span className="text-[13px] text-muted-foreground">
+                        {draft.headerFileName ??
+                          (draft.content.header.attachmentId
+                            ? "File added"
+                            : "The reviewer sees it as an example; you can choose a different one when sending.")}
+                      </span>
+                      {issueFor("header") ? (
+                        <p className="w-full text-[13px] text-destructive">{issueFor("header")}</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+
+                <Field
+                  label="Message"
+                  error={issueFor("body")}
+                  hint={`${draft.content.body.length} / ${limits.maxBodyLength}`}
+                >
+                  {(control) => (
+                    <div className="flex flex-col gap-2">
+                      <TextArea
+                        {...control}
+                        ref={body}
+                        value={draft.content.body}
+                        onChange={(e) => setContent({ body: e.target.value })}
+                        minRows={5}
+                        maxRows={14}
+                        placeholder="Hi {{customer_name}}, …"
+                        disabled={!canManage}
+                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" disabled={!canManage}>
+                              <Icon name="add" />
+                              Add detail
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-56">
+                            {commonDetails.map((d) => (
+                              <DropdownMenuItem key={d.name} onSelect={() => insertDetail(d.name, d.example)}>
+                                {d.label}
+                                <span className="ml-auto text-xs text-muted-foreground">{d.example}</span>
+                              </DropdownMenuItem>
+                            ))}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem onSelect={() => setCustomOpen(true)}>
+                              Something else…
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                        {customOpen ? (
+                          <span className="flex items-center gap-1.5">
+                            <TextInput
+                              size="sm"
+                              autoFocus
+                              value={customName}
+                              aria-label="Name of the detail"
+                              placeholder="e.g. treatment, doctor"
+                              onChange={(e) => setCustomName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  addCustomDetail();
+                                }
+                                if (e.key === "Escape") setCustomOpen(false);
+                              }}
+                              wrapperClassName="w-44"
+                              className="w-44"
+                            />
+                            <Button size="sm" variant="secondary" onClick={addCustomDetail}>
+                              Add
+                            </Button>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            Details appear as highlights in the preview.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Field>
+
+                <Field
+                  label="Footer"
+                  optional
+                  hint="A small grey line under the message, such as how to stop messages."
+                  error={issueFor("footer")}
+                >
+                  <TextInput
+                    value={draft.content.footer ?? ""}
+                    onChange={(e) => setContent({ footer: e.target.value || null })}
+                    placeholder="Reply STOP to stop reminders"
+                    maxLength={limits.maxFooterLength}
+                    disabled={!canManage}
+                  />
+                </Field>
+              </FormBlock>
+
+              <FormBlock
+                title="Buttons"
+                hint="Optional. One tap to reply, open a link or call you."
+                aside={
+                  canManage && draft.content.buttons.length < limits.maxButtons ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <Icon name="add" />
+                          Add button
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {limits.buttonKinds.includes("reply") ? (
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              setButton(draft.content.buttons.length, { kind: "reply", text: "" })
+                            }
+                          >
+                            <Icon name="reply" size="sm" />
+                            Quick reply
+                          </DropdownMenuItem>
+                        ) : null}
+                        {limits.buttonKinds.includes("link") ? (
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              setButton(draft.content.buttons.length, {
+                                kind: "link",
+                                text: "",
+                                url: "https://",
+                              })
+                            }
+                          >
+                            <Icon name="external" size="sm" />
+                            Open a link
+                          </DropdownMenuItem>
+                        ) : null}
+                        {limits.buttonKinds.includes("call") ? (
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              setButton(draft.content.buttons.length, {
+                                kind: "call",
+                                text: "Call us",
+                                phone: "",
+                              })
+                            }
+                          >
+                            <Icon name="phone" size="sm" />
+                            Call us
+                          </DropdownMenuItem>
+                        ) : null}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null
+                }
+              >
+                {draft.content.buttons.length ? (
+                  <div className="flex flex-col gap-3">
+                    {draft.content.buttons.map((b, i) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: buttons are edited by position
+                      <div key={i} className="flex flex-wrap items-end gap-2 rounded-md border p-3">
+                        <Field
+                          label={
+                            b.kind === "reply"
+                              ? "Quick reply"
+                              : b.kind === "link"
+                                ? "Link button"
+                                : "Call button"
+                          }
+                          className="min-w-40 flex-1"
+                        >
+                          <TextInput
+                            value={b.text}
+                            maxLength={limits.maxButtonTextLength}
+                            placeholder="Label"
+                            onChange={(e) => setButton(i, { ...b, text: e.target.value })}
+                            disabled={!canManage}
+                          />
+                        </Field>
+                        {b.kind === "link" ? (
+                          <Field label="Web address" className="min-w-52 flex-[2]">
+                            <TextInput
+                              value={b.url}
+                              onChange={(e) => setButton(i, { ...b, url: e.target.value })}
+                              disabled={!canManage}
+                            />
+                          </Field>
+                        ) : b.kind === "call" ? (
+                          <Field label="Phone number" className="min-w-44 flex-[2]">
+                            <TextInput
+                              value={b.phone}
+                              placeholder="+971 4 123 4567"
+                              onChange={(e) => setButton(i, { ...b, phone: e.target.value })}
+                              disabled={!canManage}
+                            />
+                          </Field>
+                        ) : null}
+                        {canManage ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Remove button"
+                            onClick={() => setButton(i, null)}
+                          >
+                            <Icon name="delete" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                    {issueFor("buttons") ? (
+                      <p className="text-[13px] text-destructive">{issueFor("buttons")}</p>
                     ) : null}
                   </div>
-                ))}
-                {issueFor("buttons") ? (
-                  <p className="text-[13px] text-destructive">{issueFor("buttons")}</p>
-                ) : null}
-              </div>
-            ) : (
-              <p className="text-[13px] text-muted-foreground">No buttons.</p>
-            )}
-          </FormBlock>
+                ) : (
+                  <p className="text-[13px] text-muted-foreground">No buttons.</p>
+                )}
+              </FormBlock>
 
-          {names.length ? (
-            <FormBlock
-              title="Examples for the reviewer"
-              hint="Reviewers read the message with these filled in. Real-looking examples get approved faster."
-            >
-              <div className="grid gap-3 sm:grid-cols-2">
-                {names.map((n) => (
-                  <Field key={n} label={n.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}>
-                    <TextInput
-                      value={draft.examples[n] ?? ""}
-                      onChange={(e) => set({ examples: { ...draft.examples, [n]: e.target.value } })}
-                      disabled={!canManage}
-                    />
-                  </Field>
-                ))}
-              </div>
-              {issueFor("variables") ? (
-                <p className="text-[13px] text-destructive">{issueFor("variables")}</p>
+              {names.length ? (
+                <FormBlock
+                  title="Examples for the reviewer"
+                  hint="Reviewers read the message with these filled in. Real-looking examples get approved faster."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {names.map((n) => (
+                      <Field key={n} label={n.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}>
+                        <TextInput
+                          value={draft.examples[n] ?? ""}
+                          onChange={(e) => set({ examples: { ...draft.examples, [n]: e.target.value } })}
+                          disabled={!canManage}
+                        />
+                      </Field>
+                    ))}
+                  </div>
+                  {issueFor("variables") ? (
+                    <p className="text-[13px] text-destructive">{issueFor("variables")}</p>
+                  ) : null}
+                </FormBlock>
               ) : null}
-            </FormBlock>
-          ) : null}
+            </>
+          )}
 
           <FormBlock title="Send to" hint="Write it once, use it on every channel you pick.">
             <ChannelPicker
@@ -854,5 +900,62 @@ function StatusBanner({ template, estimate }: { template: Template; estimate: st
         </div>
       </div>
     </div>
+  );
+}
+
+/** Authentication templates: the channel fixes the wording; the business picks these three things. */
+function AuthBlock({
+  settings,
+  onChange,
+  disabled,
+  limits,
+  error,
+}: {
+  settings: AuthSettings;
+  onChange: (a: AuthSettings) => void;
+  disabled: boolean;
+  limits: TemplateLimits;
+  error?: string;
+}) {
+  return (
+    <FormBlock
+      title="Code message"
+      hint="WhatsApp writes the text of code messages itself, so they're always clear and safe. You choose the extras."
+    >
+      <CheckboxRow
+        label="Add a security note"
+        description="“For your security, do not share this code.”"
+        checked={settings.securityNote}
+        disabled={disabled}
+        onCheckedChange={(v) => onChange({ ...settings, securityNote: v })}
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Code expires after" hint="1 to 90 minutes. Leave empty for no expiry line.">
+          <TextInput
+            type="number"
+            min={1}
+            max={90}
+            value={settings.expiresInMinutes ?? ""}
+            disabled={disabled}
+            trailing={<span className="text-xs text-muted-foreground">minutes</span>}
+            onChange={(e) =>
+              onChange({
+                ...settings,
+                expiresInMinutes: e.target.value ? Math.round(Number(e.target.value)) : null,
+              })
+            }
+          />
+        </Field>
+        <Field label="Copy button label">
+          <TextInput
+            value={settings.buttonText}
+            maxLength={limits.maxButtonTextLength}
+            disabled={disabled}
+            onChange={(e) => onChange({ ...settings, buttonText: e.target.value })}
+          />
+        </Field>
+      </div>
+      {error ? <p className="text-[13px] text-destructive">{error}</p> : null}
+    </FormBlock>
   );
 }

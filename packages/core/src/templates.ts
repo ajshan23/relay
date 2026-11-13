@@ -8,22 +8,36 @@
  * Pure code: safe in the browser, the API and the worker. Import from "@relay/core/templates".
  */
 
-/** Why a business sends it, in plain words. Adapters map these to their own categories. */
+/** Why a business sends it. Adapters map these to their own categories. */
 export type TemplatePurpose = "updates" | "marketing" | "login";
 
+/** Named the way businesses know them from WhatsApp, with a plain-words hint. */
 export const templatePurposes: Record<TemplatePurpose, { label: string; hint: string }> = {
   updates: {
-    label: "Updates and reminders",
-    hint: "Appointments, bookings, orders, payments: things the customer is expecting.",
+    label: "Utility",
+    hint: "Updates the customer expects: appointments, bookings, orders, payments.",
   },
   marketing: {
-    label: "Offers and news",
-    hint: "Promotions, new services, invitations to come back.",
+    label: "Marketing",
+    hint: "Offers, news, new services and invitations to come back.",
   },
   login: {
-    label: "Login codes",
-    hint: "One-time codes to confirm it's really them.",
+    label: "Authentication",
+    hint: "One-time codes to confirm it's really them. The wording is fixed by the channel.",
   },
+};
+
+/**
+ * Authentication (one-time code) templates: channels fix the wording, so a business only chooses
+ * these settings. The message text is built from them by authContent().
+ */
+export type AuthSettings = {
+  /** Adds "For your security, do not share this code." */
+  securityNote: boolean;
+  /** Adds "This code expires in N minutes." (1 to 90), or null for no expiry line. */
+  expiresInMinutes: number | null;
+  /** The copy-code button's label. */
+  buttonText: string;
 };
 
 export type TemplateHeader =
@@ -35,7 +49,9 @@ export type TemplateButton =
   /** A tap sends this text back as the customer's reply. */
   | { kind: "reply"; text: string }
   | { kind: "link"; text: string; url: string }
-  | { kind: "call"; text: string; phone: string };
+  | { kind: "call"; text: string; phone: string }
+  /** Copies a one-time code (authentication templates). */
+  | { kind: "copy"; text: string };
 
 export type TemplateContent = {
   header: TemplateHeader | null;
@@ -43,7 +59,20 @@ export type TemplateContent = {
   body: string;
   footer: string | null;
   buttons: TemplateButton[];
+  /** Present on authentication templates; the rest of the content is derived from it. */
+  auth?: AuthSettings;
 };
+
+/** The fixed wording of an authentication template, as the customer sees it. */
+export function authContent(auth: AuthSettings): TemplateContent {
+  return {
+    header: null,
+    body: `{{code}} is your verification code.${auth.securityNote ? " For your security, do not share this code." : ""}`,
+    footer: auth.expiresInMinutes ? `This code expires in ${auth.expiresInMinutes} minutes.` : null,
+    buttons: [{ kind: "copy", text: auth.buttonText || "Copy code" }],
+    auth,
+  };
+}
 
 /** A detail filled in when sending, with an example the reviewer sees. */
 export type TemplateVariable = { name: string; example: string };
@@ -141,6 +170,20 @@ export function checkTemplate(
   const issues: TemplateIssue[] = [];
   const { content } = t;
   if (!t.name.trim()) issues.push({ field: "name", message: "Give the template a name." });
+
+  // Authentication templates: the wording is fixed, only the settings can be wrong.
+  if (content.auth) {
+    const a = content.auth;
+    if (a.expiresInMinutes !== null && (a.expiresInMinutes < 1 || a.expiresInMinutes > 90))
+      issues.push({ field: "footer", message: "Codes can expire after 1 to 90 minutes." });
+    if (!a.buttonText.trim()) issues.push({ field: "buttons", message: "Give the copy button a label." });
+    if (a.buttonText.length > limits.maxButtonTextLength)
+      issues.push({
+        field: "buttons",
+        message: `Keep the button label under ${limits.maxButtonTextLength} characters.`,
+      });
+    return issues;
+  }
 
   const body = content.body.trim();
   if (!body) issues.push({ field: "body", message: "Write the message." });

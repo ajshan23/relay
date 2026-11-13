@@ -274,6 +274,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       name?: string;
       language?: string;
       values?: Record<string, string>;
+      auth?: boolean;
       header?: { kind: string; attachmentId?: string | null } | null;
     };
     let replyToExternalId: string | undefined;
@@ -291,6 +292,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
           name: content.name ?? "",
           language: content.language ?? "en",
           values: content.values ?? {},
+          auth: !!content.auth,
           headerMedia,
           replyToExternalId,
         }

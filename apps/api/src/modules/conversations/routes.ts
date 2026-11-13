@@ -684,6 +684,7 @@ export function conversationRoutes(ctx: AppContext) {
         body: fillVariables(tc.body, values),
         footer: tc.footer,
         buttons: tc.buttons,
+        auth: !!tc.auth,
       };
     }
 

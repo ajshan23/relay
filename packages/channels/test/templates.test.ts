@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { templateLibrary } from "@relay/core/template-library";
-import { checkTemplate, slugify, type TemplateDefinition } from "@relay/core/templates";
+import { authContent, checkTemplate, slugify, type TemplateDefinition } from "@relay/core/templates";
 import { whatsappCapabilities } from "../src/whatsapp/capabilities";
 import { parseWhatsAppWebhook } from "../src/whatsapp/parse";
 import { buildWhatsAppSendBody } from "../src/whatsapp/send";
@@ -185,5 +185,65 @@ describe("Template rules", () => {
   it("makes channel-safe names", () => {
     assert.equal(slugify("Appointment reminder!"), "appointment_reminder");
     assert.equal(slugify("Café — offre spéciale"), "cafe_offre_speciale");
+  });
+});
+
+describe("Authentication templates", () => {
+  const def: TemplateDefinition = {
+    slug: "login_code",
+    language: "en",
+    purpose: "login",
+    content: authContent({ securityNote: true, expiresInMinutes: 10, buttonText: "Copy code" }),
+    variables: [{ name: "code", example: "482913" }],
+  };
+
+  it("publishes only the settings; Meta writes the text", () => {
+    assert.deepEqual(buildWhatsAppTemplate(def), {
+      name: "login_code",
+      language: "en",
+      category: "AUTHENTICATION",
+      components: [
+        { type: "BODY", add_security_recommendation: true },
+        { type: "FOOTER", code_expiration_minutes: 10 },
+        { type: "BUTTONS", buttons: [{ type: "OTP", otp_type: "COPY_CODE", text: "Copy code" }] },
+      ],
+    });
+  });
+
+  it("sends the code in the body and the copy button", () => {
+    const body = buildWhatsAppSendBody(
+      { kind: "direct", phone: "15550001111", userId: null },
+      { type: "template", name: "login_code", language: "en", values: { code: "482913" }, auth: true },
+      "msg_1",
+    );
+    assert.deepEqual(body.template, {
+      name: "login_code",
+      language: { code: "en" },
+      components: [
+        { type: "body", parameters: [{ type: "text", text: "482913" }] },
+        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: "482913" }] },
+      ],
+    });
+  });
+
+  it("reads an authentication template from Meta back into settings", () => {
+    const parsed = parseWhatsAppTemplate({
+      id: "77",
+      name: "login_code",
+      language: "en",
+      status: "APPROVED",
+      category: "AUTHENTICATION",
+      components: [
+        { type: "BODY", text: "{{1}} is your verification code. For your security, do not share this code." },
+        { type: "FOOTER", text: "This code expires in 10 minutes." },
+        { type: "BUTTONS", buttons: [{ type: "URL", text: "Copy code" }] },
+      ],
+    });
+    assert.deepEqual(parsed.definition.content.auth, {
+      securityNote: true,
+      expiresInMinutes: 10,
+      buttonText: "Copy code",
+    });
+    assert.equal(parsed.definition.purpose, "login");
   });
 });

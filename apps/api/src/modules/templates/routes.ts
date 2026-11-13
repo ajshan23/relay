@@ -1,6 +1,7 @@
 import { newId, publishInboxEvent } from "@relay/core";
 import { templateLibrary } from "@relay/core/template-library";
 import {
+  authContent,
   checkTemplate,
   slugify,
   type TemplateContent,
@@ -32,12 +33,19 @@ const button = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("reply"), text: z.string().max(60) }),
   z.object({ kind: z.literal("link"), text: z.string().max(60), url: z.string().max(2000) }),
   z.object({ kind: z.literal("call"), text: z.string().max(60), phone: z.string().max(30) }),
+  z.object({ kind: z.literal("copy"), text: z.string().max(60) }),
 ]);
+const auth = z.object({
+  securityNote: z.boolean(),
+  expiresInMinutes: z.number().int().min(1).max(90).nullable(),
+  buttonText: z.string().max(60),
+});
 const content = z.object({
   header,
   body: z.string().max(2000),
   footer: z.string().max(200).nullable(),
   buttons: z.array(button).max(10),
+  auth: auth.optional(),
 });
 const templateBody = z.object({
   name: z.string().trim().min(1, "Give the template a name").max(80),
@@ -248,7 +256,11 @@ export function templateRoutes(ctx: AppContext) {
       return fail(c, 403, "forbidden", "Only owners, admins and managers can add templates.");
     const parsed = await parseBody(c, templateBody);
     if ("error" in parsed) return parsed.error;
-    const b = parsed.data;
+    // Authentication templates: the wording comes from the settings, never from the client.
+    const b =
+      parsed.data.purpose === "login" && parsed.data.content.auth
+        ? { ...parsed.data, content: authContent(parsed.data.content.auth) as typeof parsed.data.content }
+        : parsed.data;
     const id = newId("template");
     const [template] = await ctx.db
       .insert(schema.messageTemplate)
@@ -289,7 +301,11 @@ export function templateRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const t = await findTemplate(access.orgId, c.req.param("id"));
     if (!t) return fail(c, 404, "not_found");
-    const b = parsed.data;
+    // Authentication templates: the wording comes from the settings, never from the client.
+    const b =
+      parsed.data.purpose === "login" && parsed.data.content.auth
+        ? { ...parsed.data, content: authContent(parsed.data.content.auth) as typeof parsed.data.content }
+        : parsed.data;
     const published = await ctx.db
       .select({ channelId: schema.templateChannel.channelAccountId })
       .from(schema.templateChannel)

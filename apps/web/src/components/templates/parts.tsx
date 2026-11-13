@@ -157,13 +157,18 @@ export function MessagePreview({
                   key={i}
                   className="flex items-center justify-center gap-1.5 border-t px-3 py-2 text-[13px] font-medium text-primary"
                 >
-                  {b.kind === "link" ? (
-                    <Icon name="external" size="xs" />
-                  ) : b.kind === "call" ? (
-                    <Icon name="phone" size="xs" />
-                  ) : (
-                    <Icon name="reply" size="xs" />
-                  )}
+                  <Icon
+                    name={
+                      b.kind === "link"
+                        ? "external"
+                        : b.kind === "call"
+                          ? "phone"
+                          : b.kind === "copy"
+                            ? "copy"
+                            : "reply"
+                    }
+                    size="xs"
+                  />
                   {b.text || "Button"}
                 </div>
               ))}
