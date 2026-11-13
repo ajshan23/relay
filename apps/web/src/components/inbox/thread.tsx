@@ -22,6 +22,7 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
   useMessageScrollerScrollable,
 } from "@relay/ui/ui/message-scroller";
 import { Skeleton } from "@relay/ui/ui/skeleton";
@@ -67,10 +68,45 @@ export function Thread({ id, onBack, className }: Props) {
   const newestInbound = [...list].reverse().find((m) => m.direction === "inbound")?.id;
 
   // Opening a conversation, and every new customer message while it is open, marks it read for you.
+  // Where the new messages started when you opened this chat ("3 unread messages"), kept for the visit.
+  const [unreadSince, setUnreadSince] = useState<{ id: string; at: string | null; openedAt: number } | null>(
+    null,
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: markRead is stable enough; run on id or new inbound
   useEffect(() => {
-    if (id && document.visibilityState === "visible") markRead.mutate(id);
+    if (id && document.visibilityState === "visible")
+      // Every call resolves (mutate's callbacks only run for the latest), and only the first one
+      // of a visit knows when you last looked.
+      void markRead
+        .mutateAsync(id)
+        .then((r) =>
+          setUnreadSince((prev) =>
+            prev?.id === id ? prev : { id, at: r?.previousReadAt ?? null, openedAt: Date.now() },
+          ),
+        )
+        .catch(() => undefined);
   }, [id, newestInbound]);
+
+  // The first customer message you hadn't seen, and how many came after it.
+  const unread = useMemo(() => {
+    if (!unreadSince || unreadSince.id !== id) return null;
+    const since = unreadSince.at ? new Date(unreadSince.at).getTime() : Number.NEGATIVE_INFINITY;
+    const fresh = list.filter(
+      (m) =>
+        m.direction === "inbound" &&
+        new Date(m.sentAt).getTime() > since &&
+        new Date(m.sentAt).getTime() <= unreadSince.openedAt,
+    );
+    if (!fresh.length) return null;
+    // Replying means you've caught up: the divider goes.
+    const replied = list.some(
+      (m) =>
+        m.direction === "outbound" &&
+        m.type !== "note" &&
+        new Date(m.sentAt).getTime() > unreadSince.openedAt,
+    );
+    return replied ? null : { fromId: fresh[0]?.id ?? "", count: fresh.length };
+  }, [list, unreadSince, id]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new conversation clears the reply target
   useEffect(() => setReplyTo(null), [id]);
@@ -152,12 +188,14 @@ export function Thread({ id, onBack, className }: Props) {
                   )}
                   <Messages
                     list={list}
+                    unread={unread}
                     detail={d}
                     onReply={d.canWork && d.conversation.windowOpen ? setReplyTo : undefined}
                   />
                 </MessageScrollerContent>
               </MessageScrollerViewport>
               <NewMessagesButton list={list} />
+              <ScrollToUnread messageId={unread?.fromId ?? null} />
             </MessageScroller>
           </MessageScrollerProvider>
         )}
@@ -189,10 +227,13 @@ export function Thread({ id, onBack, className }: Props) {
 
 function Messages({
   list,
+  unread,
   detail,
   onReply,
 }: {
   list: Message[];
+  /** Where the new messages start, and how many: shown as a divider. */
+  unread: { fromId: string; count: number } | null;
   detail: ConversationDetail;
   onReply?: (m: Message) => void;
 }) {
@@ -258,6 +299,13 @@ function Messages({
     return (
       <Fragment key={m.id}>
         {newDay ? <DateSeparator label={dayLabel(m.sentAt)} className="py-3" /> : null}
+        {unread?.fromId === m.id ? (
+          <Marker variant="separator" className="py-3 text-xs font-medium text-primary" data-unread-divider>
+            <MarkerContent>
+              {unread.count} unread {unread.count === 1 ? "message" : "messages"}
+            </MarkerContent>
+          </Marker>
+        ) : null}
         {/* Follow-ups in a run sit close, but never touch: photos and videos have no padding of their own. */}
         <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-2" : "pt-1")}>
           <MessageBubble
@@ -534,4 +582,17 @@ function TeammatesTyping({ conversationId }: { conversationId: string }) {
       ) : null}
     </p>
   );
+}
+
+/** Opens the chat at the first message you hadn't seen yet, once per visit. */
+function ScrollToUnread({ messageId }: { messageId: string | null }) {
+  const { scrollToMessage } = useMessageScroller();
+  const done = useRef<string | null>(null);
+  useEffect(() => {
+    if (!messageId || done.current === messageId) return;
+    done.current = messageId;
+    // After the list has laid out.
+    requestAnimationFrame(() => scrollToMessage(messageId, { align: "start", scrollMargin: 48 }));
+  }, [messageId, scrollToMessage]);
+  return null;
 }

@@ -147,7 +147,8 @@ export function useTypingSignal(id: string) {
 export function useMarkRead() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api(`/conversations/${id}/read`, { method: "POST" }),
+    mutationFn: (id: string) =>
+      api<{ previousReadAt: string | null }>(`/conversations/${id}/read`, { method: "POST" }),
     onMutate: (id) => {
       // Clear the badge at once; the server confirms with a live event.
       qc.setQueriesData<InfiniteData<ConversationPage>>({ queryKey: keys.lists() }, (data) =>

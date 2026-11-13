@@ -596,6 +596,17 @@ export function conversationRoutes(ctx: AppContext) {
     const conversation = await findConversation(ctx, access, c.req.param("id"));
     if (!conversation) return fail(c, 404, "not_found");
     const now = new Date();
+    // When you looked before this, so the thread can mark where the new messages start.
+    const [previous] = await ctx.db
+      .select({ at: schema.conversationRead.lastReadAt })
+      .from(schema.conversationRead)
+      .where(
+        and(
+          eq(schema.conversationRead.conversationId, conversation.id),
+          eq(schema.conversationRead.userId, access.userId),
+        ),
+      )
+      .limit(1);
     await ctx.db
       .insert(schema.conversationRead)
       .values({ userId: access.userId, conversationId: conversation.id, lastReadAt: now })
@@ -622,7 +633,7 @@ export function conversationRoutes(ctx: AppContext) {
       );
     // And the customer sees blue ticks, when the channel allows it.
     await customerSignal(access, conversation, "read").catch((err) => console.warn("read signal", err));
-    return c.body(null, 204);
+    return c.json({ previousReadAt: previous?.at ?? null });
   });
 
   // History, newest page first. ?before=<message id> for older messages.
