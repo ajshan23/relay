@@ -30,6 +30,8 @@ import type { Message as Msg } from "./types";
 
 type Props = {
   message: Msg;
+  /** Deletes an internal note; given only for notes the viewer may delete. */
+  onDeleteNote?: (m: Msg) => void;
   /** First message of a run from the same sender: shows the name (and avatar in groups). */
   first: boolean;
   /** Last message of a run: the bubble gets its tail. */
@@ -68,7 +70,56 @@ function memberColour(key: string) {
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 
-export function MessageBubble({ message: m, first, last, isGroup, onRetry, onReply }: Props) {
+/** "@[Priya Shah](user_1)" in a note, shown as a highlighted "@Priya Shah". */
+function NoteText({ text }: { text: string }) {
+  const parts: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/@\[([^\]]{1,80})\]\(([\w-]{1,60})\)/g)) {
+    const at = match.index ?? 0;
+    if (at > last) parts.push(text.slice(last, at));
+    parts.push(
+      <span
+        key={at}
+        className="rounded bg-amber-500/20 px-0.5 font-medium text-amber-900 dark:text-amber-200"
+      >
+        @{match[1]}
+      </span>,
+    );
+    last = at + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return <p className="text-sm whitespace-pre-wrap break-words">{parts}</p>;
+}
+
+/** An internal note: for the team only, never sent to the customer. */
+function NoteCard({ message: m, onDelete }: { message: Msg; onDelete?: (m: Msg) => void }) {
+  return (
+    <div className="group/row px-1 py-1" data-message-id={m.id}>
+      <div className="mx-auto w-full max-w-xl rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-50">
+        <div className="mb-1 flex items-center gap-1.5 text-xs text-amber-800 dark:text-amber-200/80">
+          <Icon name="lock" size="xs" />
+          <span className="font-medium">Note · {m.sender.name ?? "Teammate"}</span>
+          <span>· only your team sees this</span>
+          <span className="ml-auto tabular-nums">{clockTime(m.sentAt)}</span>
+          {onDelete && !m.pending ? (
+            <button
+              type="button"
+              aria-label="Delete note"
+              onClick={() => onDelete(m)}
+              className="inline-flex size-5 items-center justify-center rounded opacity-0 outline-none group-hover/row:opacity-100 hover:bg-amber-500/20 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <Icon name="delete" size="xs" />
+            </button>
+          ) : null}
+        </div>
+        <NoteText text={str(m.content.text) ?? ""} />
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({ message: m, first, last, isGroup, onRetry, onReply, onDeleteNote }: Props) {
+  if (m.type === "note") return <NoteCard message={m} onDelete={onDeleteNote} />;
   const out = m.direction === "outbound";
   const failed = m.status === "failed";
   const memberName = isGroup && !out ? (m.sender.name ?? "Member") : null;

@@ -65,6 +65,15 @@ export type InboxEvent =
       name: string;
       state: PresenceState;
     }
+  /** Someone @mentioned a teammate in an internal note. Only that teammate is told. */
+  | {
+      type: "mention";
+      conversationId: string;
+      branchId: string | null;
+      userId: string;
+      byName: string;
+      messageId: string;
+    }
   /** A template or its review state on a channel changed. Templates are organization-wide. */
   | { type: "template.updated"; templateId: string };
 

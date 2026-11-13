@@ -11,7 +11,7 @@ import type { ListFilter } from "./queries";
 import { Thread } from "./thread";
 import type { InboxView } from "./types";
 
-const views: InboxView[] = ["open", "mine", "unassigned", "closed"];
+const views: InboxView[] = ["open", "mine", "unassigned", "mentions", "snoozed", "closed"];
 
 /**
  * The inbox: the approved Board layout, two panes (chat list + conversation) with details in the

@@ -1,5 +1,6 @@
 "use client";
 
+import { notify } from "@relay/ui/components/toast";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { useBranch } from "@/components/shell/branch-context";
@@ -72,6 +73,24 @@ export function LiveUpdates() {
       for (const type of ["conversation.updated", "message.updated", "conversation.read"])
         source.addEventListener(type, onHint as EventListener);
       source.addEventListener("template.updated", onTemplate);
+      // Someone @mentioned you in a note (the stream only sends you your own).
+      source.addEventListener("mention", ((e: MessageEvent<string>) => {
+        try {
+          const m = JSON.parse(e.data) as { conversationId: string; byName: string };
+          void qc.invalidateQueries({ queryKey: ["inbox", "counts"] });
+          void qc.invalidateQueries({ queryKey: keys.lists() });
+          notify.info(`${m.byName} mentioned you in a note`, {
+            action: {
+              label: "Open",
+              onClick: () => {
+                window.location.href = `/conversations?view=mentions&c=${encodeURIComponent(m.conversationId)}`;
+              },
+            },
+          });
+        } catch {
+          // Ignore a malformed hint.
+        }
+      }) as EventListener);
       // Teammates viewing or typing: shown in the open conversation only, never a refetch.
       source.addEventListener("presence", ((e: MessageEvent<string>) => {
         try {

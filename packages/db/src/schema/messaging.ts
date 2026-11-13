@@ -149,6 +149,9 @@ export const conversation = pgTable(
     lastMessageAt: timestamp("last_message_at"),
     lastInboundAt: timestamp("last_inbound_at"),
     /** End of the reply window (WhatsApp: 24 h after the customer's last message; groups: after any member's). Null when it never opened. */
+    /** Hidden from the open lists until then; a customer message or the time passing wakes it. */
+    snoozedUntil: timestamp("snoozed_until"),
+    snoozedByUserId: text("snoozed_by_user_id").references(() => user.id, { onDelete: "set null" }),
     /** The last customer message marked read at the channel (blue ticks), so each is sent once. */
     providerReadMessageId: text("provider_read_message_id"),
     windowExpiresAt: timestamp("window_expires_at"),
@@ -228,6 +231,38 @@ export const message = pgTable(
   (t) => [
     uniqueIndex("message_account_external_uidx").on(t.channelAccountId, t.externalId),
     index("message_conversation_idx").on(t.conversationId, t.sentAt),
+    // Search inside a conversation: message text and media captions.
+    index("message_text_trgm").using(
+      "gin",
+      sql`(coalesce(${t.content} ->> 'text', '') || ' ' || coalesce(${t.content} -> 'media' ->> 'caption', '')) gin_trgm_ops`,
+    ),
+  ],
+);
+
+/** A teammate @mentioned in an internal note. Read when they open the conversation. */
+export const mention = pgTable(
+  "mention",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversation.id, { onDelete: "cascade" }),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => message.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    byUserId: text("by_user_id").references(() => user.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    readAt: timestamp("read_at"),
+  },
+  (t) => [
+    index("mention_user_unread_idx").on(t.userId, t.readAt),
+    index("mention_conversation_idx").on(t.conversationId, t.userId),
   ],
 );
 

@@ -284,3 +284,25 @@ export function useRetry(conversationId: string) {
     onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
   });
 }
+
+/** Adds an internal note (team only). `text` carries mentions as "@[Name](userId)". */
+export function useAddNote(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) =>
+      api<{ note: { id: string } }>(`/conversations/${conversationId}/notes`, {
+        method: "POST",
+        json: { text },
+      }),
+    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+  });
+}
+
+export function useDeleteNote(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (noteId: string) =>
+      api(`/conversations/${conversationId}/notes/${noteId}`, { method: "DELETE" }),
+    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+  });
+}

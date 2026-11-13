@@ -6,7 +6,7 @@ import { z } from "zod";
 import { channels } from "../../channels";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type AccessEnv, fail, requireOrg } from "../branches/access";
+import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import {
   assignableUsers,
@@ -45,7 +45,7 @@ const iso = (v: unknown) =>
     : new Date(`${String(v).replace(" ", "T").replace(/Z?$/, "Z")}`).toISOString();
 const activityAt = sql`coalesce(${schema.conversation.lastMessageAt}, ${schema.conversation.createdAt})`;
 
-const views = ["open", "mine", "unassigned", "closed", "all"] as const;
+const views = ["open", "mine", "unassigned", "snoozed", "mentions", "closed", "all"] as const;
 type View = (typeof views)[number];
 
 /**
@@ -81,14 +81,27 @@ export function conversationRoutes(ctx: AppContext) {
       event ?? { type: "conversation.updated", conversationId: c.id, branchId: c.branchId },
     );
 
+  const cv = schema.conversation;
+  /** Snoozed until later: hidden from the open lists. Timestamps are stored as UTC. */
+  const snoozed = sql`(${cv.snoozedUntil} is not null and ${cv.snoozedUntil} > (now() at time zone 'utc'))`;
+  const awake = sql`not ${snoozed}`;
+  const isOpen = and(eq(cv.status, "open"), awake);
+  /** Conversations where this person was @mentioned in a note and hasn't looked yet. */
+  const mentioned = (userId: string) =>
+    sql`exists (select 1 from ${schema.mention} mn where mn.conversation_id = "conversation"."id" and mn.user_id = ${userId} and mn.read_at is null)`;
+
   function viewFilter(view: View, userId: string) {
     switch (view) {
       case "open":
-        return eq(schema.conversation.status, "open");
+        return isOpen;
       case "mine":
-        return and(eq(schema.conversation.status, "open"), eq(schema.conversation.assignedUserId, userId));
+        return and(isOpen, eq(cv.assignedUserId, userId));
       case "unassigned":
-        return and(eq(schema.conversation.status, "open"), isNull(schema.conversation.assignedUserId));
+        return and(isOpen, isNull(cv.assignedUserId));
+      case "snoozed":
+        return and(eq(cv.status, "open"), snoozed);
+      case "mentions":
+        return mentioned(userId);
       case "closed":
         return eq(schema.conversation.status, "closed");
       default:
@@ -142,6 +155,7 @@ export function conversationRoutes(ctx: AppContext) {
         preview: schema.conversation.lastMessagePreview,
         activityAt: sql<string>`${activityAt}`,
         windowExpiresAt: schema.conversation.windowExpiresAt,
+        snoozedUntil: schema.conversation.snoozedUntil,
         unreadCount,
       })
       .from(schema.conversation)
@@ -209,11 +223,13 @@ export function conversationRoutes(ctx: AppContext) {
     if (!branchId || branchId === "all") return fail(c, 422, "branch_required", "Pick a branch.");
     const [row] = await ctx.db
       .select({
-        open: sql<number>`count(*) filter (where ${schema.conversation.status} = 'open')::int`,
-        mine: sql<number>`count(*) filter (where ${schema.conversation.status} = 'open' and ${schema.conversation.assignedUserId} = ${me})::int`,
-        unassigned: sql<number>`count(*) filter (where ${schema.conversation.status} = 'open' and ${schema.conversation.assignedUserId} is null)::int`,
-        closed: sql<number>`count(*) filter (where ${schema.conversation.status} = 'closed')::int`,
-        unread: sql<number>`count(*) filter (where ${schema.conversation.status} = 'open' and ${unreadCount} > 0)::int`,
+        open: sql<number>`count(*) filter (where ${isOpen})::int`,
+        mine: sql<number>`count(*) filter (where ${isOpen} and ${cv.assignedUserId} = ${me})::int`,
+        unassigned: sql<number>`count(*) filter (where ${isOpen} and ${cv.assignedUserId} is null)::int`,
+        snoozed: sql<number>`count(*) filter (where ${cv.status} = 'open' and ${snoozed})::int`,
+        mentions: sql<number>`count(*) filter (where ${mentioned(me)})::int`,
+        closed: sql<number>`count(*) filter (where ${cv.status} = 'closed')::int`,
+        unread: sql<number>`count(*) filter (where ${isOpen} and ${unreadCount} > 0)::int`,
       })
       .from(schema.conversation)
       .leftJoin(
@@ -232,7 +248,7 @@ export function conversationRoutes(ctx: AppContext) {
     const access = c.var.access;
     const conversation = await findConversation(ctx, access, c.req.param("id"));
     if (!conversation) return fail(c, 404, "not_found");
-    const [[account], [branch], [assignee], contact, group] = await Promise.all([
+    const [[account], [branch], [assignee], contact, group, [myRead]] = await Promise.all([
       ctx.db
         .select()
         .from(schema.channelAccount)
@@ -254,6 +270,16 @@ export function conversationRoutes(ctx: AppContext) {
         : Promise.resolve([null]),
       conversation.contactId ? contactDetails(conversation.contactId) : Promise.resolve(null),
       conversation.groupId ? groupDetails(conversation.groupId) : Promise.resolve(null),
+      ctx.db
+        .select({ at: schema.conversationRead.lastReadAt })
+        .from(schema.conversationRead)
+        .where(
+          and(
+            eq(schema.conversationRead.conversationId, conversation.id),
+            eq(schema.conversationRead.userId, access.userId),
+          ),
+        )
+        .limit(1),
     ]);
     if (!account) return fail(c, 404, "not_found");
     const caps = channels().get(account.type)?.capabilities ?? null;
@@ -268,6 +294,10 @@ export function conversationRoutes(ctx: AppContext) {
         lastInboundAt: conversation.lastInboundAt,
         windowExpiresAt: conversation.windowExpiresAt,
         windowOpen: !!conversation.windowExpiresAt && conversation.windowExpiresAt > now,
+        snoozedUntil:
+          conversation.snoozedUntil && conversation.snoozedUntil > now ? conversation.snoozedUntil : null,
+        /** When you last looked, for the "N unread messages" divider. Null when never. */
+        myLastReadAt: myRead?.at ?? null,
         title:
           conversation.kind === "group"
             ? (group?.subject ?? "Group chat")
@@ -463,6 +493,93 @@ export function conversationRoutes(ctx: AppContext) {
     return true;
   }
 
+  /*
+   * Internal notes: written in the conversation for the team only, never sent to the customer. Stored as
+   * messages of type "note" (outbound, no external id, never queued), so they sit in the same timeline.
+   * They don't move the conversation up the list or change its preview. "@[Name](userId)" mentions a
+   * teammate who can work this branch; they see it under Mentions and get a live pop-up.
+   */
+  app.post("/:id/notes", async (c) => {
+    const access = c.var.access;
+    const parsed = await parseBody(c, z.object({ text: z.string().trim().min(1, "Write a note").max(4096) }));
+    if ("error" in parsed) return parsed.error;
+    const conversation = await findConversation(ctx, access, c.req.param("id"));
+    if (!conversation) return fail(c, 404, "not_found");
+    if (!(await canWork(ctx, access, conversation)))
+      return fail(c, 403, "forbidden", "Viewers can read conversations but not add notes.");
+    const text = parsed.data.text;
+    const asked = [...text.matchAll(/@\[[^\]]{1,80}\]\(([\w-]{1,60})\)/g)].map((m) => m[1] as string);
+    const team = asked.length
+      ? await assignableUsers(ctx, conversation.organizationId, conversation.branchId)
+      : [];
+    const mentions = [...new Set(asked)].filter(
+      (id) => id !== access.userId && team.some((u) => u.id === id),
+    );
+    const id = newId("message");
+    const now = new Date();
+    await ctx.db.transaction(async (tx) => {
+      await tx.insert(schema.message).values({
+        id,
+        organizationId: conversation.organizationId,
+        conversationId: conversation.id,
+        channelAccountId: conversation.channelAccountId,
+        direction: "outbound",
+        senderType: "user",
+        senderUserId: access.userId,
+        type: "note",
+        content: { type: "note", text, mentions },
+        status: "sent",
+        sentAt: now,
+      });
+      if (mentions.length)
+        await tx.insert(schema.mention).values(
+          mentions.map((userId) => ({
+            id: newId("mention"),
+            organizationId: conversation.organizationId,
+            conversationId: conversation.id,
+            messageId: id,
+            userId,
+            byUserId: access.userId,
+          })),
+        );
+    });
+    await announce(conversation);
+    const byName = c.var.user.name || c.var.user.email;
+    for (const userId of mentions)
+      await announce(conversation, {
+        type: "mention",
+        conversationId: conversation.id,
+        branchId: conversation.branchId,
+        userId,
+        byName,
+        messageId: id,
+      });
+    return c.json({ note: { id, mentions } }, 201);
+  });
+
+  app.delete("/:id/notes/:noteId", async (c) => {
+    const access = c.var.access;
+    const conversation = await findConversation(ctx, access, c.req.param("id"));
+    if (!conversation) return fail(c, 404, "not_found");
+    const m = schema.message;
+    const [note] = await ctx.db
+      .select({ id: m.id, senderUserId: m.senderUserId })
+      .from(m)
+      .where(and(eq(m.id, c.req.param("noteId")), eq(m.conversationId, conversation.id), eq(m.type, "note")))
+      .limit(1);
+    if (!note) return fail(c, 404, "not_found");
+    if (note.senderUserId !== access.userId && !isOrgAdmin(access.orgRole))
+      return fail(
+        c,
+        403,
+        "forbidden",
+        "Only the person who wrote a note, or an owner or admin, can delete it.",
+      );
+    await ctx.db.delete(m).where(eq(m.id, note.id));
+    await announce(conversation);
+    return c.body(null, 204);
+  });
+
   // The team member is typing a reply: show "typing…" on the customer's phone (see customerSignal).
   app.post("/:id/typing", async (c) => {
     const access = c.var.access;
@@ -492,6 +609,17 @@ export function conversationRoutes(ctx: AppContext) {
       branchId: conversation.branchId,
       userId: access.userId,
     });
+    // Opening the conversation is reading your @mentions in it.
+    await ctx.db
+      .update(schema.mention)
+      .set({ readAt: now })
+      .where(
+        and(
+          eq(schema.mention.conversationId, conversation.id),
+          eq(schema.mention.userId, access.userId),
+          isNull(schema.mention.readAt),
+        ),
+      );
     // And the customer sees blue ticks, when the channel allows it.
     await customerSignal(access, conversation, "read").catch((err) => console.warn("read signal", err));
     return c.body(null, 204);

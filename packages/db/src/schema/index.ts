@@ -6,4 +6,5 @@ export * from "./contacts";
 export * from "./email";
 export * from "./groups";
 export * from "./messaging";
+export * from "./quick-replies";
 export * from "./templates";

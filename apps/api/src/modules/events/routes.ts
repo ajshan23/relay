@@ -80,6 +80,8 @@ export function eventRoutes(ctx: AppContext) {
       const allowed = async (event: InboxEvent) => {
         if (event.type === "template.updated") return true; // templates are organization-wide
         if (event.type === "conversation.read" && event.userId !== access.userId) return false;
+        // A mention is for the person mentioned only.
+        if (event.type === "mention" && event.userId !== access.userId) return false;
         // Your own presence never comes back to you.
         if (event.type === "presence" && event.userId === access.userId) return false;
         if (only && event.branchId !== only) return false;

@@ -25,6 +25,8 @@ export const viewLabels: Record<InboxView, string> = {
   open: "Open",
   mine: "Assigned to me",
   unassigned: "Unassigned",
+  mentions: "Mentions",
+  snoozed: "Snoozed",
   closed: "Closed",
 };
 
@@ -135,11 +137,23 @@ export function ConversationList({ filter, selectedId, onSelect, onViewChange, o
           ) : (
             <ListEmpty
               icon="inbox"
-              title={filter.view === "mine" ? "Nothing assigned to you" : "No conversations"}
+              title={
+                filter.view === "mine"
+                  ? "Nothing assigned to you"
+                  : filter.view === "mentions"
+                    ? "No mentions"
+                    : filter.view === "snoozed"
+                      ? "Nothing snoozed"
+                      : "No conversations"
+              }
               description={
                 filter.view === "closed"
                   ? "Closed conversations land here."
-                  : "New messages appear here as they arrive."
+                  : filter.view === "mentions"
+                    ? "When a teammate @mentions you in a note, the conversation shows up here."
+                    : filter.view === "snoozed"
+                      ? "Snoozed conversations wait here and come back on time, or when the customer writes."
+                      : "New messages appear here as they arrive."
               }
             />
           )

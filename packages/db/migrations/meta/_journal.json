@@ -92,6 +92,13 @@
       "when": 1794601584361,
       "tag": "0012_channel_settings_and_read_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794603317903,
+      "tag": "0013_notes_quick_replies_snooze",
+      "breakpoints": true
     }
   ]
 }

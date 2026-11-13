@@ -1,5 +1,6 @@
 "use client";
 
+import { Segmented } from "@relay/ui/components/choice";
 import { Icon } from "@relay/ui/components/icon";
 import { TextArea } from "@relay/ui/components/text-input";
 import { notify } from "@relay/ui/components/toast";
@@ -19,7 +20,8 @@ import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
 import { fileSize, kindWord, windowLeft } from "./format";
 import { reportTyping } from "./presence";
-import { upload as uploadFile, useSend, useTypingSignal } from "./queries";
+import { upload as uploadFile, useAddNote, useAssignees, useSend, useTypingSignal } from "./queries";
+import { type Suggestion, SuggestionList, tokenAtCaret } from "./suggestions";
 import { TemplatePicker } from "./template-picker";
 import type { ConversationDetail, Message, Upload } from "./types";
 
@@ -50,6 +52,15 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const send = useSend(id);
   const [text, setText] = useState("");
   const typing = useTypingSignal(id);
+  /** Reply goes to the customer; Note stays inside the team. */
+  const [mode, setMode] = useState<"reply" | "note">("reply");
+  const note = mode === "note";
+  const addNote = useAddNote(id);
+  const team = useAssignees(id, note && detail.canWork);
+  /** "@Name" typed in a note → that teammate's id, turned into "@[Name](id)" when sent. */
+  const mentioned = useRef(new Map<string, string>());
+  const [token, setToken] = useState<{ query: string; start: number; end: number } | null>(null);
+  const [active, setActive] = useState(0);
   const [pending, setPending] = useState<Pending | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -76,6 +87,28 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
               ? `The ${caps.replyWindowHours}-hour reply window has closed. Send a template to start the conversation again; once the customer replies, you can write freely.`
               : "Replies aren't open for this conversation."
             : null;
+
+  // Teammates to @mention while writing a note.
+  const suggestions: Suggestion[] =
+    note && token
+      ? (team.data ?? [])
+          .filter((u) => u.id !== me.user.id && (u.name ?? "").toLowerCase().includes(token.query))
+          .slice(0, 8)
+          .map((u) => ({ id: u.id, label: u.name ?? "Teammate" }))
+      : [];
+  const suggesting = note && !!token;
+
+  /** Replaces the "@que" being typed with the picked teammate's name. */
+  function pick(item: Suggestion) {
+    if (!token) return;
+    const insert = `@${item.label} `;
+    const next = text.slice(0, token.start) + insert + text.slice(token.end);
+    mentioned.current.set(item.label, item.id);
+    setText(next);
+    setToken(null);
+    const caret = token.start + insert.length;
+    requestAnimationFrame(() => input.current?.setSelectionRange(caret, caret));
+  }
 
   // Templates can still go out when only the window is closed.
   const windowOnly =
@@ -144,7 +177,25 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const canSend =
     !lock && !send.isPending && !uploading && !pending?.error && (!!text.trim() || !!pending?.upload);
 
+  function submitNote() {
+    let body = text.trim();
+    if (!body || addNote.isPending) return;
+    // Longest names first, so "@Priya Shah" wins over "@Priya".
+    for (const [name, userId] of [...mentioned.current].sort((a, b) => b[0].length - a[0].length))
+      body = body.split(`@${name}`).join(`@[${name}](${userId})`);
+    addNote.mutate(body, {
+      onError: (err) =>
+        notify.error("Note not added", {
+          description: err instanceof ApiError ? err.message : "Check your connection and try again.",
+        }),
+    });
+    setText("");
+    mentioned.current.clear();
+    setToken(null);
+  }
+
   function submit() {
+    if (note) return submitNote();
     if (!canSend) return;
     const body = text.trim();
     if (caps && body.length > caps.maxTextLength) {
@@ -172,13 +223,38 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (suggesting) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = suggestions.length || 1;
+        setActive((a) => (a + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && suggestions[active]) {
+        e.preventDefault();
+        pick(suggestions[active]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setToken(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
   }
 
-  if (lock) {
+  const noteButton = detail.canWork ? (
+    <Button size="sm" variant="outline" onClick={() => setMode("note")}>
+      <Icon name="lock" />
+      Write a note
+    </Button>
+  ) : null;
+
+  if (lock && !note) {
     if (windowOnly && canTemplate)
       return (
         <div className="flex flex-col gap-3 rounded-lg border bg-card px-4 py-3 sm:flex-row sm:items-center">
@@ -186,6 +262,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
             <Icon name="clock" size="sm" />
           </span>
           <p className="flex-1 text-sm text-muted-foreground">{lock}</p>
+          {noteButton}
           <Button size="sm" onClick={() => setPicking(true)}>
             <Icon name="file" />
             Choose a template
@@ -196,7 +273,8 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
     return (
       <div className="flex items-start gap-3 rounded-lg border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
         <Icon name="lock" size="sm" className="mt-0.5 shrink-0" />
-        <p>{lock}</p>
+        <p className="flex-1">{lock}</p>
+        {noteButton}
       </div>
     );
   }
@@ -206,10 +284,22 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
     new Date(detail.conversation.windowExpiresAt).getTime() - now < 60 * 60_000;
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="relative flex flex-col gap-1.5">
+      {suggesting ? (
+        <SuggestionList
+          title="Mention a teammate"
+          items={suggestions}
+          active={Math.min(active, Math.max(0, suggestions.length - 1))}
+          onPick={pick}
+          onHover={setActive}
+          empty={team.isPending ? "Loading…" : "No teammate by that name works on this branch."}
+        />
+      ) : null}
       <div
         className={cn(
           "flex flex-col gap-2 rounded-lg border bg-card p-2 transition-colors focus-within:border-primary",
+          note &&
+            "border-amber-300 bg-amber-50 focus-within:border-amber-500 dark:border-amber-500/40 dark:bg-amber-500/10",
         )}
       >
         {replyTo ? (
@@ -274,80 +364,131 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           value={text}
           onChange={(e) => {
             setText(e.target.value);
-            onTyping(e.target.value);
+            if (note) {
+              const t = tokenAtCaret(e.target.value, e.target.selectionStart ?? e.target.value.length, "@");
+              setToken(t);
+              setActive(0);
+              if (e.target.value.trim()) reportTyping(id);
+            } else onTyping(e.target.value);
           }}
           onKeyDown={onKeyDown}
           minRows={1}
           maxRows={8}
-          placeholder={pending ? "Add a caption" : `Message ${detail.conversation.title}`}
+          placeholder={
+            note
+              ? "Add an internal note — only your team sees this. Type @ to mention someone."
+              : pending
+                ? "Add a caption"
+                : `Message ${detail.conversation.title}`
+          }
           className="border-0 bg-transparent px-1.5 py-1 shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
         <div className="flex items-center gap-1">
-          <input
-            ref={picker}
-            type="file"
-            className="hidden"
-            accept={
-              caps
-                ? Object.values(caps.media)
-                    .flatMap((m) => m.mimeTypes)
-                    .join(",")
-                : undefined
-            }
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              e.target.value = "";
-              if (f) void attach(f);
-            }}
-          />
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Attach a file"
-                disabled={!!pending}
-                onClick={() => picker.current?.click()}
-              >
-                <Icon name="attach" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Attach a photo, video, audio or document</TooltipContent>
-          </Tooltip>
-          {canTemplate ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Send a template"
-                  onClick={() => setPicking(true)}
-                >
-                  <Icon name="file" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Send a template</TooltipContent>
-            </Tooltip>
+          {detail.canWork ? (
+            <Segmented
+              size="sm"
+              aria-label="Reply or internal note"
+              value={mode}
+              onChange={(m) => {
+                setMode(m);
+                setToken(null);
+                input.current?.focus();
+              }}
+              options={[
+                { value: "reply", label: "Reply" },
+                { value: "note", label: "Note", icon: <Icon name="lock" size="xs" /> },
+              ]}
+              className="mr-1"
+            />
           ) : null}
-          <span
-            className={cn(
-              "ml-1 inline-flex items-center gap-1 text-xs",
-              closingSoon ? "font-medium text-warning" : "text-muted-foreground",
-            )}
-          >
-            <Icon name="clock" size="xs" />
-            Reply window: {left}
-          </span>
-          <Button type="button" size="sm" className="ml-auto" disabled={!canSend} onClick={submit}>
-            {send.isPending ? <Spinner /> : <Icon name="send" />}
-            Send
-          </Button>
+          {note ? (
+            <span className="ml-1 hidden truncate text-xs text-amber-800 sm:inline dark:text-amber-200/80">
+              Only your team sees notes
+            </span>
+          ) : (
+            <>
+              <input
+                ref={picker}
+                type="file"
+                className="hidden"
+                accept={
+                  caps
+                    ? Object.values(caps.media)
+                        .flatMap((m) => m.mimeTypes)
+                        .join(",")
+                    : undefined
+                }
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void attach(f);
+                }}
+              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Attach a file"
+                    disabled={!!pending}
+                    onClick={() => picker.current?.click()}
+                  >
+                    <Icon name="attach" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Attach a photo, video, audio or document</TooltipContent>
+              </Tooltip>
+              {canTemplate ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Send a template"
+                      onClick={() => setPicking(true)}
+                    >
+                      <Icon name="file" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Send a template</TooltipContent>
+                </Tooltip>
+              ) : null}
+              <span
+                className={cn(
+                  "ml-1 inline-flex items-center gap-1 text-xs",
+                  closingSoon ? "font-medium text-warning" : "text-muted-foreground",
+                )}
+              >
+                <Icon name="clock" size="xs" />
+                Reply window: {left}
+              </span>
+            </>
+          )}
+          {note ? (
+            <Button
+              type="button"
+              size="sm"
+              className="ml-auto"
+              disabled={!text.trim() || addNote.isPending}
+              onClick={submit}
+            >
+              {addNote.isPending ? <Spinner /> : <Icon name="lock" />}
+              Add note
+            </Button>
+          ) : (
+            <Button type="button" size="sm" className="ml-auto" disabled={!canSend} onClick={submit}>
+              {send.isPending ? <Spinner /> : <Icon name="send" />}
+              Send
+            </Button>
+          )}
         </div>
       </div>
       <p className="hidden px-1 text-[11px] text-muted-foreground sm:block">
-        Enter to send · Shift + Enter for a new line · drop a file to attach it
+        {note
+          ? "Enter to add the note · Shift + Enter for a new line · @ to mention a teammate"
+          : "Enter to send · Shift + Enter for a new line · drop a file to attach it"}
       </p>
       {pickerDialog}
     </div>

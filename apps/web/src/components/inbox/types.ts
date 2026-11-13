@@ -1,6 +1,6 @@
 /** Shapes returned by /api/conversations, /api/uploads and /api/events. */
 
-export type InboxView = "open" | "mine" | "unassigned" | "closed";
+export type InboxView = "open" | "mine" | "unassigned" | "mentions" | "snoozed" | "closed";
 
 export type Preview = {
   type: string;
@@ -33,7 +33,16 @@ export type ConversationRow = {
 
 export type ConversationPage = { conversations: ConversationRow[]; nextCursor: string | null };
 
-export type Counts = { open: number; mine: number; unassigned: number; closed: number; unread: number };
+export type Counts = {
+  open: number;
+  mine: number;
+  unassigned: number;
+  /** Conversations where you were @mentioned in a note and haven't looked yet. */
+  mentions: number;
+  snoozed: number;
+  closed: number;
+  unread: number;
+};
 
 export type MediaKind = "image" | "video" | "audio" | "document" | "sticker";
 

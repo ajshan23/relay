@@ -40,6 +40,7 @@ import { names, usePresence, usePresenceReporter } from "./presence";
 import {
   useAssignees,
   useConversation,
+  useDeleteNote,
   useMarkRead,
   useMessages,
   useRetry,
@@ -196,6 +197,15 @@ function Messages({
   onReply?: (m: Message) => void;
 }) {
   const retry = useRetry(detail.conversation.id);
+  const deleteNote = useDeleteNote(detail.conversation.id);
+  const { me, canManageOrg } = useMe();
+  const onDeleteNote = (m: Message) =>
+    deleteNote.mutate(m.id, {
+      onError: (err) =>
+        notify.error("Couldn't delete the note", {
+          description: err instanceof ApiError ? err.message : undefined,
+        }),
+    });
   const [confirm, confirmElement] = useConfirm();
   const isGroup = detail.conversation.kind === "group";
   // Sending again only makes sense while a send could succeed.
@@ -257,6 +267,7 @@ function Messages({
             isGroup={isGroup}
             onReply={onReply}
             onRetry={canRetry ? onRetry : undefined}
+            onDeleteNote={m.sender.id === me.user.id || canManageOrg ? onDeleteNote : undefined}
           />
         </MessageScrollerItem>
       </Fragment>

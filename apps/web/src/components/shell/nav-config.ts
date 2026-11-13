@@ -78,6 +78,8 @@ export const sections: Section[] = [
           { label: "Open", view: "open" },
           { label: "Assigned to me", view: "mine" },
           { label: "Unassigned", view: "unassigned" },
+          { label: "Mentions", view: "mentions" },
+          { label: "Snoozed", view: "snoozed" },
           { label: "Closed", view: "closed" },
         ],
       },
