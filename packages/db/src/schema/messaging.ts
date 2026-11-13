@@ -50,8 +50,6 @@ export const contact = pgTable(
     tagIds: text("tag_ids").array().notNull().default(sql`'{}'::text[]`),
     /** How the contact arrived: channel (they wrote first), manual, import. */
     source: text("source").notNull().default("channel"),
-    /** Set when they reply STOP, are opted out by hand or in an import. Broadcasts skip them. */
-    marketingOptOutAt: timestamp("marketing_opt_out_at"),
     /** Newest message in any of their conversations, kept current by the worker. */
     lastMessageAt: timestamp("last_message_at"),
     createdByUserId: text("created_by_user_id").references(() => user.id, { onDelete: "set null" }),

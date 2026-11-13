@@ -32,6 +32,7 @@ export const idPrefixes = {
   contactList: "lst",
   contactView: "cview",
   contactImport: "imp",
+  contactOptOut: "opt",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

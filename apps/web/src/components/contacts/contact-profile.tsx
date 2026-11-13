@@ -8,7 +8,6 @@ import { SidePanel } from "@relay/ui/components/side-panel";
 import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { Skeleton } from "@relay/ui/ui/skeleton";
-import { Switch } from "@relay/ui/ui/switch";
 import { Textarea } from "@relay/ui/ui/textarea";
 import Link from "next/link";
 import { type ReactNode, useState } from "react";
@@ -16,6 +15,7 @@ import { channelIcon } from "@/components/inbox/conversation-list";
 import { listTime } from "@/components/inbox/format";
 import { ApiError } from "@/lib/api";
 import { EditableCell, FieldEditor, FieldValue, TagChips } from "./cells";
+import { MarketingEditor } from "./marketing";
 import { type ContactPatch, type ContactsMeta, useContact, useContactActions } from "./queries";
 import { TagPicker } from "./tag-picker";
 
@@ -201,24 +201,21 @@ export function ContactProfile({
                 )}
               />
             </Row>
-            <Row label="Marketing">
-              <label className="flex items-center gap-2">
-                <Switch
-                  disabled={!canEdit}
-                  checked={!c.marketingOptOutAt}
-                  onCheckedChange={(v) => save({ marketingOptOut: !v })}
-                  aria-label="Gets marketing messages"
-                />
-                <span className="text-muted-foreground">
-                  {c.marketingOptOutAt ? "Opted out" : "Subscribed"}
-                </span>
-              </label>
-            </Row>
             <Row label="Added">
               <span className="text-muted-foreground">
                 {fullDate.format(new Date(c.createdAt))} · {sourceLabel[c.source] ?? c.source}
               </span>
             </Row>
+          </Block>
+
+          <Block title="Marketing">
+            <MarketingEditor
+              optOuts={d.optOuts.map((o) => o.channelAccountId)}
+              sources={d.optOuts}
+              channels={meta.channels}
+              canEdit={canEdit}
+              onChange={(channelAccountId, optedOut) => save({ optOut: { channelAccountId, optedOut } })}
+            />
           </Block>
 
           <Block title="Channels">

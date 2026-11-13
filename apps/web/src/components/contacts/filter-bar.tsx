@@ -5,6 +5,7 @@ import {
   coreColumns,
   type FilterOp,
   type FilterRule,
+  filterOnlyColumns,
   opLabels,
   opsFor,
 } from "@relay/core/contacts";
@@ -35,24 +36,47 @@ export function filterColumns(meta: ContactsMeta): Column[] {
         ? meta.tags.map((t) => ({ value: t.id, label: t.name, colour: t.colour }))
         : id === "branch"
           ? meta.branches.map((b) => ({ value: b.id, label: b.name }))
-          : undefined,
+          : id === "marketing"
+            ? meta.channels.map((c) => ({ value: c.id, label: c.name }))
+            : undefined,
   }));
+  const lists: Column[] = meta.lists.length
+    ? [
+        {
+          id: "list",
+          label: filterOnlyColumns.list.label,
+          kind: filterOnlyColumns.list.type,
+          options: meta.lists.map((l) => ({ value: l.id, label: l.name })),
+        },
+      ]
+    : [];
   const own: Column[] = meta.fields.map((f) => ({
     id: `attr.${f.key}`,
     label: f.label,
     kind: f.type,
     options: f.options,
   }));
-  return [...core, ...own];
+  return [...core, ...lists, ...own];
 }
+
+/** Operator wording that reads better than the generic one for some columns. */
+const opWords: Record<string, Partial<Record<FilterOp, string>>> = {
+  marketing: {
+    is_true: "subscribed everywhere",
+    is_false: "opted out anywhere",
+    has_any: "opted out on",
+    has_none: "can get it on",
+  },
+  list: { has_any: "is in", has_none: "is not in" },
+};
+const opText = (kind: string, op: FilterOp) => opWords[kind]?.[op] ?? opLabels[op];
 
 const noValue: FilterOp[] = ["is_empty", "is_not_empty", "is_true", "is_false"];
 
 function describe(rule: FilterRule, col: Column | undefined) {
   const label = col?.label ?? rule.field;
-  if (rule.field === "marketing")
-    return rule.op === "is_true" ? "Subscribed to marketing" : "Opted out of marketing";
-  if (noValue.includes(rule.op)) return `${label} ${opLabels[rule.op]}`;
+  const kind = col?.kind ?? "";
+  if (noValue.includes(rule.op)) return `${label} ${opText(kind, rule.op)}`;
   const v = rule.value;
   const named = (x: unknown) => col?.options?.find((o) => o.value === x)?.label ?? String(x);
   const text = Array.isArray(v)
@@ -62,7 +86,7 @@ function describe(rule: FilterRule, col: Column | undefined) {
     : rule.op === "in_last_days"
       ? `${v} days`
       : named(v);
-  return `${label} ${opLabels[rule.op]} ${text}`;
+  return `${label} ${opText(kind, rule.op)} ${text}`;
 }
 
 /** The value input for one rule, chosen by the column's kind and the operator. */
@@ -196,7 +220,7 @@ function RuleEditor({
             onClick={() => setOp(o)}
             className={`rounded-md border px-2 py-0.5 text-xs outline-none ${op === o ? "border-primary bg-primary/10 text-primary" : "hover:bg-muted"}`}
           >
-            {opLabels[o]}
+            {opText(col.kind, o)}
           </button>
         ))}
       </div>

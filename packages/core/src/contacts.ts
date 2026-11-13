@@ -188,8 +188,15 @@ export const opsFor: Record<string, FilterOp[]> = {
   multi_select: ["has_any", "has_all", "has_none", "is_empty"],
   tags: ["has_any", "has_all", "has_none", "is_empty"],
   branch: ["is_any_of", "is_empty"],
-  marketing: ["is_true", "is_false"],
+  /** is_true: subscribed everywhere; is_false: opted out somewhere; has_any / has_none: by channel. */
+  marketing: ["is_true", "is_false", "has_any", "has_none"],
+  list: ["has_any", "has_none"],
 };
+
+/** Filterable things that aren't table columns. */
+export const filterOnlyColumns = {
+  list: { label: "List", type: "list" },
+} as const;
 
 export const opLabels: Record<FilterOp, string> = {
   is: "is",
@@ -232,3 +239,90 @@ export const defaultView: ViewConfig = {
   filter: { match: "all", rules: [] },
   sort: { field: "lastMessageAt", dir: "desc" },
 };
+
+/* ------------------------------------------------------------------ import */
+
+/** Where one spreadsheet column goes. */
+export type ImportTarget =
+  | { kind: "skip" }
+  | { kind: "name" }
+  | { kind: "phone" }
+  | { kind: "email" }
+  | { kind: "tags" }
+  | { kind: "branch" }
+  /** Yes/true/1 opts the contact out of marketing on every channel. */
+  | { kind: "opt_out" }
+  | { kind: "field"; key: string }
+  | { kind: "new_field"; label: string; type: FieldType };
+
+export type ImportMapping = { column: number; header: string; target: ImportTarget }[];
+
+const headerHints: [RegExp, ImportTarget["kind"]][] = [
+  [/^(full[ _-]?)?name$|^(customer|contact|client|patient)[ _-]?name$/i, "name"],
+  [/phone|mobile|whats ?app|cell|msisdn|tel/i, "phone"],
+  [/e-?mail/i, "email"],
+  [/^tags?$|labels?/i, "tags"],
+  [/^branch|location|clinic|store/i, "branch"],
+  [/opt.?out|unsubscribed|do not (contact|message)|dnd/i, "opt_out"],
+];
+
+/** A first guess at a column's target from its header: a fixed column, a known field, or a new field. */
+export function guessTarget(header: string, fields: ContactFieldDef[], values: unknown[]): ImportTarget {
+  const h = header.trim();
+  const own = fields.find((f) => f.label.toLowerCase() === h.toLowerCase() || f.key === fieldKey(h));
+  if (own) return { kind: "field", key: own.key };
+  for (const [re, kind] of headerHints) if (re.test(h)) return { kind } as ImportTarget;
+  if (!values.some((v) => v !== null && v !== undefined && String(v).trim() !== "")) return { kind: "skip" };
+  return { kind: "new_field", label: h || "Untitled", type: guessType(values) };
+}
+
+/** The most likely field type for a column's values. */
+export function guessType(values: unknown[]): FieldType {
+  const vals = values.filter((v) => v !== null && v !== undefined && String(v).trim() !== "").map(String);
+  if (!vals.length) return "text";
+  const all = (re: RegExp) => vals.every((v) => re.test(v.trim()));
+  if (all(/^(yes|no|true|false|y|n)$/i)) return "boolean";
+  if (all(/^-?\d+(\.\d+)?$/)) return "number";
+  if (all(/^\d{4}-\d{2}-\d{2}/)) return "date";
+  if (all(/^[^@\s]+@[^@\s]+\.[^@\s]+$/)) return "email";
+  if (all(/^https?:\/\//i)) return "url";
+  if (all(/^\+?[\d\s()-]{7,}$/)) return "phone";
+  const distinct = new Set(vals.map((v) => v.trim().toLowerCase()));
+  if (vals.length >= 6 && distinct.size <= 8 && distinct.size < vals.length / 2) return "select";
+  return "text";
+}
+
+/** Truthy spreadsheet values: yes, true, y, 1, x. */
+export const isYes = (v: unknown) => v === true || /^(yes|true|y|1|x)$/i.test(String(v ?? "").trim());
+
+/* ------------------------------------------------------------------ opt-out replies */
+
+const stopWords = new Set([
+  "stop",
+  "stop all",
+  "stopall",
+  "unsubscribe",
+  "opt out",
+  "optout",
+  "stop promotions",
+  "توقف",
+  "إيقاف",
+  "ايقاف",
+  "إلغاء الاشتراك",
+  "الغاء الاشتراك",
+]);
+const startWords = new Set(["start", "unstop", "subscribe", "resume", "اشتراك"]);
+
+/**
+ * A whole reply that means "stop sending me marketing" or "start again". Only the entire message
+ * counts ("stop" yes, "please stop by tomorrow" no), case and punctuation aside.
+ */
+export function optOutReply(text: string | null | undefined): "stop" | "start" | null {
+  const t = (text ?? "")
+    .toLowerCase()
+    .replace(/[.!؟?،,\s]+/g, " ")
+    .trim();
+  if (stopWords.has(t)) return "stop";
+  if (startWords.has(t)) return "start";
+  return null;
+}

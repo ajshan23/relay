@@ -7,13 +7,15 @@
     ".": "./src/index.ts",
     "./templates": "./src/templates.ts",
     "./template-library": "./src/template-library.ts",
-    "./contacts": "./src/contacts.ts"
+    "./contacts": "./src/contacts.ts",
+    "./sheets": "./src/sheets.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "ulid": "^3.0.2",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.6.7"
   }
 }

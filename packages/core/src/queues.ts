@@ -7,6 +7,8 @@ export const queues = {
   media: "media",
   /** Publishing, editing, removing and importing message templates on channels. */
   templates: "templates",
+  /** Contact imports from Excel or CSV. The job id is the import id. */
+  contacts: "contacts",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];

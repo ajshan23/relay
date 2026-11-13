@@ -1,6 +1,7 @@
 "use client";
 
 import { coreColumns, defaultView, type ViewConfig } from "@relay/core/contacts";
+import { Segmented } from "@relay/ui/components/choice";
 import { useConfirm } from "@relay/ui/components/confirm-dialog";
 import { type ColumnChoice, ColumnsMenu, DataGrid, type GridColumn } from "@relay/ui/components/data-grid";
 import { Field } from "@relay/ui/components/field";
@@ -16,7 +17,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@relay/ui/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@relay/ui/ui/popover";
@@ -27,12 +32,16 @@ import { channelIcon } from "@/components/inbox/conversation-list";
 import { listTime } from "@/components/inbox/format";
 import { ApiError } from "@/lib/api";
 import { AddFieldPopover } from "./add-field";
-import { Chip, EditableCell, FieldEditor, FieldValue, TagChips } from "./cells";
+import { EditableCell, FieldEditor, FieldValue, TagChips } from "./cells";
 import { BranchMenu, ContactProfile } from "./contact-profile";
 import { FilterBar } from "./filter-bar";
+import { ImportDialog } from "./import-dialog";
+import { MarketingEditor, MarketingStatus } from "./marketing";
 import {
+  type ContactList,
   type ContactRow,
   type ContactsMeta,
+  download,
   type SavedView,
   useContactActions,
   useContacts,
@@ -67,7 +76,7 @@ const coreWidths: Record<string, number> = {
   branch: 150,
   lastMessageAt: 140,
   createdAt: 130,
-  marketing: 130,
+  marketing: 190,
 };
 
 const dateFmt = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
@@ -87,6 +96,7 @@ function columnOrder(config: ViewConfig, meta: ContactsMeta) {
 export function ContactsPage() {
   const params = useSearchParams();
   const viewId = params.get("view") ?? "all";
+  const listId = params.get("list");
   const meta = useContactsMeta();
 
   if (!meta.data)
@@ -98,6 +108,18 @@ export function ContactsPage() {
       </div>
     );
 
+  const list = listId ? meta.data.lists.find((l) => l.id === listId) : undefined;
+  if (list)
+    return (
+      <ContactsTable
+        key={list.id}
+        meta={meta.data}
+        base={list.kind === "smart" && list.filter ? { ...defaultView, filter: list.filter } : defaultView}
+        saved={undefined}
+        list={list}
+        title={list.name}
+      />
+    );
   const saved = meta.data.views.find((v) => v.id === viewId);
   const builtIn = builtInViews[viewId] ?? builtInViews.all;
   const base = saved?.config ?? builtIn?.config ?? defaultView;
@@ -117,11 +139,14 @@ function ContactsTable({
   meta,
   base,
   saved,
+  list: inList,
   title,
 }: {
   meta: ContactsMeta;
   base: ViewConfig;
   saved: SavedView | undefined;
+  /** Showing one list: static lists by membership, smart lists through their filter. */
+  list?: ContactList;
   title: string;
 }) {
   const actions = useContactActions();
@@ -132,8 +157,18 @@ function ContactsTable({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [newList, setNewList] = useState(false);
 
-  const list = useContacts({ filter: config.filter, sort: config.sort, q, page, pageSize: PAGE_SIZE });
+  const staticListId = inList?.kind === "static" ? inList.id : undefined;
+  const list = useContacts({
+    filter: config.filter,
+    sort: config.sort,
+    q,
+    page,
+    pageSize: PAGE_SIZE,
+    listId: staticListId,
+  });
   const rows = list.data?.contacts ?? [];
   const total = list.data?.total ?? 0;
   const dirty = JSON.stringify(config) !== JSON.stringify(base);
@@ -338,12 +373,23 @@ function ContactsTable({
             header,
             width: w,
             sortable: true,
-            cell: (r) =>
-              r.marketingOptOutAt ? (
-                <Chip colour="red">Opted out</Chip>
-              ) : (
-                <Chip colour="green">Subscribed</Chip>
-              ),
+            cell: (r) => (
+              <EditableCell
+                canEdit={meta.canEdit}
+                label="marketing"
+                display={<MarketingStatus optOuts={r.optOuts} channels={meta.channels} />}
+                editor={() => (
+                  <MarketingEditor
+                    optOuts={r.optOuts}
+                    channels={meta.channels}
+                    canEdit={meta.canEdit}
+                    onChange={(channelAccountId, optedOut) =>
+                      save(r.id, { optOut: { channelAccountId, optedOut } })
+                    }
+                  />
+                )}
+              />
+            ),
           });
           break;
       }
@@ -378,6 +424,19 @@ function ContactsTable({
       },
     );
 
+  const exportAs = (format: "xlsx" | "csv") =>
+    download("/contacts/export", {
+      method: "POST",
+      json: {
+        filter: config.filter,
+        sort: config.sort,
+        q,
+        listId: staticListId,
+        format,
+        columns: order.filter((c) => !c.hidden).map((c) => c.id),
+      },
+    }).catch((e: Error) => notify.error("Couldn't export", { description: e.message }));
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {confirmElement}
@@ -385,16 +444,42 @@ function ContactsTable({
         title={title}
         description={
           list.data
-            ? `${total.toLocaleString()} ${total === 1 ? "contact" : "contacts"}`
+            ? `${inList ? (inList.kind === "smart" ? "Smart list · " : "List · ") : ""}${total.toLocaleString()} ${total === 1 ? "contact" : "contacts"}`
             : "Everyone who has talked to you"
         }
         actions={
-          meta.canEdit ? (
-            <Button size="sm" onClick={() => setAdding(true)}>
-              <Icon name="addUser" />
-              Add contact
-            </Button>
-          ) : null
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Icon name="download" />
+                  Export
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                  The columns, filters and sort you see
+                </DropdownMenuLabel>
+                {(["xlsx", "csv"] as const).map((format) => (
+                  <DropdownMenuItem key={format} onSelect={() => exportAs(format)}>
+                    {format === "xlsx" ? "Excel (.xlsx)" : "CSV"}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {meta.canEdit ? (
+              <>
+                <Button variant="outline" size="sm" onClick={() => setImporting(true)}>
+                  <Icon name="upload" />
+                  Import
+                </Button>
+                <Button size="sm" onClick={() => setAdding(true)}>
+                  <Icon name="addUser" />
+                  Add contact
+                </Button>
+              </>
+            ) : null}
+          </>
         }
         className="pb-3"
       />
@@ -413,11 +498,37 @@ function ContactsTable({
         </div>
         <FilterBar meta={meta} filter={config.filter} onChange={(filter) => update({ filter })} />
         <div className="ml-auto flex items-center gap-2">
-          {dirty ? (
+          {dirty && inList?.kind === "smart" ? (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setConfig(base)}>
+                Reset
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!config.filter.rules.length}
+                onClick={() =>
+                  actions.saveList.mutate(
+                    { id: inList.id, filter: config.filter },
+                    {
+                      onSuccess: () => notify.success("List updated"),
+                      onError: (err) =>
+                        notify.error("Couldn't update the list", {
+                          description: err instanceof ApiError ? err.message : undefined,
+                        }),
+                    },
+                  )
+                }
+              >
+                Update list
+              </Button>
+            </>
+          ) : dirty ? (
             <SaveView
               config={config}
               saved={saved}
               canManage={meta.canManage}
+              canEdit={meta.canEdit && !inList}
               onReset={() => setConfig(base)}
             />
           ) : null}
@@ -457,12 +568,61 @@ function ContactsTable({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => bulk("opt_out", {}, "Opted out of marketing")}>
-                  Opt out of marketing
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => bulk("opt_in", {}, "Subscribed to marketing")}>
-                  Subscribe to marketing
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>Add to list</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    {meta.lists
+                      .filter((l) => l.kind === "static")
+                      .map((l) => (
+                        <DropdownMenuItem
+                          key={l.id}
+                          onSelect={() => bulk("add_to_list", { listId: l.id }, `Added to ${l.name}`)}
+                        >
+                          {l.name}
+                        </DropdownMenuItem>
+                      ))}
+                    {meta.lists.some((l) => l.kind === "static") ? <DropdownMenuSeparator /> : null}
+                    <DropdownMenuItem onSelect={() => setNewList(true)}>
+                      <Icon name="add" />
+                      New list…
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                {staticListId ? (
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      bulk("remove_from_list", { listId: staticListId }, `Removed from ${inList?.name}`)
+                    }
+                  >
+                    Remove from this list
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuSeparator />
+                {(["opt_out", "opt_in"] as const).map((action) => (
+                  <DropdownMenuSub key={action}>
+                    <DropdownMenuSubTrigger>
+                      {action === "opt_out" ? "Opt out of marketing" : "Subscribe to marketing"}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {[{ id: null as string | null, name: "All channels" }, ...meta.channels].map((ch) => (
+                        <DropdownMenuItem
+                          key={ch.id ?? "all"}
+                          onSelect={() =>
+                            bulk(
+                              action,
+                              { channelAccountId: ch.id },
+                              action === "opt_out"
+                                ? `Opted out on ${ch.id ? ch.name : "all channels"}`
+                                : `Subscribed on ${ch.id ? ch.name : "all channels"}`,
+                            )
+                          }
+                        >
+                          {ch.name}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                ))}
                 {meta.branches.length ? <DropdownMenuSeparator /> : null}
                 {meta.branches.map((b) => (
                   <DropdownMenuItem
@@ -545,6 +705,26 @@ function ContactsTable({
       />
 
       <ContactProfile id={openId} meta={meta} onClose={() => setOpenId(null)} />
+      <ImportDialog open={importing} onOpenChange={setImporting} meta={meta} />
+      <NewListModal
+        open={newList}
+        onOpenChange={setNewList}
+        onCreate={(name) =>
+          actions.saveList.mutate(
+            { name, kind: "static" },
+            {
+              onSuccess: ({ list: created }) => {
+                setNewList(false);
+                bulk("add_to_list", { listId: created.id }, `Added to ${created.name}`);
+              },
+              onError: (err) =>
+                notify.error("Couldn't create the list", {
+                  description: err instanceof ApiError ? err.message : undefined,
+                }),
+            },
+          )
+        }
+      />
       <NewContact
         open={adding}
         onOpenChange={setAdding}
@@ -561,11 +741,14 @@ function SaveView({
   config,
   saved,
   canManage,
+  canEdit,
   onReset,
 }: {
   config: ViewConfig;
   saved: SavedView | undefined;
   canManage: boolean;
+  /** May save the filters as a smart list. */
+  canEdit: boolean;
   onReset: () => void;
 }) {
   const actions = useContactActions();
@@ -573,22 +756,42 @@ function SaveView({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [shared, setShared] = useState(false);
+  const canList = canEdit && config.filter.rules.length > 0;
+  const [as, setAs] = useState<"view" | "list">("view");
+  const asList = canList && as === "list";
   const canUpdate = saved && (saved.shared ? canManage : true);
   const create = () =>
-    actions.saveView.mutate(
-      { name: name.trim(), shared, config },
-      {
-        onSuccess: ({ view }) => {
-          notify.success(`“${view.name}” saved`, { description: "It's in the sidebar under Contacts." });
-          setOpen(false);
-          router.push(`/contacts?view=${view.id}`);
-        },
-        onError: (err) =>
-          notify.error("Couldn't save the view", {
-            description: err instanceof ApiError ? err.message : undefined,
-          }),
-      },
-    );
+    asList
+      ? actions.saveList.mutate(
+          { name: name.trim(), kind: "smart", filter: config.filter },
+          {
+            onSuccess: ({ list }) => {
+              notify.success(`“${list.name}” saved`, {
+                description: "A smart list: anyone who matches these filters, always up to date.",
+              });
+              setOpen(false);
+              router.push(`/contacts?list=${list.id}`);
+            },
+            onError: (err) =>
+              notify.error("Couldn't save the list", {
+                description: err instanceof ApiError ? err.message : undefined,
+              }),
+          },
+        )
+      : actions.saveView.mutate(
+          { name: name.trim(), shared, config },
+          {
+            onSuccess: ({ view }) => {
+              notify.success(`“${view.name}” saved`, { description: "It's in the sidebar under Contacts." });
+              setOpen(false);
+              router.push(`/contacts?view=${view.id}`);
+            },
+            onError: (err) =>
+              notify.error("Couldn't save the view", {
+                description: err instanceof ApiError ? err.message : undefined,
+              }),
+          },
+        );
   return (
     <>
       <Button variant="ghost" size="sm" onClick={onReset}>
@@ -611,7 +814,7 @@ function SaveView({
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button variant={canUpdate ? "ghost" : "outline"} size="sm">
-            {canUpdate ? "Save as new" : "Save view"}
+            {canUpdate ? "Save as new" : "Save"}
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-72 p-4">
@@ -622,7 +825,25 @@ function SaveView({
               if (name.trim()) create();
             }}
           >
-            <Field label="View name">
+            {canList ? (
+              <Segmented
+                size="sm"
+                fullWidth
+                aria-label="Save as"
+                options={[
+                  { value: "view", label: "View" },
+                  { value: "list", label: "Smart list" },
+                ]}
+                value={as}
+                onChange={setAs}
+              />
+            ) : null}
+            <p className="-mt-1 text-xs text-muted-foreground">
+              {asList
+                ? "A list for broadcasts. Contacts join and leave it as they match the filters."
+                : "Your columns, filters and sort, one click away in the sidebar."}
+            </p>
+            <Field label={asList ? "List name" : "View name"}>
               <TextInput
                 autoFocus
                 value={name}
@@ -630,14 +851,18 @@ function SaveView({
                 placeholder="Gold members"
               />
             </Field>
-            {canManage ? (
+            {canManage && !asList ? (
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox checked={shared} onCheckedChange={(v) => setShared(v === true)} />
                 Share with the whole team
               </label>
             ) : null}
-            <Button type="submit" size="sm" disabled={!name.trim() || actions.saveView.isPending}>
-              Save view
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!name.trim() || actions.saveView.isPending || actions.saveList.isPending}
+            >
+              {asList ? "Save list" : "Save view"}
             </Button>
           </form>
         </PopoverContent>
@@ -761,6 +986,57 @@ function NewContact({
         </Field>
         <Field label="Email" optional>
           <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+function NewListModal({
+  open,
+  onOpenChange,
+  onCreate,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onCreate: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange(o);
+        if (!o) setName("");
+      }}
+      title="New list"
+      description="Add the selected contacts to a new list. You can send broadcasts to it later."
+      size="sm"
+      footer={
+        <ModalActions>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button form="new-list" type="submit" disabled={!name.trim()}>
+            Create and add
+          </Button>
+        </ModalActions>
+      }
+    >
+      <form
+        id="new-list"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) onCreate(name.trim());
+        }}
+      >
+        <Field label="List name">
+          <TextInput
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Spring recall"
+          />
         </Field>
       </form>
     </Modal>

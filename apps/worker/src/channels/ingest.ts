@@ -14,6 +14,7 @@ import {
   windowExpiresAt,
 } from "@relay/channels";
 import { type InboxEvent, messagePreview, newId } from "@relay/core";
+import { optOutReply } from "@relay/core/contacts";
 import { type AnyColumn, and, type createDb, eq, inArray, or, schema, sql } from "@relay/db";
 
 /*
@@ -356,6 +357,37 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         .update(schema.contact)
         .set({ lastMessageAt: latest(schema.contact.lastMessageAt, sentAt) })
         .where(eq(schema.contact.id, identity.contactId));
+
+      // "STOP" in a one-to-one chat opts them out of marketing on this channel; "START" undoes it.
+      if (!isReaction && event.conversation.kind !== "group") {
+        const said =
+          event.content.type === "text"
+            ? event.content.text
+            : event.content.type === "button"
+              ? event.content.text
+              : null;
+        const reply = optOutReply(said);
+        if (reply === "stop")
+          await tx
+            .insert(schema.contactOptOut)
+            .values({
+              id: newId("contactOptOut"),
+              organizationId: account.organizationId,
+              contactId: identity.contactId,
+              channelAccountId: account.id,
+              source: "reply",
+            })
+            .onConflictDoNothing();
+        if (reply === "start")
+          await tx
+            .delete(schema.contactOptOut)
+            .where(
+              and(
+                eq(schema.contactOptOut.contactId, identity.contactId),
+                eq(schema.contactOptOut.channelAccountId, account.id),
+              ),
+            );
+      }
 
       await tx
         .update(schema.conversation)

@@ -8,6 +8,7 @@ import { createMediaProcessor } from "./channels/media";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
 import { createTemplateProcessor, type TemplateJob } from "./channels/templates";
 import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
+import { createImportProcessor, type ImportJob } from "./contacts/import";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -53,6 +54,15 @@ webhooks.on("failed", (job, err) =>
   console.error(`webhook ${job?.data.eventId} failed (attempt ${job?.attemptsMade})`, err.message),
 );
 
+/* Contact imports from Excel or CSV: one at a time, rows in order. */
+const contactImports = new Worker<ImportJob>(queues.contacts, createImportProcessor({ db }), {
+  connection,
+  concurrency: 1,
+});
+contactImports.on("failed", (job, err) =>
+  console.error(`contact import ${job?.data.importId} failed: ${err.message}`),
+);
+
 /* Message templates: publishing to channels, removing, importing. */
 const templates = new Worker<TemplateJob>(
   queues.templates,
@@ -85,6 +95,7 @@ const health = createServer((_req, res) => {
         outbox: outbox.isRunning(),
         media: media.isRunning(),
         templates: templates.isRunning(),
+        contacts: contactImports.isRunning(),
       },
     }),
   );
@@ -99,6 +110,7 @@ async function shutdown() {
     outbox.close(),
     media.close(),
     templates.close(),
+    contactImports.close(),
     mediaQueue.close(),
   ]);
   connection.disconnect();

@@ -4,13 +4,16 @@ import { Icon } from "@relay/ui/components/icon";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { builtInViews } from "./contacts-page";
-import { useContactsMeta } from "./queries";
+import { useContactsMeta, useLists } from "./queries";
 
-/** The sidebar sub-menu for Contacts: the built-in views, then the views people saved. */
+/** The sidebar sub-menu for Contacts: the built-in views, the views people saved, then lists. */
 export function ContactsNav({ itemClass }: { itemClass: (active: boolean) => string }) {
   const params = useSearchParams();
   const meta = useContactsMeta();
-  const view = params.get("view") ?? "all";
+  const lists = useLists();
+  const listId = params.get("list");
+  // A list page isn't one of the views.
+  const view = listId ? null : (params.get("view") ?? "all");
   const saved = meta.data?.views ?? [];
   const href = (id: string) => (id === "all" ? "/contacts" : `/contacts?view=${id}`);
   return (
@@ -46,6 +49,28 @@ export function ContactsNav({ itemClass }: { itemClass: (active: boolean) => str
           ))}
         </div>
       ) : null}
+      <div className="mt-4 flex flex-col gap-px">
+        <p className="mb-0.5 px-2 text-xs text-nav-muted">Lists</p>
+        {(lists.data?.lists ?? []).map((l) => (
+          <Link
+            key={l.id}
+            href={`/contacts?list=${l.id}`}
+            aria-current={listId === l.id ? "page" : undefined}
+            className={itemClass(listId === l.id)}
+          >
+            {l.kind === "smart" ? (
+              <Icon name="zap" size="xs" className="shrink-0 text-nav-muted" label="Smart list" />
+            ) : null}
+            <span className="flex-1 truncate">{l.name}</span>
+            <span className="text-xs text-nav-muted tabular-nums">{l.count.toLocaleString()}</span>
+          </Link>
+        ))}
+        {lists.data && !lists.data.lists.length ? (
+          <p className="px-2 text-xs text-nav-muted">
+            Select contacts and add them to a list, or save your filters as a smart list.
+          </p>
+        ) : null}
+      </div>
     </>
   );
 }

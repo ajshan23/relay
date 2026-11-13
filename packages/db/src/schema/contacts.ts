@@ -110,6 +110,36 @@ export const contactNote = pgTable(
   (t) => [index("contact_note_contact_idx").on(t.contactId, t.createdAt)],
 );
 
+export const optOutSource = pgEnum("contact_opt_out_source", ["reply", "manual", "import"]);
+
+/**
+ * "Don't send me marketing" for one channel account (a WhatsApp number, an email sender...), or for
+ * every channel when channel_account_id is null. Service messages (reminders, replies) still go out.
+ * Broadcasts skip a contact opted out on the sending channel or on all channels.
+ */
+export const contactOptOut = pgTable(
+  "contact_opt_out",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    contactId: text("contact_id")
+      .notNull()
+      .references(() => contact.id, { onDelete: "cascade" }),
+    /** Null: every channel. */
+    channelAccountId: text("channel_account_id").references(() => channelAccount.id, { onDelete: "cascade" }),
+    /** reply: they wrote STOP; manual: a teammate; import: a spreadsheet column. */
+    source: optOutSource("source").notNull(),
+    createdByUserId: text("created_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("contact_opt_out_scope_uidx").on(t.contactId, sql`coalesce(${t.channelAccountId}, '')`),
+    index("contact_opt_out_org_channel_idx").on(t.organizationId, t.channelAccountId),
+  ],
+);
+
 export const listKind = pgEnum("contact_list_kind", ["static", "smart"]);
 
 /** A group of contacts to send broadcasts to: picked by hand (static) or a saved filter (smart). */
@@ -201,8 +231,11 @@ export const contactImport = pgTable(
     updated: integer("updated").notNull().default(0),
     skipped: integer("skipped").notNull().default(0),
     failed: integer("failed").notNull().default(0),
-    /** The first rows that failed, with why: [{ row, reason }]. */
-    errors: jsonb("errors").$type<{ row: number; reason: string }[]>().notNull().default([]),
+    /** The first rows that failed, with why and their cells: [{ row, reason, values }]. */
+    errors: jsonb("errors")
+      .$type<{ row: number; reason: string; values?: unknown[] }[]>()
+      .notNull()
+      .default([]),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     finishedAt: timestamp("finished_at"),
   },

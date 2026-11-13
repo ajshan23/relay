@@ -16,6 +16,8 @@ import { type SQL, schema, sql } from "@relay/db";
 export class FilterError extends Error {}
 
 const c = schema.contact;
+/** contact.id spelled out: inside a subquery a bare "id" would mean the subquery's own row. */
+const contactId = sql.raw('"contact"."id"');
 const utc = (iso: string) => sql`${iso}::timestamptz at time zone 'UTC'`;
 const daysAgo = (n: number) => sql`(now() at time zone 'UTC') - make_interval(days => ${n})`;
 const like = (v: unknown) => `%${String(v ?? "").replace(/[%_\\]/g, "\\$&")}%`;
@@ -42,7 +44,7 @@ const date = (v: unknown) => {
 
 /** The phone of any of the contact's channel identities, or its own main phone. */
 const phoneMatches = (cond: (col: SQL) => SQL) =>
-  sql`(${cond(sql`${c.phone}`)} or exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${c.id} and ${cond(sql`i.phone`)}))`;
+  sql`(${cond(sql`${c.phone}`)} or exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${contactId} and ${cond(sql`i.phone`)}))`;
 
 function textRule(expr: SQL, op: string, value: unknown): SQL {
   switch (op) {
@@ -85,7 +87,7 @@ function dateRule(expr: SQL, op: string, value: unknown, isTimestamp: boolean): 
   throw new FilterError(`"${op}" doesn't work on dates.`);
 }
 
-function coreRule(rule: FilterRule): SQL {
+function coreRule(rule: FilterRule, scope: Scope): SQL {
   const { op, value } = rule;
   switch (rule.field) {
     case "name":
@@ -117,12 +119,45 @@ function coreRule(rule: FilterRule): SQL {
       return dateRule(sql`${c.lastMessageAt}`, op, value, true);
     case "createdAt":
       return dateRule(sql`${c.createdAt}`, op, value, true);
-    case "marketing":
-      if (op === "is_true") return sql`${c.marketingOptOutAt} is null`;
-      if (op === "is_false") return sql`${c.marketingOptOutAt} is not null`;
+    case "marketing": {
+      const any = sql`exists (select 1 from ${schema.contactOptOut} o where o.contact_id = ${contactId})`;
+      // Opted out on one of these channels, or on every channel.
+      const on = (ids: string[]) =>
+        sql`exists (select 1 from ${schema.contactOptOut} o where o.contact_id = ${contactId} and (o.channel_account_id is null or o.channel_account_id = any(${textArray(ids)})))`;
+      if (op === "is_true") return sql`not ${any}`;
+      if (op === "is_false") return any;
+      if (op === "has_any") return on(arr(value));
+      if (op === "has_none") return sql`not ${on(arr(value))}`;
       throw new FilterError(`"${op}" doesn't work on marketing.`);
+    }
+    case "list": {
+      const ids = arr(value);
+      if (!ids.length) throw new FilterError("Pick a list.");
+      const inAny = sql`(${sql.join(
+        ids.map((id) => inList(id, scope)),
+        sql` or `,
+      )})`;
+      if (op === "has_any") return inAny;
+      if (op === "has_none") return sql`not ${inAny}`;
+      throw new FilterError(`"${op}" doesn't work on lists.`);
+    }
   }
   throw new FilterError(`Unknown column "${rule.field}".`);
+}
+
+/** The lists a filter may refer to, by id: static lists by membership, smart lists by their own filter. */
+export type ListsById = Map<string, { kind: "static" | "smart"; filter: unknown }>;
+
+type Scope = { fields: Map<string, ContactFieldDef>; lists: ListsById; depth: number };
+
+function inList(id: string, { fields, lists, depth }: Scope): SQL {
+  const list = lists.get(id);
+  if (!list) throw new FilterError("That list doesn't exist.");
+  if (list.kind === "static")
+    return sql`exists (select 1 from ${schema.contactListMember} m where m.contact_id = ${contactId} and m.list_id = ${id})`;
+  // A smart list is its saved filter. One level only, so lists can't refer to each other in a loop.
+  if (depth > 0) throw new FilterError("A smart list can't use another smart list.");
+  return compileFilter(list.filter as ContactFilter, fields, lists, depth + 1) ?? sql`true`;
 }
 
 function fieldRule(field: ContactFieldDef, op: string, value: unknown): SQL {
@@ -180,6 +215,8 @@ function fieldRule(field: ContactFieldDef, op: string, value: unknown): SQL {
 export function compileFilter(
   filter: ContactFilter | undefined,
   fields: Map<string, ContactFieldDef>,
+  lists: ListsById = new Map(),
+  depth = 0,
 ): SQL | undefined {
   if (!filter?.rules.length) return undefined;
   const parts = filter.rules.map((rule) => {
@@ -188,7 +225,7 @@ export function compileFilter(
       if (!field) throw new FilterError(`Unknown field "${rule.field.slice(5)}".`);
       return fieldRule(field, rule.op, rule.value);
     }
-    return coreRule(rule);
+    return coreRule(rule, { fields, lists, depth });
   });
   return sql`(${sql.join(parts, filter.match === "any" ? sql` or ` : sql` and `)})`;
 }
@@ -218,7 +255,7 @@ export function compileSort(sort: ViewConfig["sort"], fields: Map<string, Contac
       lastMessageAt: sql`${c.lastMessageAt}`,
       createdAt: sql`${c.createdAt}`,
       branch: sql`${c.branchId}`,
-      marketing: sql`${c.marketingOptOutAt}`,
+      marketing: sql`(select count(*) from ${schema.contactOptOut} o where o.contact_id = ${contactId})`,
       tags: sql`cardinality(${c.tagIds})`,
     };
     const col = columns[f];

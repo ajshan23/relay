@@ -6,6 +6,7 @@ import {
   fieldKey,
   optionColours,
 } from "@relay/core/contacts";
+import { writeWorkbook } from "@relay/core/sheets";
 import { and, asc, desc, eq, inArray, isNull, or, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -14,6 +15,14 @@ import { requireSession } from "../auth/session";
 import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { compileFilter, compileSort, FilterError } from "./filter";
+import {
+  canEditContacts,
+  createField,
+  listsById,
+  activeFields as loadFields,
+  ownChannel,
+  setOptOut,
+} from "./shared";
 
 /*
  * Contacts: the business's people, their own fields (contact.attributes), tags (contact.tag_ids),
@@ -22,7 +31,10 @@ import { compileFilter, compileSort, FilterError } from "./filter";
  */
 
 const PAGE_SIZE_MAX = 100;
+const EXPORT_MAX = 50_000;
 const c = schema.contact;
+/** contact.id spelled out: inside a subquery a bare "id" would mean the subquery's own row. */
+const contactId = sql.raw('"contact"."id"');
 
 const ruleSchema = z.object({
   field: z.string().max(80),
@@ -38,6 +50,8 @@ const querySchema = z.object({
   filter: filterSchema.optional(),
   sort: sortSchema.optional(),
   q: z.string().max(200).optional(),
+  /** Only contacts in this list (static or smart), on top of the filter. */
+  listId: z.string().max(60).optional(),
   page: z.number().int().min(1).default(1),
   pageSize: z.number().int().min(1).max(PAGE_SIZE_MAX).default(50),
 });
@@ -65,30 +79,9 @@ export function contactRoutes(ctx: AppContext) {
 
   /* ---------------------------------------------------------------- access */
 
-  async function canEdit(access: Access) {
-    if (isOrgAdmin(access.orgRole)) return true;
-    const [row] = await ctx.db
-      .select({ n: sql<number>`1` })
-      .from(schema.branchMember)
-      .where(
-        and(
-          eq(schema.branchMember.organizationId, access.orgId),
-          eq(schema.branchMember.userId, access.userId),
-          inArray(schema.branchMember.role, ["manager", "agent"]),
-        ),
-      )
-      .limit(1);
-    return !!row;
-  }
+  const canEdit = (access: Access) => canEditContacts(ctx.db, access);
 
-  async function activeFields(orgId: string) {
-    const rows = await ctx.db
-      .select()
-      .from(schema.contactField)
-      .where(and(eq(schema.contactField.organizationId, orgId), isNull(schema.contactField.archivedAt)))
-      .orderBy(asc(schema.contactField.position), asc(schema.contactField.createdAt));
-    return rows;
-  }
+  const activeFields = (orgId: string) => loadFields(ctx.db, orgId);
   const byKey = (rows: { key: string }[]) =>
     new Map(rows.map((f) => [f.key, f as unknown as ContactFieldDef]));
 
@@ -148,23 +141,22 @@ export function contactRoutes(ctx: AppContext) {
 
   /* ----------------------------------------------------------------- query */
 
-  // The table: filters, sort, search and paging, with the total count.
-  app.post("/query", async (c2) => {
-    const access = c2.var.access;
-    const parsed = await parseBody(c2, querySchema);
-    if ("error" in parsed) return parsed.error;
-    const { filter, sort, q, page, pageSize } = parsed.data;
-    const fields = await activeFields(access.orgId);
+  /** The WHERE and ORDER BY for the table's filters, sort and search. Throws FilterError. */
+  async function tableQuery(orgId: string, b: z.infer<typeof querySchema>) {
+    const { filter, sort, q } = b;
+    const fields = await activeFields(orgId);
     const map = byKey(fields);
-    let where: ReturnType<typeof compileFilter>;
-    let order: ReturnType<typeof compileSort>;
-    try {
-      where = compileFilter(filter as never, map);
-      order = compileSort(sort === undefined ? defaultView.sort : sort, map);
-    } catch (err) {
-      if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
-      throw err;
-    }
+    const usesLists = !!b.listId || (filter?.rules ?? []).some((r) => r.field === "list");
+    const lists = usesLists ? await listsById(ctx.db, orgId) : undefined;
+    const where = compileFilter(filter as never, map, lists);
+    const inList = b.listId
+      ? compileFilter(
+          { match: "all", rules: [{ field: "list", op: "has_any", value: [b.listId] }] },
+          map,
+          lists,
+        )
+      : undefined;
+    const order = compileSort(sort === undefined ? defaultView.sort : sort, map);
     const search = q?.trim()
       ? (() => {
           const needle = `%${q.trim().replace(/[%_\\]/g, "\\$&")}%`;
@@ -174,53 +166,181 @@ export function contactRoutes(ctx: AppContext) {
             sql`${c.email} ilike ${needle}`,
             digits.length >= 3 ? sql`${c.phone} like ${`%${digits}%`}` : undefined,
             digits.length >= 3
-              ? sql`exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${c.id} and i.phone like ${`%${digits}%`})`
+              ? sql`exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${contactId} and i.phone like ${`%${digits}%`})`
               : undefined,
-            sql`exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${c.id} and i.profile_name ilike ${needle})`,
+            sql`exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${contactId} and i.profile_name ilike ${needle})`,
           );
         })()
       : undefined;
-    const cond = and(eq(c.organizationId, access.orgId), where, search);
-
     const used = [...(filter?.rules ?? []).map((r) => r.field), ...(sort?.field ? [sort.field] : [])]
       .filter((f) => f.startsWith("attr."))
       .map((f) => f.slice(5));
-    void ensureIndexes(access.orgId, fields as unknown as ContactFieldDef[], used);
+    void ensureIndexes(orgId, fields as unknown as ContactFieldDef[], used);
+    return { fields, cond: and(eq(c.organizationId, orgId), inList, where, search), order };
+  }
 
+  const rowColumns = {
+    id: c.id,
+    name: c.name,
+    phone: c.phone,
+    email: c.email,
+    branchId: c.branchId,
+    tagIds: c.tagIds,
+    attributes: c.attributes,
+    source: c.source,
+    lastMessageAt: c.lastMessageAt,
+    createdAt: c.createdAt,
+    /** Channels they opted out of marketing on; null means every channel. */
+    optOuts: sql<(string | null)[]>`coalesce((
+      select json_agg(o.channel_account_id order by o.created_at)
+      from ${schema.contactOptOut} o where o.contact_id = ${contactId}), '[]'::json)`,
+    channels: sql<
+      { type: string; phone: string | null; username: string | null; profileName: string | null }[]
+    >`coalesce((
+      select json_agg(json_build_object('type', i.channel_type, 'phone', i.phone, 'username', i.username, 'profileName', i.profile_name) order by i.created_at)
+      from ${schema.contactIdentity} i where i.contact_id = ${contactId}), '[]'::json)`,
+  };
+
+  // The table: filters, sort, search and paging, with the total count.
+  app.post("/query", async (c2) => {
+    const access = c2.var.access;
+    const parsed = await parseBody(c2, querySchema);
+    if ("error" in parsed) return parsed.error;
+    const { page, pageSize } = parsed.data;
+    let query: Awaited<ReturnType<typeof tableQuery>>;
+    try {
+      query = await tableQuery(access.orgId, parsed.data);
+    } catch (err) {
+      if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
+      throw err;
+    }
     const [rows, [total]] = await Promise.all([
       ctx.db
-        .select({
-          id: c.id,
-          name: c.name,
-          phone: c.phone,
-          email: c.email,
-          branchId: c.branchId,
-          tagIds: c.tagIds,
-          attributes: c.attributes,
-          source: c.source,
-          marketingOptOutAt: c.marketingOptOutAt,
-          lastMessageAt: c.lastMessageAt,
-          createdAt: c.createdAt,
-          channels: sql<
-            { type: string; phone: string | null; username: string | null; profileName: string | null }[]
-          >`coalesce((
-            select json_agg(json_build_object('type', i.channel_type, 'phone', i.phone, 'username', i.username, 'profileName', i.profile_name) order by i.created_at)
-            from ${schema.contactIdentity} i where i.contact_id = ${c.id}), '[]'::json)`,
-        })
+        .select(rowColumns)
         .from(c)
-        .where(cond)
-        .orderBy(order)
+        .where(query.cond)
+        .orderBy(query.order)
         .limit(pageSize)
         .offset((page - 1) * pageSize),
-      ctx.db.select({ n: sql<number>`count(*)::int` }).from(c).where(cond),
+      ctx.db.select({ n: sql<number>`count(*)::int` }).from(c).where(query.cond),
     ]);
     return c2.json({ contacts: rows, total: total?.n ?? 0, page, pageSize });
+  });
+
+  // The current view as an Excel or CSV file: its visible columns, filters, sort and search.
+  app.post("/export", async (c2) => {
+    const access = c2.var.access;
+    const parsed = await parseBody(
+      c2,
+      querySchema.extend({
+        columns: z.array(z.string().max(80)).max(200),
+        format: z.enum(["xlsx", "csv"]).default("xlsx"),
+      }),
+    );
+    if ("error" in parsed) return parsed.error;
+    let query: Awaited<ReturnType<typeof tableQuery>>;
+    try {
+      query = await tableQuery(access.orgId, parsed.data);
+    } catch (err) {
+      if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
+      throw err;
+    }
+    const rows = await ctx.db
+      .select(rowColumns)
+      .from(c)
+      .where(query.cond)
+      .orderBy(query.order)
+      .limit(EXPORT_MAX);
+    const [tags, branches, channels] = await Promise.all([
+      ctx.db
+        .select({ id: schema.tag.id, name: schema.tag.name })
+        .from(schema.tag)
+        .where(eq(schema.tag.organizationId, access.orgId)),
+      ctx.db
+        .select({ id: schema.branch.id, name: schema.branch.name })
+        .from(schema.branch)
+        .where(eq(schema.branch.organizationId, access.orgId)),
+      ctx.db
+        .select({ id: schema.channelAccount.id, name: schema.channelAccount.displayName })
+        .from(schema.channelAccount)
+        .where(eq(schema.channelAccount.organizationId, access.orgId)),
+    ]);
+    const tagName = new Map(tags.map((t) => [t.id, t.name]));
+    const branchName = new Map(branches.map((b) => [b.id, b.name]));
+    const channelName = new Map(channels.map((ch) => [ch.id, ch.name]));
+    const fields = byKey(query.fields);
+    const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+    const cols = parsed.data.columns.filter((id) => !id.startsWith("attr.") || fields.has(id.slice(5)));
+    const headers = cols.map((id) => {
+      if (id.startsWith("attr.")) return fields.get(id.slice(5))?.label ?? id;
+      return (
+        (
+          {
+            name: "Name",
+            phone: "Phone",
+            email: "Email",
+            tags: "Tags",
+            branch: "Branch",
+            lastMessageAt: "Last message",
+            createdAt: "Added on",
+            marketing: "Marketing opt-out",
+          } as Record<string, string>
+        )[id] ?? id
+      );
+    });
+    const out = rows.map((r) =>
+      cols.map((id) => {
+        if (id.startsWith("attr.")) {
+          const f = fields.get(id.slice(5));
+          const v = r.attributes[id.slice(5)];
+          if (v === undefined || v === null) return null;
+          if (f?.type === "select") return f.options.find((o) => o.value === v)?.label ?? v;
+          if (f?.type === "multi_select")
+            return (v as string[]).map((x) => f.options.find((o) => o.value === x)?.label ?? x).join(", ");
+          if (f?.type === "boolean") return v ? "Yes" : "No";
+          return v;
+        }
+        switch (id) {
+          case "phone":
+            return r.phone ? `+${r.phone}` : null;
+          case "tags":
+            return (
+              r.tagIds
+                .map((t) => tagName.get(t))
+                .filter(Boolean)
+                .join(", ") || null
+            );
+          case "branch":
+            return r.branchId ? (branchName.get(r.branchId) ?? null) : null;
+          case "lastMessageAt":
+            return day(r.lastMessageAt);
+          case "createdAt":
+            return day(r.createdAt);
+          case "marketing":
+            return r.optOuts.length
+              ? r.optOuts.map((ch) => (ch ? (channelName.get(ch) ?? ch) : "All channels")).join(", ")
+              : null;
+          default:
+            return (r as Record<string, unknown>)[id] ?? null;
+        }
+      }),
+    );
+    const format = parsed.data.format;
+    const bytes = writeWorkbook(headers, out, format);
+    const name = `contacts-${new Date().toISOString().slice(0, 10)}.${format}`;
+    return c2.body(bytes as unknown as ArrayBuffer, 200, {
+      "Content-Type":
+        format === "csv"
+          ? "text/csv; charset=utf-8"
+          : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="${name}"`,
+    });
   });
 
   // Everything the table needs to draw itself: fields, tags, branches, channels and saved views.
   app.get("/meta", async (c2) => {
     const access = c2.var.access;
-    const [fields, tags, branches, channels, views] = await Promise.all([
+    const [fields, tags, branches, channels, views, lists] = await Promise.all([
       activeFields(access.orgId),
       ctx.db
         .select()
@@ -250,6 +370,16 @@ export function contactRoutes(ctx: AppContext) {
           ),
         )
         .orderBy(asc(schema.contactView.position), asc(schema.contactView.createdAt)),
+      ctx.db
+        .select({
+          id: schema.contactList.id,
+          name: schema.contactList.name,
+          kind: schema.contactList.kind,
+          filter: schema.contactList.filter,
+        })
+        .from(schema.contactList)
+        .where(eq(schema.contactList.organizationId, access.orgId))
+        .orderBy(asc(schema.contactList.name)),
     ]);
     return c2.json({
       fields: fields.map(({ organizationId: _, createdByUserId: __, ...f }) => f),
@@ -257,6 +387,7 @@ export function contactRoutes(ctx: AppContext) {
       branches,
       channels,
       views: views.map((v) => ({ ...v, shared: v.ownerUserId === null })),
+      lists,
       canEdit: await canEdit(access),
       canManage: isOrgAdmin(access.orgRole),
     });
@@ -277,7 +408,7 @@ export function contactRoutes(ctx: AppContext) {
     const access = c2.var.access;
     const contact = await findContact(access.orgId, c2.req.param("id"));
     if (!contact) return fail(c2, 404, "not_found");
-    const [identities, notes, lists, conversations] = await Promise.all([
+    const [identities, notes, lists, conversations, optOuts] = await Promise.all([
       ctx.db
         .select()
         .from(schema.contactIdentity)
@@ -311,8 +442,16 @@ export function contactRoutes(ctx: AppContext) {
         .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.conversation.channelAccountId))
         .where(eq(schema.conversation.contactId, contact.id))
         .orderBy(desc(schema.conversation.lastMessageAt)),
+      ctx.db
+        .select({
+          channelAccountId: schema.contactOptOut.channelAccountId,
+          source: schema.contactOptOut.source,
+          createdAt: schema.contactOptOut.createdAt,
+        })
+        .from(schema.contactOptOut)
+        .where(eq(schema.contactOptOut.contactId, contact.id)),
     ]);
-    return c2.json({ contact, identities, notes, lists, conversations });
+    return c2.json({ contact, identities, notes, lists, conversations, optOuts });
   });
 
   const contactBody = z.object({
@@ -322,7 +461,8 @@ export function contactRoutes(ctx: AppContext) {
     branchId: z.string().nullable().optional(),
     tagIds: z.array(z.string()).max(50).optional(),
     attributes: z.record(z.string(), z.unknown()).optional(),
-    marketingOptOut: z.boolean().optional(),
+    /** Marketing on one channel (or every channel when channelAccountId is null): opt out or back in. */
+    optOut: z.object({ channelAccountId: z.string().nullable(), optedOut: z.boolean() }).optional(),
   });
 
   /** Shared checks for create and update; returns the column values to write. */
@@ -353,7 +493,8 @@ export function contactRoutes(ctx: AppContext) {
       out.branchId = b.branchId;
     }
     if (b.tagIds) out.tagIds = await knownTags(orgId, b.tagIds);
-    if (b.marketingOptOut !== undefined) out.marketingOptOutAt = b.marketingOptOut ? new Date() : null;
+    if (b.optOut?.channelAccountId && !(await ownChannel(ctx.db, orgId, b.optOut.channelAccountId)))
+      throw new FilterError("That channel doesn't exist.");
     return out;
   }
 
@@ -388,6 +529,16 @@ export function contactRoutes(ctx: AppContext) {
           attributes: Object.fromEntries(Object.entries(attributes).filter(([, v]) => v !== null)),
         } as typeof c.$inferInsert)
         .returning();
+      if (row && parsed.data.optOut)
+        await setOptOut(
+          ctx.db,
+          access.orgId,
+          [row.id],
+          parsed.data.optOut.channelAccountId,
+          parsed.data.optOut.optedOut,
+          "manual",
+          access.userId,
+        );
       return c2.json({ contact: row }, 201);
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_input", err.message);
@@ -417,6 +568,16 @@ export function contactRoutes(ctx: AppContext) {
         } as never)
         .where(eq(c.id, contact.id))
         .returning();
+      if (parsed.data.optOut)
+        await setOptOut(
+          ctx.db,
+          access.orgId,
+          [contact.id],
+          parsed.data.optOut.channelAccountId,
+          parsed.data.optOut.optedOut,
+          "manual",
+          access.userId,
+        );
       return c2.json({ contact: row });
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_input", err.message);
@@ -426,7 +587,18 @@ export function contactRoutes(ctx: AppContext) {
 
   const bulkSchema = z.object({
     ids: z.array(z.string()).min(1).max(5000),
-    action: z.enum(["add_tags", "remove_tags", "opt_out", "opt_in", "set_branch", "add_to_list", "delete"]),
+    action: z.enum([
+      "add_tags",
+      "remove_tags",
+      "opt_out",
+      "opt_in",
+      "set_branch",
+      "add_to_list",
+      "remove_from_list",
+      "delete",
+    ]),
+    /** opt_out / opt_in: one channel, or every channel when left out. */
+    channelAccountId: z.string().nullable().optional(),
     tagIds: z.array(z.string()).optional(),
     branchId: z.string().nullable().optional(),
     listId: z.string().optional(),
@@ -463,18 +635,38 @@ export function contactRoutes(ctx: AppContext) {
         .returning({ id: c.id });
       affected = res.length;
     } else if (b.action === "opt_out" || b.action === "opt_in") {
-      const res = await ctx.db
-        .update(c)
-        .set({ marketingOptOutAt: b.action === "opt_out" ? now : null, updatedAt: now })
-        .where(scope)
-        .returning({ id: c.id });
-      affected = res.length;
+      const channelId = b.channelAccountId ?? null;
+      if (channelId && !(await ownChannel(ctx.db, access.orgId, channelId)))
+        return fail(c2, 422, "invalid_input", "That channel doesn't exist.");
+      const found = (await ctx.db.select({ id: c.id }).from(c).where(scope)).map((r) => r.id);
+      await setOptOut(
+        ctx.db,
+        access.orgId,
+        found,
+        channelId,
+        b.action === "opt_out",
+        "manual",
+        access.userId,
+      );
+      affected = found.length;
     } else if (b.action === "set_branch") {
       const res = await ctx.db
         .update(c)
         .set({ branchId: b.branchId ?? null, updatedAt: now })
         .where(scope)
         .returning({ id: c.id });
+      affected = res.length;
+    } else if (b.action === "remove_from_list") {
+      const res = await ctx.db
+        .delete(schema.contactListMember)
+        .where(
+          and(
+            eq(schema.contactListMember.listId, b.listId ?? ""),
+            eq(schema.contactListMember.organizationId, access.orgId),
+            inArray(schema.contactListMember.contactId, b.ids),
+          ),
+        )
+        .returning({ id: schema.contactListMember.contactId });
       affected = res.length;
     } else if (b.action === "add_to_list") {
       const [list] = await ctx.db
@@ -582,42 +774,7 @@ export function contactFieldRoutes(ctx: AppContext) {
     const b = parsed.data;
     if ((b.type === "select" || b.type === "multi_select") && !b.options?.length)
       return fail(c2, 422, "invalid_input", "Add at least one option.");
-    // Keys are unique per business; a second "Membership" becomes membership_2.
-    const taken = new Set(
-      (await ctx.db.select({ key: f.key }).from(f).where(eq(f.organizationId, access.orgId))).map(
-        (r) => r.key,
-      ),
-    );
-    const reserved = new Set([
-      "name",
-      "phone",
-      "email",
-      "tags",
-      "branch",
-      "marketing",
-      "created_at",
-      "last_message_at",
-    ]);
-    const base = fieldKey(b.label);
-    let key = base;
-    for (let i = 2; taken.has(key) || reserved.has(key); i++) key = `${base}_${i}`;
-    const [{ n } = { n: 0 }] = await ctx.db
-      .select({ n: sql<number>`coalesce(max(${f.position}), 0)::int` })
-      .from(f)
-      .where(eq(f.organizationId, access.orgId));
-    const [row] = await ctx.db
-      .insert(f)
-      .values({
-        id: newId("contactField"),
-        organizationId: access.orgId,
-        key,
-        label: b.label,
-        type: b.type,
-        options: tidyOptions(b.options),
-        position: n + 1,
-        createdByUserId: access.userId,
-      })
-      .returning();
+    const row = await createField(ctx.db, access.orgId, access.userId, b);
     return c2.json({ field: row }, 201);
   });
 
