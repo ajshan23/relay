@@ -1,4 +1,5 @@
 import {
+  type AccountHealthEvent,
   type ChannelIdentity,
   type ChannelRegistry,
   type ContactChangedEvent,
@@ -9,6 +10,7 @@ import {
   type ReactionEvent,
   type StoredStatus,
   shouldApplyStatus,
+  type TemplateQualityEvent,
   type TemplateStatusEvent,
   toStoredStatus,
   windowExpiresAt,
@@ -60,7 +62,9 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   const accounts = new Map<string, { account: Account; until: number }>();
   const ACCOUNT_CACHE_MS = 30_000;
 
-  async function findAccount(event: Exclude<NormalizedEvent, TemplateStatusEvent>): Promise<Account | null> {
+  async function findAccount(
+    event: Exclude<NormalizedEvent, TemplateStatusEvent | TemplateQualityEvent | AccountHealthEvent>,
+  ): Promise<Account | null> {
     const key = `${event.channel}:${event.accountExternalId}`;
     const cached = accounts.get(key);
     if (cached && cached.until > Date.now()) return cached.account;
@@ -777,6 +781,28 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     }
   }
 
+  /**
+   * A number's quality flag or the daily limit changed: kept on the channel accounts of that business
+   * account (and number), where broadcasts read it.
+   */
+  async function accountHealth(event: AccountHealthEvent) {
+    const ca = schema.channelAccount;
+    const accounts = await db
+      .select({ id: ca.id, displayPhone: ca.displayPhone, providerMeta: ca.providerMeta })
+      .from(ca)
+      .where(and(eq(ca.type, event.channel), sql`${ca.providerMeta} ->> 'wabaId' = ${event.scope}`));
+    for (const a of accounts) {
+      if (event.phone && (a.displayPhone ?? "").replace(/\D/g, "") !== event.phone) continue;
+      const meta = {
+        ...a.providerMeta,
+        ...(event.dailyLimit !== undefined ? { messagingLimit: event.dailyLimit } : {}),
+        ...(event.quality !== undefined ? { qualityFlag: event.quality } : {}),
+        healthAt: event.at.toISOString(),
+      };
+      await db.update(ca).set({ providerMeta: meta, updatedAt: new Date() }).where(eq(ca.id, a.id));
+    }
+  }
+
   /** Applies every event in one stored webhook. */
   async function ingest(events: NormalizedEvent[]): Promise<IngestResult> {
     changed = [];
@@ -784,6 +810,18 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     for (const event of events) {
       if (event.kind === "template.status_changed") {
         await templateReviewed(event);
+        continue;
+      }
+      if (event.kind === "template.quality_changed") {
+        // Broadcasts read this (a RED template pauses them).
+        await db
+          .update(schema.templateChannel)
+          .set({ quality: event.quality, updatedAt: new Date() })
+          .where(eq(schema.templateChannel.externalId, event.templateExternalId));
+        continue;
+      }
+      if (event.kind === "account.health") {
+        await accountHealth(event);
         continue;
       }
       const account = await findAccount(event);

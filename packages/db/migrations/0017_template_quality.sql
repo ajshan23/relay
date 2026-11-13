@@ -1,0 +1,1 @@
+ALTER TABLE "template_channel" ADD COLUMN "quality" text;

@@ -21,6 +21,8 @@ export const queues = {
   signals: "signals",
   /** Housekeeping on a timer: "wake-snoozed" every minute. */
   maintenance: "maintenance",
+  /** The broadcast engine's timers: "tick" every 10 s, "reconcile" every minute. */
+  broadcasts: "broadcasts",
   /** Small previews of stored images and videos. The job id is preview_<stored file id>. */
   previews: "previews",
 } as const;

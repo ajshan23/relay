@@ -147,12 +147,14 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         conversationId: schema.message.conversationId,
         organizationId: schema.conversation.organizationId,
         branchId: schema.conversation.branchId,
+        broadcastId: schema.message.broadcastId,
       })
       .from(schema.message)
       .innerJoin(schema.conversation, eq(schema.conversation.id, schema.message.conversationId))
       .where(eq(schema.message.id, messageId))
       .limit(1);
-    if (row)
+    // Broadcast messages land quietly: no live event for each of thousands of sends.
+    if (row && !row.broadcastId)
       await publishInboxEvent(redis, row.organizationId, {
         type: "message.updated",
         conversationId: row.conversationId,
@@ -197,6 +199,30 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         message: "An earlier attempt may already have sent this message, so it was not sent again.",
       });
       throw new UnrecoverableError("previous attempt may have sent it");
+    }
+
+    // A broadcast paused or stopped since this was queued: don't send it.
+    if (message.broadcastId) {
+      const [bc] = await db
+        .select({ status: schema.broadcast.status })
+        .from(schema.broadcast)
+        .where(eq(schema.broadcast.id, message.broadcastId))
+        .limit(1);
+      if (bc?.status !== "sending") {
+        const r = schema.broadcastRecipient;
+        await db.transaction(async (tx) => {
+          await tx
+            .update(r)
+            .set(
+              bc?.status === "paused"
+                ? { status: "pending", messageId: null, updatedAt: new Date() }
+                : { status: "skipped", skipReason: "stopped", messageId: null, updatedAt: new Date() },
+            )
+            .where(eq(r.messageId, message.id));
+          await tx.delete(schema.message).where(eq(schema.message.id, message.id));
+        });
+        return;
+      }
     }
 
     if (account.status !== "active") {

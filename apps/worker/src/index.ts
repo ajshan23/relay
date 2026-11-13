@@ -4,6 +4,7 @@ import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { createBroadcastEngine } from "./broadcasts/engine";
 import { createMediaProcessor } from "./channels/media";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
 import { createSignalProcessor } from "./channels/signals";
@@ -114,6 +115,29 @@ const maintenance = new Worker(
 );
 maintenance.on("failed", (job, err) => console.error(`maintenance ${job?.name} failed: ${err.message}`));
 
+/* Broadcasts: a tick every 10 s (start, prepare, send, sync, totals) and a reconcile every minute. */
+const broadcastsQueue = new Queue(queues.broadcasts, { connection });
+const outboxQueue = new Queue<OutboxJob>(queues.outbox, { connection });
+for (const [name, every] of [
+  ["tick", 10_000],
+  ["reconcile", 60_000],
+] as const)
+  void broadcastsQueue
+    .upsertJobScheduler(
+      `broadcast-${name}`,
+      { every },
+      { name, opts: { removeOnComplete: 20, removeOnFail: 50 } },
+    )
+    .catch((err) => console.error("broadcast scheduler", err));
+const broadcastEngine = createBroadcastEngine({ db, redis: connection, outbox: outboxQueue });
+const broadcasts = new Worker(
+  queues.broadcasts,
+  async (job) => (job.name === "reconcile" ? broadcastEngine.reconcile() : broadcastEngine.tick()),
+  // One at a time per worker; the database row locks keep several workers from clashing.
+  { connection, concurrency: 1 },
+);
+broadcasts.on("failed", (job, err) => console.error(`broadcast ${job?.name} failed: ${err.message}`));
+
 /* Small previews of stored images and video frames, for the chat. */
 const previewQueue = new Queue(queues.previews, { connection });
 const previews = new Worker(queues.previews, createPreviewProcessor({ db, storage: fileStorage() }), {
@@ -201,6 +225,7 @@ const health = createServer((_req, res) => {
         signals: signals.isRunning(),
         maintenance: maintenance.isRunning(),
         previews: previews.isRunning(),
+        broadcasts: broadcasts.isRunning(),
       },
     }),
   );
@@ -220,6 +245,9 @@ async function shutdown() {
     signals.close(),
     maintenance.close(),
     previews.close(),
+    broadcasts.close(),
+    broadcastsQueue.close(),
+    outboxQueue.close(),
     previewQueue.close(),
     maintenanceQueue.close(),
     templatesQueue.close(),

@@ -65,6 +65,8 @@ export const templateChannel = pgTable(
     status: templateStatus("status").notNull().default("draft"),
     /** The reviewer's reason, in plain words. */
     reason: text("reason"),
+    /** Meta's quality rating for the template on this account: GREEN, YELLOW, RED (null: unknown). */
+    quality: text("quality"),
     /** The last error while publishing (not a review result), e.g. the channel was unreachable. */
     error: text("error"),
     submittedAt: timestamp("submitted_at"),

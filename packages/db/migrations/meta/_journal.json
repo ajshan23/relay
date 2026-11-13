@@ -120,6 +120,13 @@
       "when": 1794609671466,
       "tag": "0016_broadcasts",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794609834814,
+      "tag": "0017_template_quality",
+      "breakpoints": true
     }
   ]
 }

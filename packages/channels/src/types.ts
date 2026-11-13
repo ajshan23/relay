@@ -215,7 +215,35 @@ export type TemplateStatusEvent = {
   at: Date;
 };
 
+/** A template's quality rating changed (WhatsApp: GREEN, YELLOW, RED). */
+export type TemplateQualityEvent = {
+  channel: ChannelType;
+  kind: "template.quality_changed";
+  templateExternalId: string;
+  quality: "GREEN" | "YELLOW" | "RED" | null;
+  at: Date;
+};
+
+/**
+ * The sending health of a business account changed: a number's quality was flagged or cleared, or the
+ * daily limit went up or down. `scope` is the business account (WhatsApp: WABA id); `phone`, when set,
+ * narrows it to one number.
+ */
+export type AccountHealthEvent = {
+  channel: ChannelType;
+  kind: "account.health";
+  scope: string;
+  phone: string | null;
+  /** People per rolling 24 h; -1 unlimited. Undefined when this event doesn't say. */
+  dailyLimit?: number | null;
+  /** "FLAGGED" / "UNFLAGGED", or a rating; undefined when this event doesn't say. */
+  quality?: string | null;
+  at: Date;
+};
+
 export type NormalizedEvent =
+  | TemplateQualityEvent
+  | AccountHealthEvent
   | MessageReceived
   | MessageStatusEvent
   | ReactionEvent

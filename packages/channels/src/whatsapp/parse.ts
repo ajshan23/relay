@@ -9,6 +9,7 @@ import type {
   NormalizedEvent,
   ProviderError,
 } from "../types";
+import { whatsappTier } from "./broadcast-errors";
 import { whatsappReason, whatsappTemplateStatus } from "./templates";
 
 /*
@@ -323,6 +324,48 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
             templateExternalId: id,
             status: whatsappTemplateStatus(str(value.event) ?? undefined),
             reason: whatsappReason(str(value.reason), str(asObject(value.other_info).description)),
+            at: new Date(),
+          });
+        continue;
+      }
+      // A template's quality changed (RED leads to a pause, then disabling).
+      if (field === "message_template_quality_update") {
+        const id = String(value.message_template_id ?? "");
+        const q = str(value.new_quality_score)?.toUpperCase();
+        if (id)
+          events.push({
+            channel: "whatsapp",
+            kind: "template.quality_changed",
+            templateExternalId: id,
+            quality: q === "GREEN" || q === "YELLOW" || q === "RED" ? q : null,
+            at: new Date(),
+          });
+        continue;
+      }
+      // A number's quality was flagged or cleared, or its limit changed.
+      if (field === "phone_number_quality_update") {
+        const phone = (str(value.display_phone_number) ?? "").replace(/\D/g, "") || null;
+        events.push({
+          channel: "whatsapp",
+          kind: "account.health",
+          scope,
+          phone,
+          quality: str(value.event)?.toUpperCase() ?? null,
+          ...(str(value.current_limit) ? { dailyLimit: whatsappTier(str(value.current_limit)) } : {}),
+          at: new Date(),
+        });
+        continue;
+      }
+      // The portfolio's daily limit changed (-1: unlimited).
+      if (field === "business_capability_update") {
+        const limit = value.max_daily_conversations_per_business ?? value.max_daily_conversation_per_phone;
+        if (typeof limit === "number")
+          events.push({
+            channel: "whatsapp",
+            kind: "account.health",
+            scope,
+            phone: null,
+            dailyLimit: limit,
             at: new Date(),
           });
         continue;
