@@ -2,7 +2,9 @@
 
 import { useConfirm } from "@relay/ui/components/confirm-dialog";
 import { Icon } from "@relay/ui/components/icon";
+import { Modal } from "@relay/ui/components/modal";
 import { Person } from "@relay/ui/components/person";
+import { TextInput } from "@relay/ui/components/text-input";
 import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import {
@@ -362,7 +364,10 @@ function ThreadHeader({
     .filter(Boolean)
     .join(" · ");
 
-  const change = (body: { assignedUserId?: string | null; status?: "open" | "closed" }, done: string) =>
+  const change = (
+    body: { assignedUserId?: string | null; status?: "open" | "closed"; snoozedUntil?: string | null },
+    done: string,
+  ) =>
     update.mutate(body, {
       onSuccess: () => notify.success(done),
       onError: (err) =>
@@ -459,6 +464,13 @@ function ThreadHeader({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+        ) : null}
+        {d.canWork && c.status === "open" ? (
+          <SnoozeMenu
+            snoozedUntil={c.snoozedUntil}
+            busy={update.isPending}
+            onSnooze={(until, label) => change({ snoozedUntil: until }, label)}
+          />
         ) : null}
         {d.canWork ? (
           c.status === "open" ? (
@@ -595,4 +607,138 @@ function ScrollToUnread({ messageId }: { messageId: string | null }) {
     requestAnimationFrame(() => scrollToMessage(messageId, { align: "start", scrollMargin: 48 }));
   }, [messageId, scrollToMessage]);
   return null;
+}
+
+/** "Tue 9:00", "Today 15:30", "12 Dec 9:00". */
+function whenLabel(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const days = Math.round(
+    (new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86_400_000,
+  );
+  if (days === 0) return `Today ${time}`;
+  if (days === 1) return `Tomorrow ${time}`;
+  if (days < 7) return `${d.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
+  return `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${time}`;
+}
+
+/** Snooze choices, in the browser's own time zone. */
+function snoozeChoices() {
+  const at = (days: number, hour: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    d.setHours(hour, 0, 0, 0);
+    return d;
+  };
+  const nextMonday = (() => {
+    const d = new Date();
+    const add = (8 - d.getDay()) % 7 || 7;
+    return at(add, 9);
+  })();
+  return [
+    { label: "Later today", hint: "in 3 hours", at: new Date(Date.now() + 3 * 3600_000) },
+    { label: "Tomorrow", hint: "9:00", at: at(1, 9) },
+    { label: "Next week", hint: "Monday 9:00", at: nextMonday },
+  ];
+}
+
+/**
+ * Snooze: the conversation leaves the open lists until the chosen time, or until the customer writes
+ * again. Opened with the S key too (see shortcuts.tsx).
+ */
+function SnoozeMenu({
+  snoozedUntil,
+  busy,
+  onSnooze,
+}: {
+  snoozedUntil: string | null;
+  busy: boolean;
+  onSnooze: (until: string | null, done: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [custom, setCustom] = useState("");
+  useEffect(() => {
+    const onKey = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "snooze") setOpen(true);
+    };
+    window.addEventListener("relay:inbox-shortcut", onKey);
+    return () => window.removeEventListener("relay:inbox-shortcut", onKey);
+  }, []);
+  const snooze = (at: Date) => onSnooze(at.toISOString(), `Snoozed until ${whenLabel(at.toISOString())}`);
+  return (
+    <>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="gap-1.5" disabled={busy}>
+            <Icon name="clock" size="sm" />
+            <span className="hidden max-w-36 truncate sm:inline">
+              {snoozedUntil ? `Snoozed · ${whenLabel(snoozedUntil)}` : "Snooze"}
+            </span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+            Hide until later. It comes back sooner if the customer writes.
+          </DropdownMenuLabel>
+          {snoozeChoices().map((choice) => (
+            <DropdownMenuItem
+              key={choice.label}
+              onSelect={() => snooze(choice.at)}
+              className="justify-between"
+            >
+              {choice.label}
+              <span className="text-xs text-muted-foreground">{choice.hint}</span>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuItem onSelect={() => setPicking(true)}>Pick a date and time…</DropdownMenuItem>
+          {snoozedUntil ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => onSnooze(null, "Unsnoozed")}>
+                <Icon name="close" size="sm" />
+                Unsnooze
+              </DropdownMenuItem>
+            </>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Modal
+        open={picking}
+        onOpenChange={setPicking}
+        size="sm"
+        title="Snooze until"
+        description="The conversation comes back at this time, or sooner if the customer writes."
+      >
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const at = new Date(custom);
+            if (Number.isNaN(at.getTime()) || at.getTime() < Date.now() + 60_000) {
+              notify.error("Pick a time in the future");
+              return;
+            }
+            snooze(at);
+            setPicking(false);
+          }}
+        >
+          <TextInput
+            type="datetime-local"
+            aria-label="Date and time"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            required
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setPicking(false)}>
+              Cancel
+            </Button>
+            <Button type="submit">Snooze</Button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
 }

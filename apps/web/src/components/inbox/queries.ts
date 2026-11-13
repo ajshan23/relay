@@ -104,8 +104,11 @@ export function useAssignees(id: string, enabled: boolean) {
 export function useUpdateConversation(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { assignedUserId?: string | null; status?: "open" | "closed" }) =>
-      api(`/conversations/${id}`, { method: "PATCH", json: body }),
+    mutationFn: (body: {
+      assignedUserId?: string | null;
+      status?: "open" | "closed";
+      snoozedUntil?: string | null;
+    }) => api(`/conversations/${id}`, { method: "PATCH", json: body }),
     onSettled: () => qc.invalidateQueries({ queryKey: keys.all }),
   });
 }

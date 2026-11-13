@@ -28,6 +28,7 @@ export type ConversationRow = {
   activityAt: string;
   windowExpiresAt: string | null;
   windowOpen: boolean;
+  snoozedUntil: string | null;
   unreadCount: number;
 };
 
@@ -57,6 +58,10 @@ export type ConversationDetail = {
     lastInboundAt: string | null;
     windowExpiresAt: string | null;
     windowOpen: boolean;
+    /** Hidden from the open lists until then; null when not snoozed. */
+    snoozedUntil: string | null;
+    /** When you last looked before now. */
+    myLastReadAt: string | null;
   };
   channel: { id: string; type: string; name: string; phone: string | null; status: string };
   capabilities: {

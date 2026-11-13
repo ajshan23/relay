@@ -68,6 +68,8 @@ const sendBody = z
 const patchBody = z.object({
   assignedUserId: z.string().nullable().optional(),
   status: z.enum(["open", "closed"]).optional(),
+  /** Hide from the open lists until then (ISO time, in the future); null wakes it now. */
+  snoozedUntil: z.iso.datetime({ offset: true }).nullable().optional(),
 });
 
 export function conversationRoutes(ctx: AppContext) {
@@ -406,7 +408,12 @@ export function conversationRoutes(ctx: AppContext) {
     if (!conversation) return fail(c, 404, "not_found");
     if (!(await canWork(ctx, access, conversation)))
       return fail(c, 403, "forbidden", "Viewers can read conversations but not change them.");
-    const { assignedUserId, status } = parsed.data;
+    const { assignedUserId, status, snoozedUntil } = parsed.data;
+    const until = snoozedUntil ? new Date(snoozedUntil) : null;
+    if (until && until.getTime() <= Date.now() + 30_000)
+      return fail(c, 422, "invalid_input", "Pick a time in the future.");
+    if (until && until.getTime() > Date.now() + 365 * 24 * 3600_000)
+      return fail(c, 422, "invalid_input", "Snooze for up to a year.");
     if (assignedUserId) {
       const people = await assignableUsers(ctx, conversation.organizationId, conversation.branchId);
       if (!people.some((p) => p.id === assignedUserId))
@@ -417,6 +424,12 @@ export function conversationRoutes(ctx: AppContext) {
       .set({
         ...(assignedUserId !== undefined ? { assignedUserId } : {}),
         ...(status ? { status } : {}),
+        // Closing ends a snooze; so does reopening.
+        ...(snoozedUntil !== undefined
+          ? { snoozedUntil: until, snoozedByUserId: until ? access.userId : null }
+          : status
+            ? { snoozedUntil: null, snoozedByUserId: null }
+            : {}),
         updatedAt: new Date(),
       })
       .where(eq(schema.conversation.id, conversation.id))

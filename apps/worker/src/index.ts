@@ -12,6 +12,7 @@ import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channe
 import { createExportProcessor } from "./contacts/export";
 import { createImportProcessor, type ImportJob } from "./contacts/import";
 import { createReadProcessor, type ReadJob } from "./contacts/read";
+import { createSnoozeWaker } from "./conversations/snooze";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -52,6 +53,25 @@ const signals = new Worker<SignalJob>(queues.signals, createSignalProcessor({ db
 signals.on("failed", (job, err) =>
   console.warn(`signal ${job?.data.kind} ${job?.data.messageId}: ${err.message}`),
 );
+
+/* Housekeeping on a timer. One scheduler entry per job, so several workers never double up. */
+const maintenanceQueue = new Queue(queues.maintenance, { connection });
+void maintenanceQueue
+  .upsertJobScheduler(
+    "wake-snoozed",
+    { every: 60_000 },
+    { name: "wake-snoozed", opts: { removeOnComplete: 10, removeOnFail: 50 } },
+  )
+  .catch((err) => console.error("maintenance scheduler", err));
+const wakeSnoozed = createSnoozeWaker({ db, redis: connection });
+const maintenance = new Worker(
+  queues.maintenance,
+  async (job) => {
+    if (job.name === "wake-snoozed") return wakeSnoozed();
+  },
+  { connection, concurrency: 1 },
+);
+maintenance.on("failed", (job, err) => console.error(`maintenance ${job?.name} failed: ${err.message}`));
 
 /* Customer media: copied from Meta into our storage soon after arrival. */
 const media = new Worker<MediaJob>(queues.media, createMediaProcessor({ db, redis: connection }), {
@@ -126,6 +146,7 @@ const health = createServer((_req, res) => {
         contacts: contactImports.isRunning(),
         contactFiles: contactFiles.isRunning(),
         signals: signals.isRunning(),
+        maintenance: maintenance.isRunning(),
       },
     }),
   );
@@ -143,6 +164,8 @@ async function shutdown() {
     contactImports.close(),
     contactFiles.close(),
     signals.close(),
+    maintenance.close(),
+    maintenanceQueue.close(),
     mediaQueue.close(),
   ]);
   connection.disconnect();

@@ -19,6 +19,8 @@ export const queues = {
    * (job id typing_<conversation id>_<20 s slot>). Best effort: dropped rather than retried for long.
    */
   signals: "signals",
+  /** Housekeeping on a timer: "wake-snoozed" every minute. */
+  maintenance: "maintenance",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];

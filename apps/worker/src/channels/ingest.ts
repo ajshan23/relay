@@ -417,6 +417,8 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         .update(schema.conversation)
         .set({
           status: "open",
+          // The customer wrote: a snoozed conversation comes back now.
+          snoozedUntil: null,
           lastMessageAt: latest(schema.conversation.lastMessageAt, sentAt),
           lastInboundAt: latest(schema.conversation.lastInboundAt, sentAt),
           ...(window ? { windowExpiresAt: latest(schema.conversation.windowExpiresAt, window) } : {}),
