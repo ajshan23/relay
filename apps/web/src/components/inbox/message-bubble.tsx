@@ -91,25 +91,37 @@ export function MessageBubble({ message: m, first, last, isGroup, onRetry, onRep
             {out ? m.sender.name : memberName}
           </MessageHeader>
         ) : null}
-        <div className={cn("flex max-w-full items-center gap-1", out && "flex-row-reverse")}>
-          <div className={cn("relative min-w-0 max-w-[min(85%,34rem)] flex-1", m.pending && "opacity-80")}>
-            <Body message={m} last={last} first={first} memberName={memberName} />
-            {outsideReactions ? (
-              <div className={cn("absolute -bottom-3 z-10", out ? "right-3" : "left-3")}>
-                <ReactionsDisplay reactions={m.reactions.map((r) => ({ emoji: r.emoji }))} />
-              </div>
+        {/* Every bubble kind sits on its sender's side (only the text bubble aligns itself), with the
+            reply button right next to it. The width limit is ours, so the library's 60% is lifted. */}
+        <div
+          className={cn("flex w-full min-w-0", out ? "justify-end" : "justify-start")}
+          style={{ "--wa-msg-max-width": "100%" } as React.CSSProperties}
+        >
+          <div
+            className={cn(
+              "flex max-w-[min(85%,34rem)] min-w-0 items-center gap-1",
+              out && "flex-row-reverse",
+            )}
+          >
+            <div className={cn("relative min-w-0", m.pending && "opacity-80")}>
+              <Body message={m} last={last} first={first} memberName={memberName} />
+              {outsideReactions ? (
+                <div className={cn("absolute -bottom-3 z-10", out ? "right-3" : "left-3")}>
+                  <ReactionsDisplay reactions={m.reactions.map((r) => ({ emoji: r.emoji }))} />
+                </div>
+              ) : null}
+            </div>
+            {onReply && !m.pending ? (
+              <button
+                type="button"
+                aria-label="Reply to this message"
+                onClick={() => onReply(m)}
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover/row:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <Icon name="reply" size="sm" />
+              </button>
             ) : null}
           </div>
-          {onReply && !m.pending ? (
-            <button
-              type="button"
-              aria-label="Reply to this message"
-              onClick={() => onReply(m)}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover/row:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              <Icon name="reply" size="sm" />
-            </button>
-          ) : null}
         </div>
         {outsideReactions ? <div className="h-3" /> : null}
         {failed ? (
