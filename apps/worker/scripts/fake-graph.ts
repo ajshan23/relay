@@ -66,7 +66,7 @@ app.post("/:version/:phoneId/messages", async (c) => {
   return c.json({
     messaging_product: "whatsapp",
     contacts: [{ input: body.to ?? body.recipient, wa_id: body.to ?? "" }],
-    messages: [{ id: `wamid.fake.${counter}` }],
+    messages: [{ id: `wamid.fake.${Date.now()}.${counter}` }],
   });
 });
 

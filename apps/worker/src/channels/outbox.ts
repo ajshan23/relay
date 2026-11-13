@@ -38,6 +38,35 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       .where(and(eq(schema.message.id, messageId), inArray(schema.message.status, ["queued", "sending"])));
   }
 
+  /**
+   * Records that the channel accepted the message. Must never cause a resend: if saving fails it is
+   * retried here, and if it still fails the job stops; the channel's status webhooks (which carry our
+   * message id) fill the result in later.
+   */
+  async function recordAccepted(messageId: string, externalId: string) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // A status webhook may already have moved it further; only step up from queued/sending.
+        await db
+          .update(schema.message)
+          .set({
+            externalId: sql`coalesce(${schema.message.externalId}, ${externalId})`,
+            status: sql`case when ${schema.message.status} in ('queued', 'sending') then 'accepted'::message_status else ${schema.message.status} end`,
+            acceptedAt: new Date(),
+            error: null,
+          })
+          .where(eq(schema.message.id, messageId));
+        return;
+      } catch (err) {
+        if (attempt === 3) {
+          console.error(`[outbox] ${messageId} was accepted as ${externalId} but could not be recorded`, err);
+          throw new UnrecoverableError("sent, but the result could not be recorded");
+        }
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+      }
+    }
+  }
+
   /** Delays the job by a second when this number is over its per-second budget. */
   async function throttle(job: Job<OutboxJob>, accountId: string, token?: string) {
     const key = `rate:send:${accountId}:${Math.floor(Date.now() / 1000)}`;
@@ -66,6 +95,15 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
     if (!row) return;
     const { message, account, identity } = row;
     if (message.status !== "queued" && message.status !== "sending") return; // Already sent or given up.
+    // "sending" on arrival means an earlier attempt reached the send call and did not finish
+    // (a crash, or a failure after Meta accepted it). It may have been sent: never send twice.
+    if (message.status === "sending") {
+      await fail(message.id, {
+        reason: "unknown",
+        message: "An earlier attempt may already have sent this message, so it was not sent again.",
+      });
+      throw new UnrecoverableError("previous attempt may have sent it");
+    }
 
     if (account.status !== "active") {
       await fail(message.id, { reason: "channel_unavailable", message: `The channel is ${account.status}` });
@@ -117,16 +155,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         outbound,
         message.id,
       );
-      // A status webhook may already have moved it further; only step up from queued/sending.
-      await db
-        .update(schema.message)
-        .set({
-          externalId: sql`coalesce(${schema.message.externalId}, ${externalId})`,
-          status: sql`case when ${schema.message.status} in ('queued', 'sending') then 'accepted'::message_status else ${schema.message.status} end`,
-          acceptedAt: new Date(),
-          error: null,
-        })
-        .where(eq(schema.message.id, message.id));
+      await recordAccepted(message.id, externalId);
     } catch (err) {
       const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       if (err instanceof GraphUncertainError) {
