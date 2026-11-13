@@ -14,7 +14,7 @@ import { parseBody } from "../branches/routes";
  */
 
 /** Branch ids the caller can reach, or null for "all" (owners and admins). */
-async function reachableBranches(ctx: AppContext, access: Access): Promise<string[] | null> {
+export async function reachableBranches(ctx: AppContext, access: Access): Promise<string[] | null> {
   if (isOrgAdmin(access.orgRole)) return null;
   const rows = await ctx.db
     .select({ id: schema.branchMember.branchId })

@@ -441,11 +441,12 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
       event.groupExternalId ? eq(schema.channelGroup.externalId, event.groupExternalId) : undefined,
     ].filter(Boolean);
     if (!conditions.length) return null;
-    const [row] = await db
+    const rows = await db
       .select()
       .from(schema.channelGroup)
-      .where(and(eq(schema.channelGroup.channelAccountId, account.id), or(...conditions)))
-      .limit(1);
+      .where(and(eq(schema.channelGroup.channelAccountId, account.id), or(...conditions)));
+    // Our own request wins over a placeholder made from an early message.
+    const row = rows.find((r) => event.requestId && r.requestId === event.requestId) ?? rows[0];
     if (row) return row;
     // A group created outside Relay (for example in WhatsApp Manager) still gets a record.
     return event.groupExternalId ? findOrCreateGroup(account, event.groupExternalId) : null;
@@ -464,19 +465,53 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     if (!group) return;
     switch (event.kind) {
       case "group.created": {
-        await updateGroup(group, {
-          externalId: event.groupExternalId ?? group.externalId,
-          status: "active",
-          statusReason: null,
-          subject: event.subject ?? group.subject,
-          description: event.description ?? group.description,
-          inviteLink: event.inviteLink ?? group.inviteLink,
-          joinApprovalMode: event.joinApprovalMode ?? group.joinApprovalMode,
+        const externalId = event.groupExternalId ?? group.externalId;
+        await db.transaction(async (tx) => {
+          // A member's message can arrive before this confirmation and create a placeholder record
+          // for the same group. Fold the placeholder into the group we asked for, then confirm it.
+          if (externalId && group.externalId !== externalId) {
+            const [placeholder] = await tx
+              .select({ id: schema.channelGroup.id })
+              .from(schema.channelGroup)
+              .where(
+                and(
+                  eq(schema.channelGroup.channelAccountId, account.id),
+                  eq(schema.channelGroup.externalId, externalId),
+                ),
+              )
+              .limit(1);
+            if (placeholder && placeholder.id !== group.id) {
+              await tx
+                .update(schema.conversation)
+                .set({ groupId: group.id })
+                .where(eq(schema.conversation.groupId, placeholder.id));
+              await tx
+                .update(schema.groupParticipant)
+                .set({ groupId: group.id })
+                .where(eq(schema.groupParticipant.groupId, placeholder.id));
+              await tx
+                .update(schema.groupJoinRequest)
+                .set({ groupId: group.id })
+                .where(eq(schema.groupJoinRequest.groupId, placeholder.id));
+              await tx.delete(schema.channelGroup).where(eq(schema.channelGroup.id, placeholder.id));
+            }
+          }
+          await tx
+            .update(schema.channelGroup)
+            .set({
+              externalId,
+              status: "active",
+              statusReason: null,
+              subject: event.subject ?? group.subject,
+              description: event.description ?? group.description,
+              inviteLink: event.inviteLink ?? group.inviteLink,
+              joinApprovalMode: event.joinApprovalMode ?? group.joinApprovalMode,
+              participantCount: sql`(select count(*) from ${schema.groupParticipant} where ${schema.groupParticipant.groupId} = ${group.id} and ${schema.groupParticipant.status} = 'active')`,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.channelGroup.id, group.id));
         });
-        await upsertGroupConversation(account, {
-          ...group,
-          externalId: event.groupExternalId ?? group.externalId,
-        });
+        await upsertGroupConversation(account, { ...group, externalId });
         return;
       }
       case "group.failed": {

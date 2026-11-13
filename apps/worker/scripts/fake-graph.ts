@@ -8,6 +8,8 @@
  *   "#timeout" -> never answers (tests "uncertain, not resent")
  *   "#auth"    -> error 190 (token expired)
  *   anything else -> accepted with a new wamid
+ * Groups: create/update/delete answer with a request_id (the result is a webhook: use the simulator),
+ * invite links, join requests and participant removal answer like Meta.
  * GET /_requests lists what it received.
  */
 import { serve } from "@hono/node-server";
@@ -35,6 +37,46 @@ app.get("/_media/:id", () => {
   return new Response(png, {
     headers: { "content-type": "image/png", "content-length": String(png.length) },
   });
+});
+
+const record = async (c: { req: { path: string; method: string; text: () => Promise<string> } }) => {
+  const raw = await c.req.text();
+  received.push({
+    at: new Date().toISOString(),
+    path: `${c.req.method} ${c.req.path}`,
+    body: raw ? JSON.parse(raw) : null,
+  });
+};
+let requestCounter = 0;
+const requestId = () => `REQ.fake.${Date.now()}.${++requestCounter}`;
+
+app.post("/:version/:phoneId/groups", async (c) => {
+  await record(c);
+  return c.json({ request_id: requestId() });
+});
+app.get("/:version/:groupId/invite_link", (c) =>
+  c.json({ invite_link: `https://chat.whatsapp.com/FAKE${c.req.param("groupId").slice(-6)}` }),
+);
+app.post("/:version/:groupId/invite_link", async (c) => {
+  await record(c);
+  return c.json({ invite_link: `https://chat.whatsapp.com/RESET${Date.now()}` });
+});
+app.get("/:version/:groupId/join_requests", (c) => c.json({ data: [], paging: {} }));
+app.post("/:version/:groupId/join_requests", async (c) => {
+  await record(c);
+  return c.json({ success: true });
+});
+app.delete("/:version/:groupId/join_requests", async (c) => {
+  await record(c);
+  return c.json({ success: true });
+});
+app.delete("/:version/:groupId/participants", async (c) => {
+  await record(c);
+  return c.json({ success: true });
+});
+app.delete("/:version/:groupId", async (c) => {
+  await record(c);
+  return c.json({ request_id: requestId() });
 });
 
 app.post("/:version/:phoneId/messages", async (c) => {
@@ -82,4 +124,8 @@ app.get("/:version/:id", (c) =>
   }),
 );
 app.post("/:version/:wabaId/subscribed_apps", (c) => c.json({ success: true }));
+app.post("/:version/:groupId", async (c) => {
+  await record(c);
+  return c.json({ request_id: requestId() });
+});
 serve({ fetch: app.fetch, port: 3299 }, () => console.log("fake Graph API on http://localhost:3299"));

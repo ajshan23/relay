@@ -7,6 +7,7 @@ import { authOptionsRoutes } from "./modules/auth/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { channelRoutes } from "./modules/channels/routes";
 import { conversationRoutes } from "./modules/conversations/routes";
+import { groupRoutes } from "./modules/groups/routes";
 import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
 import { metaWebhookRoutes } from "./modules/webhooks/meta";
@@ -31,6 +32,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/branches", branchRoutes(ctx));
   app.route("/api/conversations", conversationRoutes(ctx));
   app.route("/api/channels", channelRoutes(ctx));
+  app.route("/api/groups", groupRoutes(ctx));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {

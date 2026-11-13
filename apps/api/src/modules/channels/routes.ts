@@ -1,14 +1,8 @@
-import {
-  createGraphClient,
-  describeWhatsAppNumber,
-  GraphError,
-  GraphUncertainError,
-  subscribeWhatsAppAccount,
-} from "@relay/channels";
 import { encryptSecret, newId } from "@relay/core";
 import { and, asc, eq, inArray, isNull, schema } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
+import { channels, providerFailure } from "../../channels";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
@@ -48,11 +42,6 @@ const publicColumns = {
 export function channelRoutes(ctx: AppContext) {
   const app = new Hono<AccessEnv>();
   app.use(requireSession, requireOrg(ctx));
-  const graph = createGraphClient({
-    baseUrl: ctx.config.META_GRAPH_URL,
-    version: ctx.config.META_GRAPH_VERSION,
-    timeoutMs: 15_000,
-  });
 
   app.get("/", async (c) => {
     const channels = await ctx.db
@@ -113,25 +102,19 @@ export function channelRoutes(ctx: AppContext) {
     if (branchIds.some((id) => !branches.find((b) => b.id === id)))
       return fail(c, 422, "invalid_input", "Unknown branch in branchIds.");
 
-    // Check the token and number with Meta before storing anything.
-    let number: Awaited<ReturnType<typeof describeWhatsAppNumber>>;
+    // Check the credentials with the channel (and subscribe to its webhooks) before storing anything.
+    const adapter = channels().get("whatsapp");
+    if (!adapter) return fail(c, 501, "not_supported", "WhatsApp is not available.");
+    let connected: Awaited<ReturnType<typeof adapter.connect>>;
     try {
-      number = await describeWhatsAppNumber(graph, {
-        phoneNumberId: body.phoneNumberId,
-        accessToken: body.accessToken,
+      connected = await adapter.connect({
+        externalId: body.phoneNumberId,
+        credentials: { accessToken: body.accessToken },
+        providerMeta: { wabaId: body.wabaId },
       });
-      await subscribeWhatsAppAccount(graph, body.wabaId, body.accessToken);
     } catch (err) {
-      if (err instanceof GraphError) {
-        const status = err.kind === "authFailed" ? 401 : 422;
-        return fail(
-          c,
-          status,
-          err.kind === "authFailed" ? "meta_token_rejected" : "meta_rejected",
-          err.message,
-        );
-      }
-      if (err instanceof GraphUncertainError) return fail(c, 504, "meta_unreachable", err.message);
+      const answer = providerFailure(c, err);
+      if (answer) return answer;
       throw err;
     }
 
@@ -140,16 +123,12 @@ export function channelRoutes(ctx: AppContext) {
       type: "whatsapp" as const,
       provider: "meta",
       externalId: body.phoneNumberId,
-      displayName: body.displayName ?? number.verified_name ?? number.display_phone_number ?? "WhatsApp",
-      displayPhone: number.display_phone_number ?? null,
+      displayName: body.displayName ?? connected.displayName,
+      displayPhone: connected.displayPhone,
       status: "active" as const,
       statusReason: null,
       credentials: encryptSecret({ accessToken: body.accessToken }, key),
-      providerMeta: {
-        wabaId: body.wabaId,
-        verifiedName: number.verified_name ?? null,
-        qualityRating: number.quality_rating ?? null,
-      },
+      providerMeta: connected.providerMeta,
       defaultBranchId: branchIds[0] ?? null,
       updatedAt: new Date(),
     };
