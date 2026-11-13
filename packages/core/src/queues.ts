@@ -21,6 +21,8 @@ export const queues = {
   signals: "signals",
   /** Housekeeping on a timer: "wake-snoozed" every minute. */
   maintenance: "maintenance",
+  /** Small previews of stored images and videos. The job id is preview_<stored file id>. */
+  previews: "previews",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];
@@ -44,3 +46,6 @@ export type ExportResult = { storageKey: string; fileName: string; rows: number 
 
 /** A read receipt or typing signal for one conversation (queue "signals"). */
 export type SignalJob = { kind: "read" | "typing"; conversationId: string; messageId: string };
+
+/** Make the preview of a stored file (queue "previews"). */
+export type PreviewJob = { fileId: string };

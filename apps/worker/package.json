@@ -12,7 +12,8 @@
     "replay": "tsx --env-file=../../.env scripts/replay-webhooks.ts",
     "fake-graph": "tsx --env-file=../../.env scripts/fake-graph.ts",
     "s3:setup": "tsx --env-file=../../.env src/scripts/s3-setup.ts",
-    "media:migrate": "tsx --env-file=../../.env src/scripts/migrate-media.ts"
+    "media:migrate": "tsx --env-file=../../.env src/scripts/migrate-media.ts",
+    "previews:backfill": "tsx --env-file=../../.env src/scripts/backfill-previews.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",
@@ -23,6 +24,7 @@
     "@relay/email": "workspace:*",
     "bullmq": "^6.7.5",
     "hono": "^4.13.18",
-    "ioredis": "^6.0.0"
+    "ioredis": "^6.0.0",
+    "sharp": "0.35.5"
   }
 }

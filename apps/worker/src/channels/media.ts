@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { GraphError } from "@relay/channels";
-import { fileStorage, newId, type Publisher, publishInboxEvent } from "@relay/core";
+import { fileStorage, newId, type PreviewJob, type Publisher, publishInboxEvent } from "@relay/core";
 import { type createDb, eq, findStoredFile, schema, storeFile } from "@relay/db";
-import { type Job, UnrecoverableError } from "bullmq";
+import { type Job, type Queue, UnrecoverableError } from "bullmq";
 import { accountRef, channels } from "./registry";
 import type { MediaJob } from "./webhooks";
 
@@ -12,7 +12,16 @@ type Db = ReturnType<typeof createDb>["db"];
  * Copies one customer file from the channel into our storage, through its adapter. Provider links
  * expire quickly (WhatsApp: 5 minutes, ids 7 days), so this runs right after the message arrives.
  */
-export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }) {
+export function createMediaProcessor({
+  db,
+  redis,
+  previewQueue,
+}: {
+  db: Db;
+  redis: Publisher;
+  /** New images and videos get a small preview for the chat. */
+  previewQueue: Queue<PreviewJob>;
+}) {
   const storage = fileStorage();
 
   return async function downloadMedia(job: Job<MediaJob>) {
@@ -81,6 +90,12 @@ export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }
         mimeType,
         newId: () => newId("storedFile"),
       });
+      if (/^(image|video)\//.test(mimeType) && !stored.previewKey)
+        await previewQueue.add(
+          "preview",
+          { fileId: stored.id },
+          { jobId: `preview_${stored.id}`, attempts: 2 },
+        );
       await db
         .update(schema.attachment)
         .set({

@@ -13,6 +13,7 @@ import { createExportProcessor } from "./contacts/export";
 import { createImportProcessor, type ImportJob } from "./contacts/import";
 import { createReadProcessor, type ReadJob } from "./contacts/read";
 import { createSnoozeWaker } from "./conversations/snooze";
+import { createPreviewProcessor } from "./files/preview";
 import { createFileSweep } from "./files/sweep";
 
 const config = env();
@@ -83,11 +84,23 @@ const maintenance = new Worker(
 );
 maintenance.on("failed", (job, err) => console.error(`maintenance ${job?.name} failed: ${err.message}`));
 
-/* Customer media: copied from Meta into our storage soon after arrival. */
-const media = new Worker<MediaJob>(queues.media, createMediaProcessor({ db, redis: connection }), {
+/* Small previews of stored images and video frames, for the chat. */
+const previewQueue = new Queue(queues.previews, { connection });
+const previews = new Worker(queues.previews, createPreviewProcessor({ db, storage: fileStorage() }), {
   connection,
-  concurrency: 5,
+  concurrency: 2,
 });
+previews.on("failed", (job, err) => console.warn(`preview ${job?.data.fileId} failed: ${err.message}`));
+
+/* Customer media: copied from Meta into our storage soon after arrival. */
+const media = new Worker<MediaJob>(
+  queues.media,
+  createMediaProcessor({ db, redis: connection, previewQueue }),
+  {
+    connection,
+    concurrency: 5,
+  },
+);
 media.on("failed", (job, err) =>
   console.error(`media ${job?.data.attachmentId} failed (attempt ${job?.attemptsMade}): ${err.message}`),
 );
@@ -157,6 +170,7 @@ const health = createServer((_req, res) => {
         contactFiles: contactFiles.isRunning(),
         signals: signals.isRunning(),
         maintenance: maintenance.isRunning(),
+        previews: previews.isRunning(),
       },
     }),
   );
@@ -175,6 +189,8 @@ async function shutdown() {
     contactFiles.close(),
     signals.close(),
     maintenance.close(),
+    previews.close(),
+    previewQueue.close(),
     maintenanceQueue.close(),
     mediaQueue.close(),
   ]);

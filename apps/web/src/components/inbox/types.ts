@@ -124,6 +124,10 @@ export type Attachment = {
   sizeBytes: number | null;
   status: "pending" | "stored" | "failed";
   url: string;
+  /** A small preview exists at `${url}?preview=1`. */
+  hasPreview?: boolean;
+  width?: number | null;
+  height?: number | null;
 };
 
 export type Message = {

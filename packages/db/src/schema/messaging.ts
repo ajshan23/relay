@@ -3,6 +3,7 @@ import {
   bigint,
   check,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -283,6 +284,13 @@ export const storedFile = pgTable(
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     mimeType: text("mime_type"),
     storageKey: text("storage_key").notNull(),
+    /**
+     * A small WebP preview (480 px wide) for images and videos, shown in the chat so opening a
+     * conversation doesn't download every file in full. Null until made, or when it can't be.
+     */
+    previewKey: text("preview_key"),
+    width: integer("width"),
+    height: integer("height"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     /** Last time something new pointed at it; the orphan sweep keeps recent files. */
     lastUsedAt: timestamp("last_used_at").notNull().defaultNow(),

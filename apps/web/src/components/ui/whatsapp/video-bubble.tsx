@@ -15,6 +15,8 @@ interface VideoBubbleProps extends React.HTMLAttributes<HTMLDivElement> {
   showTail?: boolean;
   /** Quoted message shown above the content, e.g. a ReplyPreview when this is a reply */
   quote?: React.ReactNode;
+  /** A still image shown until play; with it, nothing of the video downloads before then. */
+  poster?: string;
 }
 
 const VideoBubble = React.forwardRef<HTMLDivElement, VideoBubbleProps>(
@@ -29,13 +31,14 @@ const VideoBubble = React.forwardRef<HTMLDivElement, VideoBubbleProps>(
       status,
       showTail = false,
       quote,
+      poster,
       ...props
     },
     ref
   ) => {
     const isOutgoing = variant === "outgoing";
     const videoRef = React.useRef<HTMLVideoElement>(null);
-    const [loaded, setLoaded] = React.useState(false);
+    const [loaded, setLoaded] = React.useState(!!poster);
     const [playing, setPlaying] = React.useState(false);
 
     const togglePlay = () => {
@@ -83,10 +86,11 @@ const VideoBubble = React.forwardRef<HTMLDivElement, VideoBubbleProps>(
             <video
               ref={videoRef}
               src={src}
+              poster={poster}
               onLoadedData={() => setLoaded(true)}
               onEnded={handleEnded}
               playsInline
-              preload="metadata"
+              preload={poster ? "none" : "metadata"}
               className={cn(
                 "w-full max-h-[330px] object-cover transition-opacity duration-300",
                 loaded ? "opacity-100" : "opacity-0"

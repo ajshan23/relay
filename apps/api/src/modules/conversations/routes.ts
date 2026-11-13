@@ -752,8 +752,13 @@ export function conversationRoutes(ctx: AppContext) {
               fileName: schema.attachment.fileName,
               sizeBytes: schema.attachment.sizeBytes,
               status: schema.attachment.status,
+              /** A small chat preview exists (GET /api/attachments/:id?preview=1). */
+              hasPreview: sql<boolean>`${schema.storedFile.previewKey} is not null`,
+              width: schema.storedFile.width,
+              height: schema.storedFile.height,
             })
             .from(schema.attachment)
+            .leftJoin(schema.storedFile, eq(schema.storedFile.id, schema.attachment.fileId))
             .where(inArray(schema.attachment.messageId, ids)),
           // Reactions: the latest one from each person counts; an empty emoji means they took it back.
           ctx.db

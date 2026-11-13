@@ -16,7 +16,7 @@ export function createFileSweep({ db, storage }: { db: Db; storage: FileStorage 
     let deleted = 0;
     for (;;) {
       const orphans = await db
-        .select({ id: f.id, storageKey: f.storageKey })
+        .select({ id: f.id, storageKey: f.storageKey, previewKey: f.previewKey })
         .from(f)
         .where(
           sql`${f.lastUsedAt} < (now() at time zone 'utc') - interval '7 days'
@@ -26,6 +26,7 @@ export function createFileSweep({ db, storage }: { db: Db; storage: FileStorage 
       if (!orphans.length) break;
       for (const o of orphans) {
         await storage.delete(o.storageKey);
+        if (o.previewKey) await storage.delete(o.previewKey);
         await db.delete(f).where(sql`${f.id} = ${o.id}`);
         deleted++;
       }

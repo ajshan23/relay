@@ -13,6 +13,9 @@ const nextConfig: NextConfig = {
       { source: "/api/:path*", destination: `${api}/api/:path*` },
     ];
   },
+  // Uploads pass through the /api rewrite: allow the biggest file a channel takes (WhatsApp documents
+  // are up to 100 MB). The API checks each kind's own limit.
+  experimental: { proxyClientMaxBodySize: "110mb" },
   // Next's development badge covers the account menu, panel close buttons or the ask bar in every corner.
   devIndicators: false,
   cacheComponents: true,

@@ -261,11 +261,12 @@ function Body({
       return ready ? (
         <ImageBubble
           {...common}
-          src={ready}
+          // The chat shows a small preview; clicking opens the full photo.
+          src={`${ready}?preview=1`}
           alt={caption ?? "Photo"}
           caption={caption}
           quote={quote}
-          onMediaClick={(_i, src) => window.open(src, "_blank", "noopener")}
+          onMediaClick={() => window.open(ready, "_blank", "noopener")}
         />
       ) : (
         pendingMedia("Photo")
@@ -274,7 +275,15 @@ function Body({
       return ready ? <StickerBubble {...common} src={ready} alt="Sticker" /> : pendingMedia("Sticker");
     case "video":
       return ready ? (
-        <VideoBubble {...common} src={ready} caption={caption} quote={quote} />
+        <VideoBubble
+          {...common}
+          src={ready}
+          // A still frame until play (when one could be made; otherwise the full photo endpoint
+          // returns the video itself, which a poster can't show, so only pass it when known).
+          poster={file?.hasPreview ? `${ready}?preview=1` : undefined}
+          caption={caption}
+          quote={quote}
+        />
       ) : (
         pendingMedia("Video")
       );
