@@ -205,7 +205,15 @@ function SideGroup({ label, children }: { label: string; children: ReactNode }) 
 
 /* ------------------------------------------------------------ main menu */
 
-function FullNav({ onCollapse, onOpenPalette }: { onCollapse: () => void; onOpenPalette: () => void }) {
+function FullNav({
+  onCollapse,
+  onOpenPalette,
+  onOpenAsk,
+}: {
+  onCollapse: () => void;
+  onOpenPalette: () => void;
+  onOpenAsk: () => void;
+}) {
   const pathname = usePathname();
   const { me } = useMe();
   const settingsActive = isActive(pathname, "/settings");
@@ -246,9 +254,10 @@ function FullNav({ onCollapse, onOpenPalette }: { onCollapse: () => void; onOpen
       <nav aria-label="Main" className="flex flex-col">
         <div className="flex flex-col gap-px">
           {mainOrder.map(link)}
-          <button type="button" onClick={onOpenPalette} className={sideItem(false)}>
+          <button type="button" onClick={onOpenAsk} className={sideItem(false)}>
             <Sparkles className="size-3.5 shrink-0" />
             <span className="flex-1">Ask Relay</span>
+            <kbd className="font-sans text-[11px] text-nav-muted">⌘J</kbd>
           </button>
         </div>
         <SideGroup label="Workspace">{workspaceOrder.map(link)}</SideGroup>
@@ -502,7 +511,7 @@ function SubMenuHandle({ onOpen }: { onOpen: () => void }) {
 
 /* ------------------------------------------------------------ sidebar */
 
-export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
+export function Sidebar({ onOpenPalette, onOpenAsk }: { onOpenPalette: () => void; onOpenAsk: () => void }) {
   const pathname = usePathname();
   const section = sectionForPath(pathname);
   const inSettings = isActive(pathname, "/settings");
@@ -517,7 +526,7 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
       {collapsed ? (
         <IconRail onExpand={() => setCollapsed(false)} onOpenPalette={onOpenPalette} />
       ) : (
-        <FullNav onCollapse={() => setCollapsed(true)} onOpenPalette={onOpenPalette} />
+        <FullNav onCollapse={() => setCollapsed(true)} onOpenPalette={onOpenPalette} onOpenAsk={onOpenAsk} />
       )}
       {section || inSettings ? (
         !subOpen ? (
