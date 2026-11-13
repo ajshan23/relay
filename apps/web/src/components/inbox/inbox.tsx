@@ -8,6 +8,8 @@ import { useBranch } from "@/components/shell/branch-context";
 import { cn } from "@/lib/utils";
 import { ConversationList } from "./conversation-list";
 import type { ListFilter } from "./queries";
+import { useConversations } from "./queries";
+import { InboxShortcuts } from "./shortcuts";
 import { Thread } from "./thread";
 import type { InboxView } from "./types";
 
@@ -47,8 +49,15 @@ export function Inbox() {
     [params, pathname, router],
   );
 
+  const list = useConversations(filter);
+  const ids = useMemo(
+    () => list.data?.pages.flatMap((p) => p.conversations.map((c) => c.id)) ?? [],
+    [list.data],
+  );
+
   return (
     <div className="flex h-full min-h-0">
+      <InboxShortcuts ids={ids} selected={selected} onSelect={(id) => setParams({ c: id })} />
       <ConversationList
         filter={filter}
         selectedId={selected}

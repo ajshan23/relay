@@ -64,6 +64,16 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   /** "@Name" typed in a note → that teammate's id, turned into "@[Name](id)" when sent. */
   const mentioned = useRef(new Map<string, string>());
   const [token, setToken] = useState<{ query: string; start: number; end: number } | null>(null);
+  // The N key switches to a note (shortcuts.tsx).
+  useEffect(() => {
+    const onKey = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== "note" || !detail.canWork) return;
+      setMode("note");
+      requestAnimationFrame(() => input.current?.focus());
+    };
+    window.addEventListener("relay:inbox-shortcut", onKey);
+    return () => window.removeEventListener("relay:inbox-shortcut", onKey);
+  }, [detail.canWork]);
   const [active, setActive] = useState(0);
   const [pending, setPending] = useState<Pending | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);

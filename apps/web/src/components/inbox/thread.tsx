@@ -395,6 +395,16 @@ function ThreadHeader({
   const [menuOpen, setMenuOpen] = useState(false);
   const people = useAssignees(d?.conversation.id ?? "", !!d && menuOpen);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const changeRef = useRef<(status: "open" | "closed") => void>(() => undefined);
+  useEffect(() => {
+    const onKey = (e: Event) => {
+      const action = (e as CustomEvent<string>).detail;
+      if (action === "assign") setMenuOpen(true);
+      if (action === "close") changeRef.current(d?.conversation.status === "open" ? "closed" : "open");
+    };
+    window.addEventListener("relay:inbox-shortcut", onKey);
+    return () => window.removeEventListener("relay:inbox-shortcut", onKey);
+  }, [d?.conversation.status]);
 
   if (!d)
     return (
@@ -425,6 +435,10 @@ function ThreadHeader({
           description: err instanceof ApiError ? err.message : "Check your connection.",
         }),
     });
+  changeRef.current = (status) =>
+    d?.canWork
+      ? change({ status }, status === "closed" ? "Conversation closed" : "Conversation reopened")
+      : undefined;
 
   return (
     <header className="flex h-16 shrink-0 items-center gap-3 border-b bg-card px-3 sm:px-4">
