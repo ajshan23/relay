@@ -1,17 +1,35 @@
 "use client";
 
 import { Icon } from "@relay/ui/components/icon";
-import { TextArea } from "@relay/ui/components/text-input";
+import { Bubble, BubbleContent } from "@relay/ui/ui/bubble";
 import { Button } from "@relay/ui/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@relay/ui/ui/empty";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupText,
+  InputGroupTextarea,
+} from "@relay/ui/ui/input-group";
+import { Message, MessageContent } from "@relay/ui/ui/message";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@relay/ui/ui/message-scroller";
 import { Popover, PopoverAnchor, PopoverContent } from "@relay/ui/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@relay/ui/ui/tooltip";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const suggestions = [
-  "Draft a campaign for customers we haven't seen in 6 months",
-  "Show this week's conversations by branch",
-  "Make Mira's replies shorter and friendlier",
+  "Draft a win-back campaign",
+  "This week's chats by branch",
+  "Make Mira's replies shorter",
+  "Who's waiting longest?",
 ];
 
 type Turn = { id: number; text: string };
@@ -25,6 +43,7 @@ export function AskRelay({ open, onOpenChange }: { open: boolean; onOpenChange: 
   const [asked, setAsked] = useState<Turn[]>([]);
   const [text, setText] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
+  const form = useRef<HTMLFormElement>(null);
 
   // ⌘J / Ctrl+J opens and closes it from anywhere.
   useEffect(() => {
@@ -48,7 +67,7 @@ export function AskRelay({ open, onOpenChange }: { open: boolean; onOpenChange: 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      ask(text);
+      form.current?.requestSubmit();
     }
   }
 
@@ -108,61 +127,96 @@ export function AskRelay({ open, onOpenChange }: { open: boolean; onOpenChange: 
           </button>
         </div>
 
-        <div className="scroll-thin flex max-h-72 min-h-36 flex-col gap-2 overflow-y-auto px-4 py-3">
+        {/* shadcn suggestion pattern: your words in a muted bubble, Relay's reply as plain text. */}
+        <div className="h-72">
           {asked.length ? (
-            asked.map((t) => (
-              <div key={t.id} className="flex flex-col gap-1.5">
-                <p className="ml-auto max-w-[85%] rounded-lg rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
-                  {t.text}
-                </p>
-                <p className="max-w-[90%] rounded-lg rounded-bl-sm bg-muted px-3 py-2 text-sm text-muted-foreground">
-                  Got it. The assistant arrives with the AI agent; your request is kept here until then.
-                </p>
-              </div>
-            ))
+            <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+              <MessageScroller>
+                <MessageScrollerViewport>
+                  <MessageScrollerContent className="gap-4 px-4 py-3 text-sm">
+                    {asked.map((t) => (
+                      <MessageScrollerItem
+                        key={t.id}
+                        messageId={String(t.id)}
+                        className="flex flex-col gap-3"
+                      >
+                        <Message align="end">
+                          <MessageContent>
+                            <Bubble align="end" variant="muted">
+                              <BubbleContent>{t.text}</BubbleContent>
+                            </Bubble>
+                          </MessageContent>
+                        </Message>
+                        <Message>
+                          <MessageContent>
+                            <p className="text-muted-foreground">
+                              Got it. The assistant arrives with the AI agent; your request is kept here until
+                              then.
+                            </p>
+                          </MessageContent>
+                        </Message>
+                      </MessageScrollerItem>
+                    ))}
+                  </MessageScrollerContent>
+                </MessageScrollerViewport>
+                <MessageScrollerButton className="bottom-2" />
+              </MessageScroller>
+            </MessageScrollerProvider>
           ) : (
-            <div className="flex flex-col gap-2">
-              <p className="text-xs font-medium text-muted-foreground">Try asking</p>
-              {suggestions.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => ask(s)}
-                  className="rounded-md border px-3 py-2 text-left text-[13px] outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
+            <Empty className="h-full border-0 p-6">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Icon name="sparkles" />
+                </EmptyMedia>
+                <EmptyTitle className="text-base">What do you need?</EmptyTitle>
+                <EmptyDescription>
+                  Ask for a campaign, a report or a change to Mira in plain words. Pick a suggestion to start.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
         </div>
 
-        <div className="border-t p-3">
-          <div className="flex items-end gap-2 rounded-lg border bg-background px-2 py-1.5 focus-within:border-primary">
-            <label htmlFor="ask-relay" className="sr-only">
-              Ask Relay
-            </label>
-            <TextArea
-              id="ask-relay"
-              ref={field}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={onKeyDown}
-              minRows={1}
-              maxRows={5}
-              placeholder="Tell Relay what you need"
-              className="border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0 dark:bg-transparent"
-            />
-            <Button
-              size="icon-sm"
-              aria-label="Send"
-              className="shrink-0 rounded-full"
-              onClick={() => ask(text)}
-              disabled={!text.trim()}
-            >
-              <Icon name="arrowUp" />
-            </Button>
+        <div className="flex flex-col gap-2 border-t p-3">
+          <div className="scroll-thin flex gap-2 overflow-x-auto pb-0.5">
+            {suggestions.map((s) => (
+              <Button key={s} variant="outline" size="sm" className="shrink-0" onClick={() => ask(s)}>
+                {s}
+              </Button>
+            ))}
           </div>
+          <form
+            ref={form}
+            onSubmit={(e) => {
+              e.preventDefault();
+              ask(text);
+            }}
+          >
+            <InputGroup>
+              <InputGroupTextarea
+                ref={field}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="Tell Relay what you need"
+                aria-label="Ask Relay"
+                className="max-h-32 min-h-11 p-3"
+              />
+              <InputGroupAddon align="block-end">
+                <InputGroupText className="text-xs">Enter to send</InputGroupText>
+                <InputGroupButton
+                  type="submit"
+                  size="icon-sm"
+                  variant="default"
+                  className="ml-auto rounded-full"
+                  disabled={!text.trim()}
+                  aria-label="Send"
+                >
+                  <Icon name="arrowUp" />
+                </InputGroupButton>
+              </InputGroupAddon>
+            </InputGroup>
+          </form>
         </div>
       </PopoverContent>
     </Popover>
