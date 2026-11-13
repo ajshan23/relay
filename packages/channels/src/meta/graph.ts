@@ -24,9 +24,9 @@ export function createGraphClient(config: GraphConfig) {
   const doFetch = config.fetch ?? fetch;
   const timeoutMs = config.timeoutMs ?? 15_000;
 
-  async function call(input: string, init: RequestInit): Promise<Response> {
+  async function call(input: string, init: RequestInit, wait = timeoutMs): Promise<Response> {
     try {
-      return await doFetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      return await doFetch(input, { ...init, signal: AbortSignal.timeout(wait) });
     } catch (err) {
       const code = (err as { cause?: { code?: string } }).cause?.code;
       if (code && notSentCodes.has(code)) {
@@ -41,23 +41,32 @@ export function createGraphClient(config: GraphConfig) {
     path: string,
     token: string,
     body?: unknown,
+    /** Some calls are slow at Meta (creating a template can take 20 s or more). */
+    opts?: { timeoutMs?: number },
   ): Promise<T> {
     const url = `${config.baseUrl}/${config.version}/${path.replace(/^\//, "")}`;
-    const res = await call(url, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        // FormData (file uploads) sets its own multipart content type.
-        ...(body === undefined || body instanceof FormData ? {} : { "content-type": "application/json" }),
+    const res = await call(
+      url,
+      {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          // FormData (file uploads) sets its own multipart content type.
+          ...(body === undefined || body instanceof FormData ? {} : { "content-type": "application/json" }),
+        },
+        body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
       },
-      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
-    });
+      opts?.timeoutMs,
+    );
     const text = await res.text();
     const json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     if (!res.ok) {
       const error = (json.error ?? {}) as {
         message?: string;
         code?: number;
+        error_subcode?: number;
+        error_user_title?: string;
+        error_user_msg?: string;
         error_data?: Record<string, unknown>;
       };
       throw new GraphError(
@@ -65,7 +74,13 @@ export function createGraphClient(config: GraphConfig) {
         classifyGraphError(error.code, res.status),
         res.status,
         error.code,
-        error.error_data,
+        // Meta's own explanation for people (error_user_msg) and its exact reason (error_subcode).
+        {
+          ...error.error_data,
+          ...(error.error_subcode !== undefined ? { error_subcode: error.error_subcode } : {}),
+          ...(error.error_user_title ? { error_user_title: error.error_user_title } : {}),
+          ...(error.error_user_msg ? { error_user_msg: error.error_user_msg } : {}),
+        },
       );
     }
     return json as T;

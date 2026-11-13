@@ -6,6 +6,7 @@ import {
   type TemplatePurpose,
   type TemplateStatus,
 } from "@relay/core/templates";
+import { GraphError, GraphUncertainError } from "../meta/errors";
 import type { GraphClient } from "../meta/graph";
 import type { OutboundMessage } from "../types";
 
@@ -280,14 +281,43 @@ export async function submitWhatsAppTemplate(
   headerFile?: { bytes: Uint8Array; mimeType: string; fileName: string } | null,
 ) {
   const handle = headerFile ? await graph.resumableUpload(waba.accessToken, headerFile) : null;
-  const res = await graph.request<{ id?: string; status?: string }>(
-    "POST",
-    `${waba.wabaId}/message_templates`,
-    waba.accessToken,
-    buildWhatsAppTemplate(t, handle),
-  );
-  if (!res.id) throw new Error("WhatsApp accepted the template but returned no id");
-  return { externalId: res.id, status: whatsappTemplateStatus(res.status) };
+  const body = buildWhatsAppTemplate(t, handle);
+  try {
+    const res = await graph.request<{ id?: string; status?: string }>(
+      "POST",
+      `${waba.wabaId}/message_templates`,
+      waba.accessToken,
+      body,
+      { timeoutMs: 60_000 },
+    );
+    if (!res.id) throw new Error("WhatsApp accepted the template but returned no id");
+    return { externalId: res.id, status: whatsappTemplateStatus(res.status) };
+  } catch (err) {
+    // The answer got lost (Meta can be slow to create templates), or a retry found the name taken
+    // because the first try did get through: find it on the business account instead of failing.
+    const lost = err instanceof GraphUncertainError;
+    const exists = err instanceof GraphError && err.details?.error_subcode === TEMPLATE_EXISTS;
+    if (!lost && !exists) throw err;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const found = await findWhatsAppTemplate(graph, waba, body.name, body.language);
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    throw err;
+  }
+}
+
+/** Meta's error subcode for "a template with this name and language already exists". */
+const TEMPLATE_EXISTS = 2388024;
+
+/** A template on the business account by name and language, with its review state. */
+export async function findWhatsAppTemplate(graph: GraphClient, waba: Waba, name: string, language: string) {
+  const q = new URLSearchParams({ name, fields: "id,name,language,status", limit: "50" });
+  const res = await graph.request<{
+    data?: { id: string; name: string; language: string; status?: string }[];
+  }>("GET", `${waba.wabaId}/message_templates?${q}`, waba.accessToken);
+  const hit = (res.data ?? []).find((x) => x.name === name && x.language === language);
+  return hit ? { externalId: hit.id, status: whatsappTemplateStatus(hit.status) } : null;
 }
 
 /** Editing sends the new version for review. Only the content and purpose can change, not the name. */

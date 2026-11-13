@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
-import { createDb } from "@relay/db";
+import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
@@ -72,12 +72,42 @@ void maintenanceQueue
     { name: "sweep-files", opts: { removeOnComplete: 10, removeOnFail: 50 } },
   )
   .catch((err) => console.error("maintenance scheduler", err));
+// Template reviews: Meta tells us by webhook, but a missed one (a changed tunnel, an outage) must not
+// leave a template "in review" forever, so pending ones are re-checked every 10 minutes.
+void maintenanceQueue
+  .upsertJobScheduler(
+    "check-template-reviews",
+    { every: 10 * 60_000 },
+    { name: "check-template-reviews", opts: { removeOnComplete: 10, removeOnFail: 50 } },
+  )
+  .catch((err) => console.error("maintenance scheduler", err));
+const templatesQueue = new Queue(queues.templates, { connection });
+async function checkTemplateReviews() {
+  const rows = await db
+    .selectDistinct({ id: schema.templateChannel.channelAccountId })
+    .from(schema.templateChannel)
+    .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.templateChannel.channelAccountId))
+    .where(and(eq(schema.templateChannel.status, "in_review"), eq(schema.channelAccount.status, "active")));
+  for (const r of rows)
+    await templatesQueue.add(
+      "sync",
+      { action: "sync", channelAccountId: r.id },
+      {
+        jobId: `sync_${r.id}_${Math.floor(Date.now() / 600_000)}`,
+        attempts: 2,
+        removeOnComplete: true,
+        removeOnFail: 100,
+      },
+    );
+  return { accounts: rows.length };
+}
 const wakeSnoozed = createSnoozeWaker({ db, redis: connection });
 const sweepFiles = createFileSweep({ db, storage: fileStorage() });
 const maintenance = new Worker(
   queues.maintenance,
   async (job) => {
     if (job.name === "wake-snoozed") return wakeSnoozed();
+    if (job.name === "check-template-reviews") return checkTemplateReviews();
     if (job.name === "sweep-files") return sweepFiles();
   },
   { connection, concurrency: 1 },
@@ -192,6 +222,7 @@ async function shutdown() {
     previews.close(),
     previewQueue.close(),
     maintenanceQueue.close(),
+    templatesQueue.close(),
     mediaQueue.close(),
   ]);
   connection.disconnect();
