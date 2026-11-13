@@ -9,6 +9,7 @@ const tabs = [
   { href: "/settings/team", label: "Team" },
   { href: "/settings/channels", label: "Channels" },
   { href: "/settings/templates", label: "Templates" },
+  { href: "/settings/quick-replies", label: "Quick replies" },
 ] as const;
 
 /**

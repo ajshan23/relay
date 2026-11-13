@@ -1,5 +1,6 @@
 "use client";
 
+import { fillQuickReply } from "@relay/core/quick-replies";
 import { Segmented } from "@relay/ui/components/choice";
 import { Icon } from "@relay/ui/components/icon";
 import { TextArea } from "@relay/ui/components/text-input";
@@ -14,7 +15,9 @@ import {
 import { Button } from "@relay/ui/ui/button";
 import { Spinner } from "@relay/ui/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@relay/ui/ui/tooltip";
+import Link from "next/link";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useQuickReplies } from "@/components/quick-replies/queries";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
@@ -57,6 +60,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const note = mode === "note";
   const addNote = useAddNote(id);
   const team = useAssignees(id, note && detail.canWork);
+  const quick = useQuickReplies(detail.canWork);
   /** "@Name" typed in a note → that teammate's id, turned into "@[Name](id)" when sent. */
   const mentioned = useRef(new Map<string, string>());
   const [token, setToken] = useState<{ query: string; start: number; end: number } | null>(null);
@@ -88,22 +92,35 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
               : "Replies aren't open for this conversation."
             : null;
 
-  // Teammates to @mention while writing a note.
-  const suggestions: Suggestion[] =
-    note && token
+  // Teammates to @mention while writing a note; quick replies ("/") while writing a reply.
+  const suggestions: Suggestion[] = !token
+    ? []
+    : note
       ? (team.data ?? [])
           .filter((u) => u.id !== me.user.id && (u.name ?? "").toLowerCase().includes(token.query))
           .slice(0, 8)
           .map((u) => ({ id: u.id, label: u.name ?? "Teammate" }))
-      : [];
-  const suggesting = note && !!token;
+      : (quick.data ?? [])
+          .filter((r) => r.shortcut.includes(token.query) || r.title.toLowerCase().includes(token.query))
+          .slice(0, 8)
+          .map((r) => ({ id: r.id, label: `/${r.shortcut}`, hint: r.title, detail: r.body }));
+  const suggesting = !!token;
 
-  /** Replaces the "@que" being typed with the picked teammate's name. */
+  /** Replaces the "@que" or "/que" being typed with the teammate's name or the quick reply's text. */
   function pick(item: Suggestion) {
     if (!token) return;
-    const insert = `@${item.label} `;
+    const reply = note ? null : quick.data?.find((r) => r.id === item.id);
+    const name = detail.conversation.kind === "direct" ? detail.conversation.title : null;
+    const insert = reply
+      ? fillQuickReply(reply.body, {
+          name,
+          first_name: name?.split(/\s+/)[0] ?? null,
+          agent_name: me.user.name,
+          business_name: me.organization?.name ?? null,
+        })
+      : `@${item.label} `;
     const next = text.slice(0, token.start) + insert + text.slice(token.end);
-    mentioned.current.set(item.label, item.id);
+    if (!reply) mentioned.current.set(item.label, item.id);
     setText(next);
     setToken(null);
     const caret = token.start + insert.length;
@@ -287,12 +304,29 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
     <div className="relative flex flex-col gap-1.5">
       {suggesting ? (
         <SuggestionList
-          title="Mention a teammate"
+          title={note ? "Mention a teammate" : "Quick replies"}
           items={suggestions}
           active={Math.min(active, Math.max(0, suggestions.length - 1))}
           onPick={pick}
           onHover={setActive}
-          empty={team.isPending ? "Loading…" : "No teammate by that name works on this branch."}
+          empty={
+            note
+              ? team.isPending
+                ? "Loading…"
+                : "No teammate by that name works on this branch."
+              : quick.isPending
+                ? "Loading…"
+                : quick.data?.length
+                  ? "No quick reply matches."
+                  : "No quick replies yet."
+          }
+          footer={
+            note ? undefined : (
+              <Link href="/settings/quick-replies" className="text-primary hover:underline">
+                Manage quick replies
+              </Link>
+            )
+          }
         />
       ) : null}
       <div
@@ -364,10 +398,10 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           value={text}
           onChange={(e) => {
             setText(e.target.value);
+            const caret = e.target.selectionStart ?? e.target.value.length;
+            setToken(tokenAtCaret(e.target.value, caret, note ? "@" : "/"));
+            setActive(0);
             if (note) {
-              const t = tokenAtCaret(e.target.value, e.target.selectionStart ?? e.target.value.length, "@");
-              setToken(t);
-              setActive(0);
               if (e.target.value.trim()) reportTyping(id);
             } else onTyping(e.target.value);
           }}
@@ -488,7 +522,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
       <p className="hidden px-1 text-[11px] text-muted-foreground sm:block">
         {note
           ? "Enter to add the note · Shift + Enter for a new line · @ to mention a teammate"
-          : "Enter to send · Shift + Enter for a new line · drop a file to attach it"}
+          : "Enter to send · Shift + Enter for a new line · / for quick replies · drop a file to attach it"}
       </p>
       {pickerDialog}
     </div>

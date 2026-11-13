@@ -456,6 +456,7 @@ const settingsGroups = [
     items: [
       { label: "Channels", href: "/settings/channels" },
       { label: "Templates", href: "/settings/templates" },
+      { label: "Quick replies", href: "/settings/quick-replies" },
     ],
   },
 ];

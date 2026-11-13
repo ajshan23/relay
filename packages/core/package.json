@@ -8,6 +8,7 @@
     "./templates": "./src/templates.ts",
     "./template-library": "./src/template-library.ts",
     "./contacts": "./src/contacts.ts",
+    "./quick-replies": "./src/quick-replies.ts",
     "./sheets": "./src/sheets.ts"
   },
   "scripts": {
