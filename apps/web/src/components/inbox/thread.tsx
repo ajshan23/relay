@@ -26,6 +26,7 @@ import {
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { Spinner } from "@relay/ui/ui/spinner";
 import { type DragEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { DateSeparator } from "@/components/ui/whatsapp/date-separator";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { cn } from "@/lib/utils";
@@ -118,7 +119,7 @@ export function Thread({ id, onBack, className }: Props) {
     >
       <ThreadHeader detail={d} onBack={onBack} onDetails={() => setDetails(true)} />
 
-      <div className="relative min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1 bg-wa-conversation-bg">
         {messages.isPending || !d ? (
           <ThreadSkeleton />
         ) : (
@@ -242,12 +243,8 @@ function Messages({
     const last = !sameRun(m, next);
     return (
       <Fragment key={m.id}>
-        {newDay ? (
-          <Marker variant="separator" className="py-3 text-xs">
-            <MarkerContent>{dayLabel(m.sentAt)}</MarkerContent>
-          </Marker>
-        ) : null}
-        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-3" : "pt-0.5")}>
+        {newDay ? <DateSeparator label={dayLabel(m.sentAt)} className="py-3" /> : null}
+        <MessageScrollerItem messageId={m.id} className={cn(first ? "pt-2" : "pt-0")}>
           <MessageBubble
             message={m}
             first={first}

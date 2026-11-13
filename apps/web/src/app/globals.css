@@ -1,2 +1,4 @@
 /* All tokens and base styles live in the shared UI package. */
 @import "../../../../packages/ui/src/styles/globals.css";
+/* Chat bubbles (wa-ui): their colour tokens and light/dark values. */
+@import "../components/ui/whatsapp/styles/whatsapp.css";
