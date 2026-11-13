@@ -5,11 +5,21 @@
  *        group:text, group:status:<sent|delivered|read|failed>, group:created, group:failed, group:join, group:leave,
  *        group:removed, group:join-request, group:join-withdrawn, group:subject, group:suspend, group:restore, group:delete
  * options: --text "hello"  --id wamid.custom  --our-id msg_...  --bad-signature  --twice
+ *          --phone-id <fake number id>  send to another fake number (see dev:channel)
+ *          direct kinds also take --person <BSUID> --phone <digits> --name "Name" for another customer
  *          --group <group id>  --request-id <id>  --person <BSUID>  --phone <digits>  --name "Name"  --subject "Text"
  */
 import { signMetaPayload } from "@relay/channels";
 import { env } from "@relay/core";
-import { envelope, incoming, messages, status } from "../../../packages/channels/test/fixtures";
+import {
+  CUSTOMER,
+  CUSTOMER_BSUID,
+  envelope,
+  incoming,
+  messages,
+  PHONE_ID,
+  status,
+} from "../../../packages/channels/test/fixtures";
 
 const config = env();
 const args = process.argv.slice(2);
@@ -120,7 +130,17 @@ if (kind === "group:text") {
   });
 }
 
-const body = JSON.stringify(payload);
+// Another fake number or another customer: swap the fixture's ids in the finished payload.
+let body = JSON.stringify(payload);
+const swap = (from: string, to: string | undefined) => {
+  if (to) body = body.split(from).join(to);
+};
+swap(PHONE_ID, opt("phone-id"));
+if (!kind.startsWith("group:")) {
+  swap(CUSTOMER_BSUID, opt("person"));
+  swap(`"${CUSTOMER}"`, opt("phone") ? `"${opt("phone")}"` : undefined);
+  swap('"Hana Test"', opt("name") ? JSON.stringify(opt("name")) : undefined);
+}
 const secret = config.META_APP_SECRET;
 if (!secret) throw new Error("Set META_APP_SECRET in .env first");
 const signature = flag("bad-signature")
