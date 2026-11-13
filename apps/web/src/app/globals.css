@@ -2,3 +2,9 @@
 @import "../../../../packages/ui/src/styles/globals.css";
 /* Chat bubbles (wa-ui): their colour tokens and light/dark values. */
 @import "../components/ui/whatsapp/styles/whatsapp.css";
+
+/* Customer bubbles are white in wa-ui (made for a beige backdrop); on Relay's background a faint
+   outline keeps their edges visible. Scoped to the inbox's messages. */
+[data-message-id] .bg-wa-bubble-incoming {
+  box-shadow: 0 0 0 1px var(--border);
+}
