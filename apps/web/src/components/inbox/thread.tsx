@@ -458,7 +458,8 @@ function NewMessagesButton({ list }: { list: Message[] }) {
     ? list.filter((m) => m.direction === "inbound" && new Date(m.sentAt).getTime() > seenUpTo).length
     : 0;
   return (
-    <MessageScrollerButton className="bottom-3 overflow-visible">
+    // Bottom right, like WhatsApp, with a shadow so it stands out on a dark thread.
+    <MessageScrollerButton className="bottom-3 left-auto right-4 translate-x-0 overflow-visible rounded-full border shadow-md rtl:left-4 rtl:right-auto rtl:translate-x-0 sm:right-6">
       <Icon name="arrowDown" />
       <span className="sr-only">
         {unread
