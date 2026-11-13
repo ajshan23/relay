@@ -7,6 +7,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@relay/ui/ui/dropdown-menu";
@@ -119,6 +121,8 @@ function WorkspaceMark() {
 /** The signed-in person: opens a menu with their account, settings and sign out. */
 function AccountMenu({ side, showName }: { side: "top" | "right"; showName: boolean }) {
   const { me } = useMe();
+  const { branches, branch } = useBranch();
+  const switchBranch = useSwitchBranch();
   const router = useRouter();
   const leave = async () => {
     await signOut();
@@ -139,7 +143,10 @@ function AccountMenu({ side, showName }: { side: "top" | "right"; showName: bool
             {initials(me.user.name)}
           </span>
           {showName ? (
-            <span className="min-w-0 flex-1 truncate text-left text-xs text-nav-muted">{me.user.name}</span>
+            <span className="flex min-w-0 flex-1 flex-col text-left leading-tight">
+              <span className="truncate text-xs text-nav-foreground">{me.user.name}</span>
+              {branch.id ? <span className="truncate text-[11px] text-nav-muted">{branch.name}</span> : null}
+            </span>
           ) : null}
         </button>
       </DropdownMenuTrigger>
@@ -149,6 +156,24 @@ function AccountMenu({ side, showName }: { side: "top" | "right"; showName: bool
           <span className="truncate text-xs text-muted-foreground">{me.user.email}</span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {branches.length > 1 ? (
+          <>
+            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+              Branch
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={branch.id} onValueChange={switchBranch}>
+              {branches.map((b, i) => (
+                <DropdownMenuRadioItem key={b.id} value={b.id}>
+                  <span
+                    className={cn("size-2.5 shrink-0 rounded-sm", branchSwatches[i % branchSwatches.length])}
+                  />
+                  <span className="truncate">{b.name}</span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuItem asChild>
           <Link href="/settings/branches">
             <Settings className="size-3.5" />
@@ -368,12 +393,12 @@ function SubTopicLinksFromUrl({ section }: { section: Section }) {
   return <SubTopicLinks section={section} current={currentSubTopic(section, view)?.view ?? null} />;
 }
 
-function BranchList() {
-  const { branches, branch, setBranch } = useBranch();
+/** Switches branch. Drops what belonged to the old one from the address: the open chat, a channel, a list or saved view. */
+function useSwitchBranch() {
+  const { branch, setBranch } = useBranch();
   const pathname = usePathname();
   const router = useRouter();
-  /** Switching branch drops what belonged to the old one: the open chat, a channel, a list or saved view. */
-  const switchTo = (id: string) => {
+  return (id: string) => {
     if (id === branch.id) return;
     setBranch(id);
     if (pathname.startsWith("/conversations")) {
@@ -387,25 +412,6 @@ function BranchList() {
       });
     }
   };
-  // A single branch needs no switcher.
-  if (branches.length < 2) return null;
-  return (
-    <div className="mt-4 flex flex-col gap-px">
-      <p className="mb-0.5 px-2 text-xs text-nav-muted">Branch</p>
-      {branches.map((b, i) => (
-        <button
-          key={b.id}
-          type="button"
-          aria-pressed={branch.id === b.id}
-          onClick={() => switchTo(b.id)}
-          className={sideItem(branch.id === b.id)}
-        >
-          <span className={cn("size-3 shrink-0 rounded-sm", branchSwatches[i % branchSwatches.length])} />
-          <span className="truncate">{b.name}</span>
-        </button>
-      ))}
-    </div>
-  );
 }
 
 /** The second column: a title with a close button, then the section's own links. */
@@ -500,7 +506,6 @@ function SubMenu({ section, onClose }: { section: Section; onClose: () => void }
           )}
         </Suspense>
       </nav>
-      <BranchList />
     </div>
   );
 }
