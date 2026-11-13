@@ -29,8 +29,12 @@ const schema = z.object({
   META_GRAPH_TIMEOUT_MS: z.coerce.number().default(15_000),
   // 32 bytes, base64 (openssl rand -base64 32). Encrypts channel access tokens in the database.
   CHANNEL_SECRET_KEY: z.string().optional(),
-  // Where downloaded media is kept until object storage (S3/R2) is added.
+  // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),
+  /** Files go to S3 when a bucket is set (see storage.ts); "local" forces the disk. */
+  STORAGE_DRIVER: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["s3", "local"]).optional()),
+  S3_BUCKET: z.string().optional(),
+  S3_REGION: z.string().default("ap-south-1"),
 });
 
 export type Env = z.infer<typeof schema>;

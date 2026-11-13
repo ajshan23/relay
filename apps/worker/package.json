@@ -10,16 +10,19 @@
     "dev:channel": "tsx --env-file=../../.env scripts/dev-channel.ts",
     "simulate": "tsx --env-file=../../.env scripts/simulate-meta-webhook.ts",
     "replay": "tsx --env-file=../../.env scripts/replay-webhooks.ts",
-    "fake-graph": "tsx --env-file=../../.env scripts/fake-graph.ts"
+    "fake-graph": "tsx --env-file=../../.env scripts/fake-graph.ts",
+    "s3:setup": "tsx --env-file=../../.env src/scripts/s3-setup.ts",
+    "media:migrate": "tsx --env-file=../../.env src/scripts/migrate-media.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1169.0",
+    "@hono/node-server": "^2.1.7",
+    "@relay/channels": "workspace:*",
     "@relay/core": "workspace:*",
     "@relay/db": "workspace:*",
-    "bullmq": "^6.7.5",
-    "ioredis": "^6.0.0",
     "@relay/email": "workspace:*",
-    "@relay/channels": "workspace:*",
+    "bullmq": "^6.7.5",
     "hono": "^4.13.18",
-    "@hono/node-server": "^2.1.7"
+    "ioredis": "^6.0.0"
   }
 }

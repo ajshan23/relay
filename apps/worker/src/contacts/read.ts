@@ -1,4 +1,4 @@
-import { env, localFileStorage } from "@relay/core";
+import { fileStorage } from "@relay/core";
 import { type ContactFieldDef, summarizeSheet } from "@relay/core/contacts";
 import { readWorkbook } from "@relay/core/sheets";
 import { and, type createDb, eq, isNull, schema } from "@relay/db";
@@ -14,7 +14,7 @@ type Db = ReturnType<typeof createDb>["db"];
 export type ReadJob = { importId: string };
 
 export function createReadProcessor({ db }: { db: Db }) {
-  const storage = localFileStorage(env().MEDIA_DIR);
+  const storage = fileStorage();
   const im = schema.contactImport;
 
   return async (job: Job<ReadJob>) => {

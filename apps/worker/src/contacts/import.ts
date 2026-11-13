@@ -1,4 +1,4 @@
-import { env, localFileStorage, newId } from "@relay/core";
+import { fileStorage, newId } from "@relay/core";
 import {
   type ContactFieldDef,
   coerceFieldValue,
@@ -28,7 +28,7 @@ const MAX_ERRORS = 1000;
 class RowError extends Error {}
 
 export function createImportProcessor({ db }: { db: Db }) {
-  const storage = localFileStorage(env().MEDIA_DIR);
+  const storage = fileStorage();
   const im = schema.contactImport;
   const c = schema.contact;
 

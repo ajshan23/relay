@@ -371,7 +371,12 @@ export async function exportContacts(branch: string, body: unknown) {
     const s = await api<{ status: "running" | "done" | "failed"; rows: number | null }>(status);
     if (s.status === "failed") throw new Error("The export didn't work. Try again.");
     if (s.status === "done") {
-      await download(inBranch(`/contacts/exports/${exportId}/file`, branch));
+      // A plain navigation, not fetch: the API may answer with a redirect to the storage bucket,
+      // which the browser follows and saves as a download (fetch would need CORS on the bucket).
+      const link = document.createElement("a");
+      link.href = `/api${inBranch(`/contacts/exports/${exportId}/file`, branch)}`;
+      link.rel = "noopener";
+      link.click();
       return s.rows ?? 0;
     }
   }

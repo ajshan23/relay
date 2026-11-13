@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { localFileStorage, newId } from "@relay/core";
-import { and, eq, schema, sql } from "@relay/db";
+import { fileStorage, newId } from "@relay/core";
+import { and, eq, schema, sql, storeFile } from "@relay/db";
 import { Hono } from "hono";
 import { channels } from "../../channels";
 import type { AppContext } from "../../context";
@@ -33,7 +33,7 @@ const extensions: Record<string, string> = {
 const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024) || 1} MB`;
 
 export function fileRoutes(ctx: AppContext) {
-  const storage = localFileStorage(ctx.config.MEDIA_DIR);
+  const storage = fileStorage();
   const app = new Hono<AccessEnv>();
   app.use(requireSession, requireOrg(ctx));
 
@@ -92,10 +92,14 @@ export function fileRoutes(ctx: AppContext) {
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     const id = newId("attachment");
-    const now = new Date();
     const extension = extensions[mimeType] ?? file.name.split(".").pop()?.toLowerCase() ?? "bin";
-    const key = `${access.orgId}/uploads/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${id}.${extension}`;
-    await storage.put(key, bytes);
+    // Stored once per business: the same file uploaded again (or sent in a broadcast) reuses it.
+    const { file: stored } = await storeFile(ctx.db, storage, {
+      organizationId: access.orgId,
+      bytes,
+      mimeType,
+      newId: () => newId("storedFile"),
+    });
     const [row] = await ctx.db
       .insert(schema.attachment)
       .values({
@@ -107,7 +111,8 @@ export function fileRoutes(ctx: AppContext) {
         fileName: file.name.slice(0, 200) || `${id}.${extension}`,
         sizeBytes: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("base64"),
-        storageKey: key,
+        fileId: stored.id,
+        storageKey: stored.storageKey,
         status: "stored",
       })
       .returning();
@@ -162,9 +167,17 @@ export function fileRoutes(ctx: AppContext) {
     if (file.status === "pending") return fail(c, 409, "not_ready", "The file is still being downloaded.");
     if (file.status === "failed" || !file.storageKey)
       return fail(c, 410, "unavailable", file.error ?? "The file could not be downloaded from the channel.");
-    const bytes = await storage.get(file.storageKey);
     const name = (file.fileName ?? file.id).replace(/["\r\n]/g, "");
     const inline = /^(image|video|audio)\//.test(file.mimeType ?? "") || file.mimeType === "application/pdf";
+    // On S3 the browser fetches the bytes straight from the bucket with a 5-minute link.
+    const url = await storage.signedUrl(file.storageKey, {
+      expiresIn: 300,
+      fileName: name,
+      contentType: file.mimeType,
+      inline,
+    });
+    if (url) return c.redirect(url, 302);
+    const bytes = await storage.get(file.storageKey);
     return c.body(new Uint8Array(bytes).buffer as ArrayBuffer, 200, {
       "content-type": file.mimeType ?? "application/octet-stream",
       "content-length": String(bytes.byteLength),

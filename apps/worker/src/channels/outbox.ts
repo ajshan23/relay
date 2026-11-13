@@ -5,7 +5,7 @@ import {
   type OutboundMessage,
   type Recipient,
 } from "@relay/channels";
-import { env, localFileStorage, publishInboxEvent } from "@relay/core";
+import { fileStorage, publishInboxEvent } from "@relay/core";
 import { and, type createDb, eq, inArray, schema, sql } from "@relay/db";
 import { DelayedError, type Job, UnrecoverableError } from "bullmq";
 import type { Redis } from "ioredis";
@@ -26,7 +26,48 @@ const PER_NUMBER_PER_SECOND = 70;
 const mediaTypes = new Set(["image", "video", "audio", "document", "sticker"]);
 
 export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
-  const storage = localFileStorage(env().MEDIA_DIR);
+  const storage = fileStorage();
+
+  /**
+   * Hands a stored file to a channel number once and reuses the channel's media id for later sends
+   * from that number (WhatsApp keeps media 30 days; reused for 25). A broadcast uploads its file once
+   * per number, not once per recipient. Files from before stored_file upload as before.
+   */
+  async function uploadOnce(
+    file: typeof schema.attachment.$inferSelect & { storageKey: string },
+    adapter: ChannelAdapter,
+    account: typeof schema.channelAccount.$inferSelect,
+  ) {
+    const pm = schema.providerMedia;
+    if (file.fileId) {
+      const [hit] = await db
+        .select({ id: pm.providerMediaId })
+        .from(pm)
+        .where(
+          and(
+            eq(pm.fileId, file.fileId),
+            eq(pm.channelAccountId, account.id),
+            sql`${pm.uploadedAt} > (now() at time zone 'utc') - interval '25 days'`,
+          ),
+        )
+        .limit(1);
+      if (hit) return hit.id;
+    }
+    const { providerMediaId } = await adapter.uploadMedia(accountRef(account), {
+      bytes: await storage.get(file.storageKey),
+      mimeType: file.mimeType ?? "application/octet-stream",
+      fileName: file.fileName ?? file.id,
+    });
+    if (file.fileId)
+      await db
+        .insert(pm)
+        .values({ fileId: file.fileId, channelAccountId: account.id, providerMediaId })
+        .onConflictDoUpdate({
+          target: [pm.fileId, pm.channelAccountId],
+          set: { providerMediaId, uploadedAt: new Date() },
+        });
+    return providerMediaId;
+  }
 
   /** The file of an outbound media message, handed to the channel once (the id is kept for retries). */
   async function providerMediaFor(
@@ -42,11 +83,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
     if (!file?.storageKey) throw new UnrecoverableError("the file of this message is missing");
     if (file.providerMediaId) return { id: file.providerMediaId, file };
     try {
-      const { providerMediaId } = await adapter.uploadMedia(accountRef(account), {
-        bytes: await storage.get(file.storageKey),
-        mimeType: file.mimeType ?? "application/octet-stream",
-        fileName: file.fileName ?? `${file.id}`,
-      });
+      const providerMediaId = await uploadOnce({ ...file, storageKey: file.storageKey }, adapter, account);
       await db.update(schema.attachment).set({ providerMediaId }).where(eq(schema.attachment.id, file.id));
       return { id: providerMediaId, file };
     } catch (err) {
@@ -237,26 +274,24 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         await fail(message.id, { reason: "error", message: "The template's header file is missing." });
         throw new UnrecoverableError("template header file missing");
       }
-      const { providerMediaId } = await adapter
-        .uploadMedia(accountRef(account), {
-          bytes: await storage.get(file.storageKey),
-          mimeType: file.mimeType ?? "application/octet-stream",
-          fileName: file.fileName ?? file.id,
-        })
-        .catch(async (err) => {
-          // Nothing was sent yet, so temporary failures retry; a refusal fails the message.
-          const temporary =
-            err instanceof GraphUncertainError ||
-            (err instanceof GraphError && (err.kind === "retryable" || err.kind === "rateLimited"));
-          const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-          if (temporary && !lastAttempt)
-            throw err instanceof GraphUncertainError ? new Error(err.message) : err;
-          await fail(message.id, {
-            reason: "error",
-            message: err instanceof Error ? err.message : String(err),
-          });
-          throw new UnrecoverableError("template header upload failed");
+      const providerMediaId = await uploadOnce(
+        { ...file, storageKey: file.storageKey },
+        adapter,
+        account,
+      ).catch(async (err) => {
+        // Nothing was sent yet, so temporary failures retry; a refusal fails the message.
+        const temporary =
+          err instanceof GraphUncertainError ||
+          (err instanceof GraphError && (err.kind === "retryable" || err.kind === "rateLimited"));
+        const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+        if (temporary && !lastAttempt)
+          throw err instanceof GraphUncertainError ? new Error(err.message) : err;
+        await fail(message.id, {
+          reason: "error",
+          message: err instanceof Error ? err.message : String(err),
         });
+        throw new UnrecoverableError("template header upload failed");
+      });
       headerMedia = {
         kind: header.kind as "image" | "video" | "document",
         providerMediaId,

@@ -1,4 +1,4 @@
-import { localFileStorage, newId } from "@relay/core";
+import { fileStorage, newId } from "@relay/core";
 import {
   type FieldType,
   type ImportMapping,
@@ -44,7 +44,7 @@ const targetSchema = z.discriminatedUnion("kind", [
 export function contactImportRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
-  const storage = localFileStorage(ctx.config.MEDIA_DIR);
+  const storage = fileStorage();
   const im = schema.contactImport;
 
   async function findImport(orgId: string, branchId: string, id: string) {
@@ -81,6 +81,7 @@ export function contactImportRoutes(ctx: AppContext) {
     if (file.size > MAX_BYTES) return fail(c2, 422, "too_large", "Files can be up to 20 MB.");
     const bytes = new Uint8Array(await file.arrayBuffer());
     const id = newId("contactImport");
+    // S3 deletes these after 30 days (lifecycle rule on imports/).
     const storageKey = `imports/${access.orgId}/${id}.${ext}`;
     await storage.put(storageKey, bytes);
     const [row] = await ctx.db

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { type ExportJob, env, queues, type SignalJob } from "@relay/core";
+import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
 import { createDb } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
@@ -13,6 +13,7 @@ import { createExportProcessor } from "./contacts/export";
 import { createImportProcessor, type ImportJob } from "./contacts/import";
 import { createReadProcessor, type ReadJob } from "./contacts/read";
 import { createSnoozeWaker } from "./conversations/snooze";
+import { createFileSweep } from "./files/sweep";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -63,11 +64,20 @@ void maintenanceQueue
     { name: "wake-snoozed", opts: { removeOnComplete: 10, removeOnFail: 50 } },
   )
   .catch((err) => console.error("maintenance scheduler", err));
+void maintenanceQueue
+  .upsertJobScheduler(
+    "sweep-files",
+    { pattern: "30 3 * * *" },
+    { name: "sweep-files", opts: { removeOnComplete: 10, removeOnFail: 50 } },
+  )
+  .catch((err) => console.error("maintenance scheduler", err));
 const wakeSnoozed = createSnoozeWaker({ db, redis: connection });
+const sweepFiles = createFileSweep({ db, storage: fileStorage() });
 const maintenance = new Worker(
   queues.maintenance,
   async (job) => {
     if (job.name === "wake-snoozed") return wakeSnoozed();
+    if (job.name === "sweep-files") return sweepFiles();
   },
   { connection, concurrency: 1 },
 );

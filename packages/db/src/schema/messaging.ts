@@ -6,6 +6,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -266,6 +267,29 @@ export const mention = pgTable(
   ],
 );
 
+/**
+ * A file's bytes, stored once per business however many messages, templates or broadcasts use it
+ * (same content, same row). Key: files/<org>/<sha256>.
+ */
+export const storedFile = pgTable(
+  "stored_file",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** Hex SHA-256 of the bytes. */
+    sha256: text("sha256").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    mimeType: text("mime_type"),
+    storageKey: text("storage_key").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    /** Last time something new pointed at it; the orphan sweep keeps recent files. */
+    lastUsedAt: timestamp("last_used_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("stored_file_org_sha_uidx").on(t.organizationId, t.sha256)],
+);
+
 export const attachmentStatus = pgEnum("attachment_status", ["pending", "stored", "failed"]);
 
 /** A file on a message, copied into our own storage on arrival (provider links expire). */
@@ -287,13 +311,34 @@ export const attachment = pgTable(
     sizeBytes: bigint("size_bytes", { mode: "number" }),
     sha256: text("sha256"),
     providerMediaId: text("provider_media_id"),
-    /** Where the file lives in our storage, once copied. */
+    /** The stored bytes (shared with every other use of the same file). */
+    fileId: text("file_id").references(() => storedFile.id, { onDelete: "set null" }),
+    /** Where the file lived before stored_file (older rows); new rows use fileId. */
     storageKey: text("storage_key"),
     status: attachmentStatus("status").notNull().default("pending"),
     error: text("error"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("attachment_message_idx").on(t.messageId)],
+  (t) => [index("attachment_message_idx").on(t.messageId), index("attachment_file_idx").on(t.fileId)],
+);
+
+/**
+ * A stored file uploaded to a channel number (WhatsApp media id), reused for every send from that
+ * number while it's valid (WhatsApp keeps media 30 days). A broadcast uploads its file once per number.
+ */
+export const providerMedia = pgTable(
+  "provider_media",
+  {
+    fileId: text("file_id")
+      .notNull()
+      .references(() => storedFile.id, { onDelete: "cascade" }),
+    channelAccountId: text("channel_account_id")
+      .notNull()
+      .references(() => channelAccount.id, { onDelete: "cascade" }),
+    providerMediaId: text("provider_media_id").notNull(),
+    uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.fileId, t.channelAccountId] })],
 );
 
 /**

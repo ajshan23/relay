@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type ExportJob, type ExportResult, localFileStorage, newId } from "@relay/core";
+import { type ExportJob, type ExportResult, fileStorage, newId } from "@relay/core";
 import {
   type ContactFieldDef,
   coerceFieldValue,
@@ -89,7 +89,7 @@ const fieldTypeSchema = z.enum([
 export function contactRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
-  const exportStorage = localFileStorage(ctx.config.MEDIA_DIR);
+  const exportStorage = fileStorage();
 
   /* ---------------------------------------------------------------- access */
 
@@ -397,6 +397,15 @@ export function contactRoutes(ctx: AppContext) {
     const job = await findExport(c2.var.access, c2.var.branchId, c2.req.param("id"));
     const result = job?.returnvalue as ExportResult | null | undefined;
     if (!job || !result) return fail(c2, 404, "not_found");
+    const url = await exportStorage.signedUrl(result.storageKey, {
+      expiresIn: 300,
+      fileName: result.fileName,
+      contentType:
+        (job.data as ExportJob).format === "csv"
+          ? "text/csv; charset=utf-8"
+          : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    if (url) return c2.redirect(url, 302);
     const bytes = await exportStorage.get(result.storageKey);
     const format = (job.data as ExportJob).format;
     return c2.body(bytes as unknown as ArrayBuffer, 200, {

@@ -1,33 +1,19 @@
 import { createHash } from "node:crypto";
 import { GraphError } from "@relay/channels";
-import { env, localFileStorage, type Publisher, publishInboxEvent } from "@relay/core";
-import { type createDb, eq, schema } from "@relay/db";
+import { fileStorage, newId, type Publisher, publishInboxEvent } from "@relay/core";
+import { type createDb, eq, findStoredFile, schema, storeFile } from "@relay/db";
 import { type Job, UnrecoverableError } from "bullmq";
 import { accountRef, channels } from "./registry";
 import type { MediaJob } from "./webhooks";
 
 type Db = ReturnType<typeof createDb>["db"];
 
-const extensions: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "video/mp4": "mp4",
-  "video/3gpp": "3gp",
-  "audio/ogg": "ogg",
-  "audio/mpeg": "mp3",
-  "audio/mp4": "m4a",
-  "audio/aac": "aac",
-  "application/pdf": "pdf",
-};
-
 /**
  * Copies one customer file from the channel into our storage, through its adapter. Provider links
  * expire quickly (WhatsApp: 5 minutes, ids 7 days), so this runs right after the message arrives.
  */
 export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }) {
-  const config = env();
-  const storage = localFileStorage(config.MEDIA_DIR);
+  const storage = fileStorage();
 
   return async function downloadMedia(job: Job<MediaJob>) {
     const [row] = await db
@@ -61,6 +47,26 @@ export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }
         .where(eq(schema.attachment.id, attachment.id));
 
     try {
+      // Already have these bytes (a forwarded video, a sticker sent again)? Link them, no download.
+      const known = attachment.sha256
+        ? await findStoredFile(db, attachment.organizationId, attachment.sha256)
+        : null;
+      if (known) {
+        await db
+          .update(schema.attachment)
+          .set({
+            status: "stored",
+            fileId: known.id,
+            storageKey: known.storageKey,
+            mimeType: attachment.mimeType ?? known.mimeType,
+            sizeBytes: known.sizeBytes,
+            error: null,
+          })
+          .where(eq(schema.attachment.id, attachment.id));
+        console.log(`media ${attachment.id}: already stored, no download`);
+        await announce();
+        return;
+      }
       const adapter = channels().get(account.type);
       if (!adapter) throw new UnrecoverableError(`No adapter for ${account.type}`);
       const limits = adapter.capabilities.media as Record<string, { maxBytes: number }>;
@@ -69,15 +75,18 @@ export function createMediaProcessor({ db, redis }: { db: Db; redis: Publisher }
 
       const mimeType =
         file.mimeType?.split(";")[0]?.trim() ?? attachment.mimeType ?? "application/octet-stream";
-      const extension = extensions[mimeType] ?? attachment.fileName?.split(".").pop() ?? "bin";
-      const now = new Date();
-      const key = `${attachment.organizationId}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${attachment.id}.${extension}`;
-      await storage.put(key, file.bytes);
+      const { file: stored } = await storeFile(db, storage, {
+        organizationId: attachment.organizationId,
+        bytes: file.bytes,
+        mimeType,
+        newId: () => newId("storedFile"),
+      });
       await db
         .update(schema.attachment)
         .set({
           status: "stored",
-          storageKey: key,
+          fileId: stored.id,
+          storageKey: stored.storageKey,
           mimeType,
           sizeBytes: file.bytes.byteLength,
           sha256: attachment.sha256 ?? createHash("sha256").update(file.bytes).digest("base64"),

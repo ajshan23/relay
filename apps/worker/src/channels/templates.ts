@@ -1,5 +1,5 @@
 import { GraphError, GraphUncertainError } from "@relay/channels";
-import { env, localFileStorage, newId, type Publisher, publishInboxEvent } from "@relay/core";
+import { fileStorage, newId, type Publisher, publishInboxEvent } from "@relay/core";
 import type { TemplateContent, TemplateDefinition, TemplatePurpose } from "@relay/core/templates";
 import { and, type createDb, eq, inArray, schema } from "@relay/db";
 import { type Job, UnrecoverableError } from "bullmq";
@@ -20,7 +20,7 @@ export type TemplateJob =
   | { action: "sync"; channelAccountId: string };
 
 export function createTemplateProcessor({ db, redis }: { db: Db; redis: Publisher }) {
-  const storage = localFileStorage(env().MEDIA_DIR);
+  const storage = fileStorage();
   const announce = (organizationId: string, templateId: string) =>
     publishInboxEvent(redis, organizationId, { type: "template.updated", templateId });
 

@@ -35,6 +35,7 @@ export const idPrefixes = {
   contactOptOut: "opt",
   mention: "men",
   quickReply: "qr",
+  storedFile: "file",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

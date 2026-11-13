@@ -22,4 +22,5 @@ export {
   sql,
 } from "drizzle-orm";
 export * from "./client";
+export * from "./files";
 export * as schema from "./schema/index";

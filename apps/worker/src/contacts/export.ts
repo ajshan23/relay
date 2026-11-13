@@ -1,4 +1,4 @@
-import { type ExportJob, type ExportResult, env, localFileStorage } from "@relay/core";
+import { type ExportJob, type ExportResult, fileStorage } from "@relay/core";
 import { type ContactFieldDef, type ExportRow, exportTable } from "@relay/core/contacts";
 import { writeWorkbook } from "@relay/core/sheets";
 import { and, type createDb, eq, isNull, schema } from "@relay/db";
@@ -19,7 +19,7 @@ const utc = (v: unknown) =>
     : v;
 
 export function createExportProcessor({ db, sql }: { db: Db; sql: Sql }) {
-  const storage = localFileStorage(env().MEDIA_DIR);
+  const storage = fileStorage();
 
   return async (job: Job<ExportJob>): Promise<ExportResult> => {
     const d = job.data;
@@ -50,8 +50,12 @@ export function createExportProcessor({ db, sql }: { db: Db; sql: Sql }) {
       channels: new Map(channels.map((ch) => [ch.id, ch.name])),
     });
     const bytes = writeWorkbook(headers, cells, d.format);
+    // S3 deletes these after a day (lifecycle rule on exports/).
     const storageKey = `exports/${d.orgId}/${job.id}.${d.format}`;
-    await storage.put(storageKey, bytes);
+    await storage.put(storageKey, bytes, {
+      contentType:
+        d.format === "csv" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
     return {
       storageKey,
       fileName: `contacts-${new Date().toISOString().slice(0, 10)}.${d.format}`,
