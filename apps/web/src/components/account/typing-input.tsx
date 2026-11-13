@@ -56,6 +56,7 @@ export function TypingInput({
   inGroup = false,
   className,
   ref,
+  onChange,
   ...props
 }: Props) {
   const input = useRef<HTMLInputElement | null>(null);
@@ -99,7 +100,10 @@ export function TypingInput({
       letterSpacing: style.letterSpacing,
     });
     sync();
-    const events = ["input", "change", "scroll", "keyup", "select", "focus", "blur"] as const;
+    // Not "input": updating state from a native input listener makes React re-render the controlled
+    // field before its onChange runs, which puts the old value back and swallows the keystroke.
+    // Typing is followed through onChange below instead.
+    const events = ["scroll", "keyup", "select", "focus", "blur"] as const;
     for (const name of events) el.addEventListener(name, sync);
     // Autofill can fill the value without an input event in some browsers.
     const poll = window.setInterval(() => {
@@ -126,6 +130,10 @@ export function TypingInput({
         ref={setRef}
         data-slot={inGroup ? "input-group-control" : undefined}
         {...props}
+        onChange={(e) => {
+          onChange?.(e);
+          sync();
+        }}
         className={cn(
           "text-transparent caret-primary [font-kerning:none] [-webkit-text-fill-color:transparent]",
           "placeholder:[-webkit-text-fill-color:var(--muted-foreground)] selection:bg-primary/20",
