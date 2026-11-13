@@ -26,6 +26,12 @@ export const idPrefixes = {
   receipt: "rcp",
   template: "tpl",
   templateChannel: "tpc",
+  contactField: "fld",
+  tag: "tag",
+  contactNote: "cnote",
+  contactList: "lst",
+  contactView: "cview",
+  contactImport: "imp",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

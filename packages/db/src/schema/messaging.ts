@@ -33,10 +33,41 @@ export const contact = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     name: text("name"),
+    /**
+     * Main phone number, digits only with no "+" (as WhatsApp sends it). Set for contacts added by hand or
+     * imported; when someone with this number first writes in, their channel identity joins this contact.
+     */
+    phone: text("phone"),
+    email: text("email"),
+    /** Home branch, used as a filter (contacts belong to the business). */
+    branchId: text("branch_id").references(() => branch.id, { onDelete: "set null" }),
+    /**
+     * The business's own fields, keyed by contact_field.key, in their real JSON types (numbers, booleans,
+     * ISO dates, arrays for multiple choice). Validated against the field type on every write.
+     */
+    attributes: jsonb("attributes").$type<Record<string, unknown>>().notNull().default({}),
+    /** Ids of rows in `tag`. Kept on the contact for one-row reads; GIN-indexed for filters. */
+    tagIds: text("tag_ids").array().notNull().default(sql`'{}'::text[]`),
+    /** How the contact arrived: channel (they wrote first), manual, import. */
+    source: text("source").notNull().default("channel"),
+    /** Set when they reply STOP, are opted out by hand or in an import. Broadcasts skip them. */
+    marketingOptOutAt: timestamp("marketing_opt_out_at"),
+    /** Newest message in any of their conversations, kept current by the worker. */
+    lastMessageAt: timestamp("last_message_at"),
+    createdByUserId: text("created_by_user_id").references(() => user.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [index("contact_org_idx").on(t.organizationId, t.createdAt)],
+  (t) => [
+    index("contact_org_idx").on(t.organizationId, t.createdAt),
+    index("contact_org_last_message_idx").on(t.organizationId, t.lastMessageAt),
+    index("contact_org_phone_idx").on(t.organizationId, t.phone),
+    index("contact_phone_trgm").using("gin", sql`${t.phone} gin_trgm_ops`),
+    index("contact_attributes_gin").using("gin", sql`${t.attributes} jsonb_path_ops`),
+    index("contact_tags_gin").using("gin", t.tagIds),
+    index("contact_name_trgm").using("gin", sql`${t.name} gin_trgm_ops`),
+    index("contact_email_trgm").using("gin", sql`${t.email} gin_trgm_ops`),
+  ],
 );
 
 /**
@@ -67,6 +98,7 @@ export const contactIdentity = pgTable(
     uniqueIndex("contact_identity_uidx").on(t.organizationId, t.channelType, t.scope, t.externalId),
     index("contact_identity_contact_idx").on(t.contactId),
     index("contact_identity_phone_idx").on(t.organizationId, t.phone),
+    index("contact_identity_phone_trgm").using("gin", sql`${t.phone} gin_trgm_ops`),
   ],
 );
 

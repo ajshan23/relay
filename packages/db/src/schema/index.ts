@@ -2,6 +2,7 @@
 export * from "./auth";
 export * from "./branches";
 export * from "./channels";
+export * from "./contacts";
 export * from "./email";
 export * from "./groups";
 export * from "./messaging";

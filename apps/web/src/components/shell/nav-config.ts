@@ -3,7 +3,7 @@ import { BarChart3, Bot, type LucideIcon, Megaphone, MessageCircle, Sparkles, Us
 
 /** The main sections of the app, in sidebar order, and the sub-topics shown in the sub-menu. */
 
-export type SectionId = "today" | "conversations" | "customers" | "agents" | "campaigns" | "insights";
+export type SectionId = "today" | "conversations" | "contacts" | "agents" | "broadcasts" | "insights";
 
 export type SubTopic = {
   label: string;
@@ -83,23 +83,34 @@ export const sections: Section[] = [
       },
     ],
   ),
-  section("customers", "Customers", Users, "Everyone who has talked to you, with their history and lists.", [
-    { label: "People", items: ["Everyone", "New this week", "Booked", "Not seen in 6 months"] },
-    { label: "Lists", items: ["VIP patients", "Whitening enquiries"] },
-  ]),
+  section(
+    "contacts",
+    "Contacts",
+    Users,
+    "Everyone who has talked to you, with their details, tags and lists.",
+    [
+      {
+        label: "Contacts",
+        items: [
+          { label: "All contacts", view: "all" },
+          { label: "New this week", view: "new" },
+          { label: "Opted out", view: "opted-out" },
+        ],
+      },
+    ],
+  ),
   section("agents", "AI agent", Bot, "Teach Mira, try her out, put her live and improve her answers.", [
     { label: "Mira", items: ["Teach", "Try", "Go live", "Improve"] },
     { label: "Knowledge", items: ["Website", "Files", "Questions and answers"] },
   ]),
-  section("campaigns", "Campaigns", Megaphone, "Messages you send to many customers at once.", [
-    { label: "Campaigns", items: ["All", "Drafts", "Sending", "Sent"] },
-    { label: "Messages", items: ["Approved messages", "Rejected"] },
+  section("broadcasts", "Broadcasts", Megaphone, "Messages you send to many contacts at once.", [
+    { label: "Broadcasts", items: ["All", "Drafts", "Scheduled", "Sent"] },
   ]),
   section(
     "insights",
     "Insights",
     BarChart3,
-    "Reports on conversations, the AI agent, campaigns and branches.",
+    "Reports on conversations, the AI agent, broadcasts and branches.",
     [
       { label: "Reports", items: ["Overview", "Conversations", "AI agent", "Campaigns"] },
       { label: "Compare", items: ["Branches", "This week and last"] },

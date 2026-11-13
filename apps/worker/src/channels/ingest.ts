@@ -115,12 +115,30 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
 
     // New customer: the contact and its identity are created together. If another worker created the
     // same identity a moment earlier, this transaction is rolled back so no empty contact is left behind.
+    // Someone added by hand or imported with this number joins that contact instead of becoming a new one.
+    const [known] = from.phone
+      ? await db
+          .select({ id: schema.contact.id })
+          .from(schema.contact)
+          .where(
+            and(
+              eq(schema.contact.organizationId, account.organizationId),
+              eq(schema.contact.phone, from.phone),
+            ),
+          )
+          .limit(1)
+      : [];
     const created = await db
       .transaction(async (tx) => {
-        const contactId = newId("contact");
-        await tx
-          .insert(schema.contact)
-          .values({ id: contactId, organizationId: account.organizationId, name: from.profileName });
+        const contactId = known?.id ?? newId("contact");
+        if (!known)
+          await tx.insert(schema.contact).values({
+            id: contactId,
+            organizationId: account.organizationId,
+            name: from.profileName,
+            phone: from.phone,
+            branchId: account.defaultBranchId,
+          });
         const [row] = await tx
           .insert(schema.contactIdentity)
           .values({
@@ -334,6 +352,10 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         .returning({ id: schema.message.id });
       if (!inserted.length) return []; // Already stored: a repeated webhook.
       touched(conversation);
+      await tx
+        .update(schema.contact)
+        .set({ lastMessageAt: latest(schema.contact.lastMessageAt, sentAt) })
+        .where(eq(schema.contact.id, identity.contactId));
 
       await tx
         .update(schema.conversation)

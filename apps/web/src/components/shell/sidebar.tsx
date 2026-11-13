@@ -88,7 +88,7 @@ function useStoredFlag(key: string, fallback: boolean): [boolean, (value: boolea
 /* ------------------------------------------------------------ pieces */
 
 const mainOrder: SectionId[] = ["today", "conversations"];
-const workspaceOrder: SectionId[] = ["customers", "campaigns", "agents", "insights"];
+const workspaceOrder: SectionId[] = ["contacts", "broadcasts", "agents", "insights"];
 const byId = (id: SectionId) => sections.find((s) => s.id === id) as Section;
 
 const isActive = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);

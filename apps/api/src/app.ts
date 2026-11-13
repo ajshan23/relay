@@ -6,6 +6,7 @@ import { auth } from "./modules/auth/auth";
 import { authOptionsRoutes } from "./modules/auth/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { channelRoutes } from "./modules/channels/routes";
+import { contactFieldRoutes, contactRoutes, contactViewRoutes, tagRoutes } from "./modules/contacts/routes";
 import { conversationRoutes } from "./modules/conversations/routes";
 import { eventRoutes } from "./modules/events/routes";
 import { fileRoutes } from "./modules/files/routes";
@@ -37,6 +38,11 @@ export function createApp(ctx: AppContext) {
   app.route("/api/channels", channelRoutes(ctx));
   app.route("/api/groups", groupRoutes(ctx));
   app.route("/api/templates", templateRoutes(ctx));
+  // Sub-paths first, so "/api/contacts/:id" doesn't swallow them.
+  app.route("/api/contacts/fields", contactFieldRoutes(ctx));
+  app.route("/api/contacts/views", contactViewRoutes(ctx));
+  app.route("/api/tags", tagRoutes(ctx));
+  app.route("/api/contacts", contactRoutes(ctx));
   app.route("/api/events", eventRoutes(ctx));
   app.route("/api", fileRoutes(ctx));
 
