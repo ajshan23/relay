@@ -49,7 +49,7 @@ export function ChannelStatus({ copy, estimate }: { copy: ChannelCopy; estimate?
 }
 
 /** The message text with details shown as soft highlights (examples filled in when given). */
-function Highlighted({ text, examples }: { text: string; examples: Record<string, string> }) {
+export function Highlighted({ text, examples }: { text: string; examples: Record<string, string> }) {
   const parts = text.split(/(\{\{\s*[a-zA-Z0-9_]+\s*\}\})/g);
   return (
     <>

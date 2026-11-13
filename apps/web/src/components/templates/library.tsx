@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger } from "@relay/ui/ui/tabs";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { previewLine } from "./parts";
+import { Highlighted, previewLine } from "./parts";
 import { useLibrary } from "./queries";
 
 /** Display names for channel types in the filter. */
@@ -66,13 +66,20 @@ export function LibraryCards({ limit, onPick }: { limit?: number; onPick: (t: Li
 /** A compact look at the message: header, text with details filled in, footer and buttons. */
 function MiniPreview({ t }: { t: LibraryTemplate }) {
   const c = t.content;
+  const examples = Object.fromEntries(t.variables.map((x) => [x.name, x.example]));
   const buttonIcon = (kind: string): IconName =>
     kind === "link" ? "external" : kind === "call" ? "phone" : kind === "copy" ? "copy" : "reply";
   return (
     <div className="rounded-lg bg-muted/60 p-3">
       <div className="rounded-md rounded-tl-sm bg-card text-[13px] leading-relaxed shadow-xs">
-        {c.header?.kind === "text" ? <p className="px-3 pt-2.5 font-semibold">{c.header.text}</p> : null}
-        <p className="line-clamp-5 px-3 pt-2 pb-1.5 whitespace-pre-wrap">{previewLine(c, t.variables)}</p>
+        {c.header?.kind === "text" ? (
+          <p className="px-3 pt-2.5 font-semibold">
+            <Highlighted text={c.header.text} examples={examples} />
+          </p>
+        ) : null}
+        <p className="line-clamp-5 px-3 pt-2 pb-1.5 whitespace-pre-wrap">
+          <Highlighted text={c.body} examples={examples} />
+        </p>
         {c.footer ? <p className="px-3 pb-2 text-[11px] text-muted-foreground">{c.footer}</p> : null}
         {c.buttons.map((b, i) => (
           <div
