@@ -59,9 +59,9 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const left = windowLeft(detail.conversation.windowExpiresAt, now);
   const groupDown = detail.group && detail.group.status !== "active";
   /** Someone is writing a reply: tell the customer, inside the reply window (the server checks the channel). */
-  const onTyping = () => {
-    reportTyping(id); // teammates see "typing…" (inside Relay)
-    if (detail.canWork && !detail.group && left) typing();
+  const onTyping = (value: string) => {
+    if (value.trim()) reportTyping(id); // teammates see "typing…" (inside Relay)
+    if (detail.canWork && !detail.group && left) typing(value);
   };
   const lock = !detail.canWork
     ? "You can read this conversation but not reply. Ask a manager for agent access."
@@ -166,6 +166,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
       },
     );
     setText("");
+    typing(""); // the next reply signals "typing…" afresh
     setPending(null);
     onClearReply();
   }
@@ -273,7 +274,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           value={text}
           onChange={(e) => {
             setText(e.target.value);
-            if (e.target.value.trim()) onTyping();
+            onTyping(e.target.value);
           }}
           onKeyDown={onKeyDown}
           minRows={1}

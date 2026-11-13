@@ -48,8 +48,11 @@ const activityAt = sql`coalesce(${schema.conversation.lastMessageAt}, ${schema.c
 const views = ["open", "mine", "unassigned", "closed", "all"] as const;
 type View = (typeof views)[number];
 
-/** "Typing…" lasts 25 s on WhatsApp; sending it every 20 s while someone types keeps it showing. */
-const TYPING_EVERY_MS = 20_000;
+/**
+ * At most one "typing…" per conversation this often, however many people type in it. The browser
+ * decides when (a real word, renewed every 20 s while typing); this only stops duplicates.
+ */
+const TYPING_EVERY_MS = 5_000;
 
 const sendBody = z
   .object({

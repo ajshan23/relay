@@ -110,20 +110,36 @@ export function useUpdateConversation(id: string) {
   });
 }
 
+/** A real word: 3+ letters or digits in a row (any script), or two words. A lone "a" isn't typing a reply. */
+const hasWord = (text: string) => /[\p{L}\p{N}]{3,}/u.test(text) || /\S\s+\S/.test(text.trim());
+
+/** WhatsApp shows "typing…" for up to 25 s; while someone keeps typing, renew it this often. */
+const TYPING_RENEW_MS = 20_000;
+
 /**
- * Call on every keystroke in the reply box: tells the customer's app "typing…", at most once every
- * 20 s (WhatsApp shows it for 25 s). The server checks the window, the channel and its setting.
+ * Call with the reply box's text on every keystroke. Tells the customer's app "typing…":
+ *   - only once there's a real word, so a stray letter never shows it;
+ *   - right away for a new reply (after a send, or once the box was emptied), then renewed every 20 s
+ *     only while keys are still being pressed, so it stops as soon as the person stops typing.
+ * WhatsApp decides how long it stays visible (until our reply arrives, at most 25 s); there's no way to
+ * shorten that, so the trigger is what we keep careful. The server checks the window and the channel.
  */
 export function useTypingSignal(id: string) {
-  const last = useRef(0);
+  const sentAt = useRef(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new conversation starts its own clock
   useEffect(() => {
-    last.current = 0;
+    sentAt.current = 0;
   }, [id]);
-  return () => {
+  return (text: string) => {
+    // An empty box means the reply was sent or cleared: the next one signals afresh.
+    if (!text.trim()) {
+      sentAt.current = 0;
+      return;
+    }
+    if (!hasWord(text)) return;
     const now = Date.now();
-    if (now - last.current < 20_000) return;
-    last.current = now;
+    if (now - sentAt.current < TYPING_RENEW_MS) return;
+    sentAt.current = now;
     void api(`/conversations/${id}/typing`, { method: "POST" }).catch(() => undefined);
   };
 }
