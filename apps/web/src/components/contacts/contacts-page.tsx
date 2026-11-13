@@ -42,8 +42,7 @@ import {
   type ContactList,
   type ContactRow,
   type ContactsMeta,
-  download,
-  inBranch,
+  exportContacts,
   type SavedView,
   useContactActions,
   useContacts,
@@ -163,6 +162,13 @@ function ContactsTable({
   const [newList, setNewList] = useState(false);
 
   const staticListId = inList?.kind === "static" ? inList.id : undefined;
+  // "Next" continues after the last contact shown (keyset paging), so deep pages stay fast. Cursors
+  // belong to one filter/sort/search; a jump to a page number without one counts rows instead.
+  const shape = JSON.stringify([config.filter, config.sort, q, staticListId]);
+  const [cursors, setCursors] = useState<{ shape: string; after: Record<number, string> }>({
+    shape,
+    after: {},
+  });
   const list = useContacts({
     filter: config.filter,
     sort: config.sort,
@@ -170,9 +176,17 @@ function ContactsTable({
     page,
     pageSize: PAGE_SIZE,
     listId: staticListId,
+    after: cursors.shape === shape ? cursors.after[page] : undefined,
   });
   const rows = list.data?.contacts ?? [];
   const total = list.data?.total ?? 0;
+  const totalCapped = list.data?.totalCapped ?? false;
+  const goToPage = (next: number) => {
+    const last = rows.at(-1)?.id;
+    if (next === page + 1 && last)
+      setCursors((c) => ({ shape, after: { ...(c.shape === shape ? c.after : {}), [next]: last } }));
+    setPage(next);
+  };
   const dirty = JSON.stringify(config) !== JSON.stringify(base);
   const order = columnOrder(config, meta);
   const fieldsByKey = new Map(meta.fields.map((f) => [f.key, f]));
@@ -402,17 +416,24 @@ function ContactsTable({
     );
 
   const exportAs = (format: "xlsx" | "csv") =>
-    download(inBranch("/contacts/export", branchId), {
-      method: "POST",
-      json: {
-        filter: config.filter,
-        sort: config.sort,
-        q,
-        listId: staticListId,
-        format,
-        columns: order.filter((c) => !c.hidden).map((c) => c.id),
-      },
-    }).catch((e: Error) => notify.error("Couldn't export", { description: e.message }));
+    void notify
+      .promise(
+        exportContacts(branchId, {
+          filter: config.filter,
+          sort: config.sort,
+          q,
+          listId: staticListId,
+          format,
+          columns: order.filter((c) => !c.hidden).map((c) => c.id),
+        }),
+        {
+          loading: "Preparing your export…",
+          success: (rows: number) =>
+            `Exported ${rows.toLocaleString()} ${rows === 1 ? "contact" : "contacts"}`,
+          error: (e: unknown) => `Couldn't export: ${e instanceof Error ? e.message : "try again"}`,
+        },
+      )
+      .catch(() => undefined);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -421,7 +442,7 @@ function ContactsTable({
         title={title}
         description={
           list.data
-            ? `${inList ? (inList.kind === "smart" ? "Smart list · " : "List · ") : ""}${total.toLocaleString()} ${total === 1 ? "contact" : "contacts"}`
+            ? `${inList ? (inList.kind === "smart" ? "Smart list · " : "List · ") : ""}${total.toLocaleString()}${totalCapped ? "+" : ""} ${total === 1 && !totalCapped ? "contact" : "contacts"}`
             : "Everyone who has talked to you"
         }
         actions={
@@ -642,7 +663,9 @@ function ContactsTable({
         page={page}
         pageSize={PAGE_SIZE}
         total={total}
-        onPageChange={setPage}
+        totalCapped={totalCapped}
+        hasMore={list.data?.hasMore ?? false}
+        onPageChange={goToPage}
         empty={
           <div className="flex flex-col items-center gap-1 py-10 text-center">
             <p className="font-medium">

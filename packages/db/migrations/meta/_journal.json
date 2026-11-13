@@ -71,6 +71,20 @@
       "when": 1794575158968,
       "tag": "0009_branch_scoped_contacts",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794595565815,
+      "tag": "0010_branch_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794595844677,
+      "tag": "0011_import_reading",
+      "breakpoints": true
     }
   ]
 }

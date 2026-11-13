@@ -65,7 +65,15 @@ export type ContactRow = {
   channels: { type: string; phone: string | null; username: string | null; profileName: string | null }[];
 };
 
-export type ContactPage = { contacts: ContactRow[]; total: number; page: number; pageSize: number };
+export type ContactPage = {
+  contacts: ContactRow[];
+  /** Exact up to 10,000; past that `totalCapped` is true. */
+  total: number;
+  totalCapped: boolean;
+  hasMore: boolean;
+  page: number;
+  pageSize: number;
+};
 
 export type ContactQuery = {
   filter: ContactFilter;
@@ -75,10 +83,13 @@ export type ContactQuery = {
   pageSize: number;
   /** Only this static list's members. */
   listId?: string;
+  /** The last contact of the previous page, to continue after it (keyset paging). */
+  after?: string;
 };
 
 export const contactKeys = {
   all: ["contacts"] as const,
+  table: (branch: string) => ["contacts", branch, "list"] as const,
   meta: (branch: string) => ["contacts", branch, "meta"] as const,
   list: (branch: string, q: ContactQuery) => ["contacts", branch, "list", q] as const,
   lists: (branch: string) => ["contacts", branch, "lists"] as const,
@@ -157,17 +168,29 @@ export function useContactActions() {
   const qc = useQueryClient();
   const branch = useBranchId();
   const b = (path: string) => inBranch(path, branch);
-  const refresh = () => qc.invalidateQueries({ queryKey: contactKeys.all });
+  /*
+   * Refresh only what a change can affect: editing one contact redraws the table and that contact,
+   * not the fields, tags, views and every list count.
+   */
+  const refresh = (...parts: ("table" | "meta" | "lists" | "one")[]) => {
+    const keys = {
+      table: contactKeys.table(branch),
+      meta: contactKeys.meta(branch),
+      lists: contactKeys.lists(branch),
+      one: ["contacts", branch, "one"],
+    };
+    return Promise.all(parts.map((p) => qc.invalidateQueries({ queryKey: keys[p] })));
+  };
   return {
     update: useMutation({
       mutationFn: ({ id, patch }: { id: string; patch: ContactPatch }) =>
         api(b(`/contacts/${id}`), { method: "PATCH", json: patch }),
-      onSettled: refresh,
+      onSettled: () => refresh("table", "one"),
     }),
     create: useMutation({
       mutationFn: (body: ContactPatch) =>
         api<{ contact: ContactRow }>(b("/contacts"), { method: "POST", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("table", "lists"),
     }),
     bulk: useMutation({
       mutationFn: (body: {
@@ -178,35 +201,35 @@ export function useContactActions() {
         listId?: string;
         channelAccountId?: string | null;
       }) => api<{ affected: number }>(b("/contacts/bulk"), { method: "POST", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("table", "lists", "one"),
     }),
     remove: useMutation({
       mutationFn: (id: string) => api(b(`/contacts/${id}`), { method: "DELETE" }),
-      onSettled: refresh,
+      onSettled: () => refresh("table", "lists"),
     }),
     addNote: useMutation({
       mutationFn: ({ id, body }: { id: string; body: string }) =>
         api(b(`/contacts/${id}/notes`), { method: "POST", json: { body } }),
-      onSettled: refresh,
+      onSettled: () => refresh("one"),
     }),
     deleteNote: useMutation({
       mutationFn: ({ id, noteId }: { id: string; noteId: string }) =>
         api(b(`/contacts/${id}/notes/${noteId}`), { method: "DELETE" }),
-      onSettled: refresh,
+      onSettled: () => refresh("one"),
     }),
     addField: useMutation({
       mutationFn: (body: { label: string; type: FieldType; options?: FieldOption[] }) =>
         api<{ field: ContactFieldDef }>("/contacts/fields", { method: "POST", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta", "table"),
     }),
     updateField: useMutation({
       mutationFn: ({ id, ...body }: { id: string; label?: string; options?: FieldOption[] }) =>
         api(`/contacts/fields/${id}`, { method: "PATCH", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta", "table"),
     }),
     archiveField: useMutation({
       mutationFn: (id: string) => api(`/contacts/fields/${id}`, { method: "DELETE" }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta", "table", "lists"),
     }),
     addTag: useMutation({
       mutationFn: (body: {
@@ -215,7 +238,7 @@ export function useContactActions() {
         branchId?: string | null;
         channelAccountId?: string | null;
       }) => api<{ tag: Tag }>("/tags", { method: "POST", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta"),
     }),
     saveView: useMutation({
       mutationFn: ({ id, ...body }: { id?: string; name: string; shared?: boolean; config: ViewConfig }) =>
@@ -225,7 +248,7 @@ export function useContactActions() {
               method: "POST",
               json: { shared: false, ...body },
             }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta"),
     }),
     saveList: useMutation({
       mutationFn: ({
@@ -240,15 +263,15 @@ export function useContactActions() {
         id
           ? api<{ list: ContactList }>(b(`/contacts/lists/${id}`), { method: "PATCH", json: body })
           : api<{ list: ContactList }>(b("/contacts/lists"), { method: "POST", json: body }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta", "lists", "table"),
     }),
     deleteList: useMutation({
       mutationFn: (id: string) => api(b(`/contacts/lists/${id}`), { method: "DELETE" }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta", "lists"),
     }),
     deleteView: useMutation({
       mutationFn: (id: string) => api(b(`/contacts/views/${id}`), { method: "DELETE" }),
-      onSettled: refresh,
+      onSettled: () => refresh("meta"),
     }),
   };
 }
@@ -270,7 +293,7 @@ export type ImportRow = {
   id: string;
   fileName: string;
   sheet: string | null;
-  status: "mapping" | "queued" | "running" | "done" | "failed";
+  status: "reading" | "mapping" | "queued" | "running" | "done" | "failed";
   total: number;
   processed: number;
   created: number;
@@ -278,6 +301,10 @@ export type ImportRow = {
   skipped: number;
   failed: number;
   errors: { row: number; reason: string }[];
+  /** Why the file couldn't be read. */
+  readError: string | null;
+  /** What's in the file, once the worker has read it (status "mapping"). */
+  sheets: UploadedFile["sheets"] | null;
 };
 
 export type UploadedFile = {
@@ -286,11 +313,22 @@ export type UploadedFile = {
   sheets: { name: string; headers: string[]; total: number; preview: unknown[][]; guesses: ImportTarget[] }[];
 };
 
-export const uploadImport = (branch: string, file: File) => {
+/** Uploads a file, then waits while the worker reads it (big files take a few seconds). */
+export async function uploadImport(branch: string, file: File): Promise<UploadedFile> {
   const body = new FormData();
   body.set("file", file);
-  return api<UploadedFile>(inBranch("/contacts/imports", branch), { method: "POST", body });
-};
+  const res = await api<{ import: ImportRow; fields: UploadedFile["fields"] }>(
+    inBranch("/contacts/imports", branch),
+    { method: "POST", body },
+  );
+  let imp = res.import;
+  for (let wait = 300; imp.status === "reading"; wait = Math.min(wait * 1.5, 2000)) {
+    await new Promise((r) => setTimeout(r, wait));
+    imp = (await api<{ import: ImportRow }>(inBranch(`/contacts/imports/${imp.id}`, branch))).import;
+  }
+  if (imp.status !== "mapping") throw new Error(imp.readError ?? "That file couldn't be read.");
+  return { import: imp, fields: res.fields, sheets: imp.sheets ?? [] };
+}
 
 export const startImport = (
   branch: string,
@@ -317,6 +355,27 @@ export function useImport(id: string | null) {
 }
 
 /* ------------------------------------------------------------------ files */
+
+/**
+ * Exports the current view: the worker writes the file, this waits for it and downloads it.
+ * Resolves with how many contacts it has.
+ */
+export async function exportContacts(branch: string, body: unknown) {
+  const { exportId } = await api<{ exportId: string }>(inBranch("/contacts/export", branch), {
+    method: "POST",
+    json: body,
+  });
+  const status = inBranch(`/contacts/exports/${exportId}`, branch);
+  for (let wait = 300; ; wait = Math.min(wait * 1.5, 2000)) {
+    await new Promise((r) => setTimeout(r, wait));
+    const s = await api<{ status: "running" | "done" | "failed"; rows: number | null }>(status);
+    if (s.status === "failed") throw new Error("The export didn't work. Try again.");
+    if (s.status === "done") {
+      await download(inBranch(`/contacts/exports/${exportId}/file`, branch));
+      return s.rows ?? 0;
+    }
+  }
+}
 
 /** Fetches a file from the API and hands it to the browser as a download. */
 export async function download(path: string, init?: RequestInit & { json?: unknown }) {

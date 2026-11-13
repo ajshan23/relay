@@ -7,19 +7,22 @@ import {
   optionColours,
 } from "@relay/core/contacts";
 import { readWorkbook } from "@relay/core/sheets";
-import { and, type createDb, eq, isNull, schema, sql } from "@relay/db";
+import { and, type createDb, eq, inArray, isNull, or, schema, sql } from "@relay/db";
 import type { Job } from "bullmq";
 
 /*
- * Imports the rows of an uploaded spreadsheet, one at a time so a phone number repeated in the file
- * lands on one contact. Existing contacts are matched by phone (their own or any channel's), then by
- * email; empty cells never clear what's already there. Rows that can't be imported are kept with why.
+ * Imports the rows of an uploaded spreadsheet in batches of BATCH rows: each batch looks up its phone
+ * numbers and emails at once and writes with one insert and one update, so 100,000 rows take a few
+ * hundred queries, not half a million. Rows are still applied in file order, so a phone number
+ * repeated in the file lands on one contact. Existing contacts are matched by phone (their own or any
+ * channel's), then by email; empty cells never clear what's already there. Rows that can't be imported
+ * are kept with why.
  */
 
 type Db = ReturnType<typeof createDb>["db"];
 export type ImportJob = { importId: string };
 
-const PROGRESS_EVERY = 100;
+const BATCH = 500;
 const MAX_ERRORS = 1000;
 
 class RowError extends Error {}
@@ -73,186 +76,275 @@ export function createImportProcessor({ db }: { db: Db }) {
         ).map((t) => [t.name.trim().toLowerCase(), t.id]),
       );
 
-      async function tagIds(cell: unknown) {
-        const names = String(cell ?? "")
+      // Every tag named anywhere in the file, created up front (one insert) if new.
+      const tagColumn = mapping.find((m) => m.target.kind === "tags")?.column;
+      const splitTags = (cell: unknown) =>
+        String(cell ?? "")
           .split(/[,;]/)
-          .map((n) => n.trim())
+          .map((n) => n.trim().slice(0, 60))
           .filter(Boolean);
-        const ids: string[] = [];
-        for (const name of names) {
-          let id = tags.get(name.toLowerCase());
-          if (!id) {
-            await db
-              .insert(schema.tag)
-              .values({
+      if (tagColumn !== undefined) {
+        const missing = new Map<string, string>();
+        for (const row of sheet.rows)
+          for (const name of splitTags(row[tagColumn]))
+            if (!tags.has(name.toLowerCase())) missing.set(name.toLowerCase(), name);
+        if (missing.size) {
+          await db
+            .insert(schema.tag)
+            .values(
+              [...missing.values()].map((name, i) => ({
                 id: newId("tag"),
                 organizationId: orgId,
-                name: name.slice(0, 60),
-                colour: optionColours[tags.size % optionColours.length] ?? "gray",
+                name,
+                colour: optionColours[(tags.size + i) % optionColours.length] ?? "gray",
                 createdByUserId: imp.userId,
-              })
-              .onConflictDoNothing();
-            const [row] = await db
-              .select({ id: schema.tag.id })
-              .from(schema.tag)
-              .where(
-                and(
-                  eq(schema.tag.organizationId, orgId),
-                  sql`lower(${schema.tag.name}) = lower(${name.slice(0, 60)})`,
-                  isNull(schema.tag.branchId),
-                  isNull(schema.tag.channelAccountId),
-                ),
-              )
-              .limit(1);
-            if (!row) continue;
-            id = row.id;
-            tags.set(name.toLowerCase(), id);
-          }
-          if (!ids.includes(id)) ids.push(id);
+              })),
+            )
+            .onConflictDoNothing();
+          const made = await db
+            .select({ id: schema.tag.id, name: schema.tag.name })
+            .from(schema.tag)
+            .where(
+              and(
+                eq(schema.tag.organizationId, orgId),
+                isNull(schema.tag.branchId),
+                isNull(schema.tag.channelAccountId),
+                inArray(sql`lower(${schema.tag.name})`, [...missing.keys()]),
+              ),
+            );
+          for (const t of made) tags.set(t.name.trim().toLowerCase(), t.id);
         }
-        return ids;
       }
 
-      async function importRow(row: unknown[]) {
-        let name: string | null = null;
-        let phone: string | null = null;
-        let email: string | null = null;
-        let addTags: string[] = [];
-        let optOut = false;
-        const attributes: Record<string, unknown> = {};
+      type Parsed = {
+        name: string | null;
+        phone: string | null;
+        email: string | null;
+        tagIds: string[];
+        optOut: boolean;
+        attributes: Record<string, unknown>;
+      };
 
+      /** One row's values, checked. Throws RowError. */
+      function parseRow(row: unknown[]): Parsed {
+        const out: Parsed = {
+          name: null,
+          phone: null,
+          email: null,
+          tagIds: [],
+          optOut: false,
+          attributes: {},
+        };
         for (const m of mapping) {
           const cell = row[m.column];
           if (cell === null || cell === undefined || String(cell).trim() === "") continue;
           const t = m.target;
           switch (t.kind) {
             case "name":
-              name = String(cell).trim().slice(0, 120);
+              out.name = String(cell).trim().slice(0, 120);
               break;
             case "phone": {
               const digits = String(cell).replace(/[^\d]/g, "");
               if (digits.length < 6 || digits.length > 16)
                 throw new RowError(`${m.header}: "${cell}" isn't a phone number with country code.`);
-              phone = digits;
+              out.phone = digits;
               break;
             }
             case "email": {
               const e = String(cell).trim().toLowerCase();
               if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
                 throw new RowError(`${m.header}: "${cell}" isn't an email address.`);
-              email = e;
+              out.email = e;
               break;
             }
             case "tags":
-              addTags = await tagIds(cell);
+              out.tagIds = [
+                ...new Set(
+                  splitTags(cell)
+                    .map((n) => tags.get(n.toLowerCase()))
+                    .filter((id): id is string => !!id),
+                ),
+              ];
               break;
             case "opt_out":
-              optOut = isYes(cell);
+              out.optOut = isYes(cell);
               break;
             case "field": {
               const field = fields.get(t.key);
               if (!field) break;
               const r = coerceFieldValue(field, cell);
               if (!r.ok) throw new RowError(r.message);
-              if (r.value !== null) attributes[t.key] = r.value;
+              if (r.value !== null) out.attributes[t.key] = r.value;
               break;
             }
           }
         }
-        if (!phone && !email) throw new RowError("No phone number or email to match the contact by.");
+        if (!out.phone && !out.email) throw new RowError("No phone number or email to match the contact by.");
+        return out;
+      }
 
-        let existingId: string | null = null;
-        if (phone) {
-          const [hit] = await db
-            .select({ id: c.id })
+      // Contacts this import already created or matched, by phone and email, across batches.
+      const byPhone = new Map<string, string>();
+      const byEmail = new Map<string, string>();
+
+      /** Looks up the batch's phone numbers and emails in the branch, in two queries. */
+      async function preload(batch: Parsed[]) {
+        const phones = [...new Set(batch.map((p) => p.phone).filter((v): v is string => !!v))].filter(
+          (p) => !byPhone.has(p),
+        );
+        const emails = [...new Set(batch.map((p) => p.email).filter((v): v is string => !!v))].filter(
+          (e) => !byEmail.has(e),
+        );
+        if (phones.length || emails.length) {
+          const hits = await db
+            .select({ id: c.id, phone: c.phone, email: c.email })
             .from(c)
             .where(
               and(
                 eq(c.organizationId, orgId),
                 eq(c.branchId, imp.branchId),
-                sql`(${c.phone} = ${phone} or exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${c.id} and i.phone = ${phone}))`,
+                or(
+                  phones.length ? inArray(c.phone, phones) : undefined,
+                  emails.length ? inArray(c.email, emails) : undefined,
+                ),
               ),
-            )
-            .limit(1);
-          existingId = hit?.id ?? null;
-        }
-        if (!existingId && email) {
-          const [hit] = await db
-            .select({ id: c.id })
-            .from(c)
-            .where(and(eq(c.organizationId, orgId), eq(c.branchId, imp.branchId), eq(c.email, email)))
-            .limit(1);
-          existingId = hit?.id ?? null;
-        }
-
-        let contactId: string;
-        if (existingId) {
-          if (imp.onMatch === "skip") {
-            counts.skipped++;
-            return;
+            );
+          for (const h of hits) {
+            if (h.phone && phones.includes(h.phone) && !byPhone.has(h.phone)) byPhone.set(h.phone, h.id);
+            if (h.email && emails.includes(h.email) && !byEmail.has(h.email)) byEmail.set(h.email, h.id);
           }
-          const tagArr = addTags.length
-            ? sql`array[${sql.join(
-                addTags.map((t) => sql`${t}`),
-                sql`, `,
-              )}]::text[]`
-            : null;
-          await db
-            .update(c)
-            .set({
-              ...(name ? { name } : {}),
-              ...(phone ? { phone } : {}),
-              ...(email ? { email } : {}),
-              ...(tagArr ? { tagIds: sql`array(select distinct unnest(${c.tagIds} || ${tagArr}))` } : {}),
-              ...(Object.keys(attributes).length
-                ? { attributes: sql`${c.attributes} || ${JSON.stringify(attributes)}::jsonb` }
-                : {}),
-              updatedAt: new Date(),
-            } as never)
-            .where(eq(c.id, existingId));
-          contactId = existingId;
-          counts.updated++;
-        } else {
-          contactId = newId("contact");
-          await db.insert(c).values({
-            id: contactId,
-            organizationId: orgId,
-            name,
-            phone,
-            email,
-            branchId: imp.branchId,
-            tagIds: addTags,
-            attributes,
-            source: "import",
-            createdByUserId: imp.userId,
-          });
-          counts.created++;
         }
-        if (optOut)
-          await db
-            .insert(schema.contactOptOut)
-            .values({
-              id: newId("contactOptOut"),
-              organizationId: orgId,
-              contactId,
-              channelAccountId: null,
-              source: "import",
-              createdByUserId: imp.userId,
-            })
-            .onConflictDoNothing();
+        const unmatched = phones.filter((p) => !byPhone.has(p));
+        if (unmatched.length) {
+          const ident = schema.contactIdentity;
+          const hits = await db
+            .select({ id: ident.contactId, phone: ident.phone })
+            .from(ident)
+            .where(and(eq(ident.branchId, imp.branchId), inArray(ident.phone, unmatched)));
+          for (const h of hits) if (h.phone && !byPhone.has(h.phone)) byPhone.set(h.phone, h.id);
+        }
       }
 
-      for (const [i, row] of sheet.rows.entries()) {
-        try {
-          await importRow(row);
-        } catch (err) {
-          if (!(err instanceof RowError)) throw err;
-          counts.failed++;
-          // Row numbers as people see them in the spreadsheet: the header is row 1.
-          if (errors.length < MAX_ERRORS) errors.push({ row: i + 2, reason: err.message, values: row });
+      async function importBatch(batch: { index: number; row: unknown[] }[]) {
+        const parsed: { index: number; row: unknown[]; p: Parsed }[] = [];
+        for (const { index, row } of batch) {
+          try {
+            parsed.push({ index, row, p: parseRow(row) });
+          } catch (err) {
+            if (!(err instanceof RowError)) throw err;
+            counts.failed++;
+            // Row numbers as people see them in the spreadsheet: the header is row 1.
+            if (errors.length < MAX_ERRORS) errors.push({ row: index + 2, reason: err.message, values: row });
+          }
         }
-        counts.processed++;
-        if (counts.processed % PROGRESS_EVERY === 0) await save();
+        await preload(parsed.map((x) => x.p));
+
+        const inserts = new Map<string, typeof c.$inferInsert>();
+        const updates = new Map<string, Parsed>();
+        const optOuts = new Set<string>();
+        for (const { p } of parsed) {
+          const existing = (p.phone && byPhone.get(p.phone)) || (p.email && byEmail.get(p.email)) || null;
+          let contactId: string;
+          if (existing) {
+            if (imp.onMatch === "skip") {
+              counts.skipped++;
+              continue;
+            }
+            contactId = existing;
+            const pending = inserts.get(existing);
+            if (pending) {
+              // Created earlier in this batch: fold this row into it.
+              if (p.name) pending.name = p.name;
+              if (p.phone) pending.phone = p.phone;
+              if (p.email) pending.email = p.email;
+              pending.tagIds = [...new Set([...(pending.tagIds ?? []), ...p.tagIds])];
+              pending.attributes = { ...(pending.attributes ?? {}), ...p.attributes };
+            } else {
+              const prev = updates.get(existing);
+              updates.set(
+                existing,
+                prev
+                  ? {
+                      name: p.name ?? prev.name,
+                      phone: p.phone ?? prev.phone,
+                      email: p.email ?? prev.email,
+                      tagIds: [...new Set([...prev.tagIds, ...p.tagIds])],
+                      optOut: prev.optOut || p.optOut,
+                      attributes: { ...prev.attributes, ...p.attributes },
+                    }
+                  : p,
+              );
+            }
+            counts.updated++;
+          } else {
+            contactId = newId("contact");
+            inserts.set(contactId, {
+              id: contactId,
+              organizationId: orgId,
+              name: p.name,
+              phone: p.phone,
+              email: p.email,
+              branchId: imp.branchId,
+              tagIds: p.tagIds,
+              attributes: p.attributes,
+              source: "import",
+              createdByUserId: imp.userId,
+            });
+            counts.created++;
+          }
+          if (p.phone && !byPhone.has(p.phone)) byPhone.set(p.phone, contactId);
+          if (p.email && !byEmail.has(p.email)) byEmail.set(p.email, contactId);
+          if (p.optOut) optOuts.add(contactId);
+        }
+
+        await db.transaction(async (tx) => {
+          if (inserts.size) await tx.insert(c).values([...inserts.values()]);
+          if (updates.size) {
+            const values = [...updates].map(([id, p]) => ({
+              id,
+              name: p.name,
+              phone: p.phone,
+              email: p.email,
+              tags: p.tagIds.length ? p.tagIds : null,
+              attrs: p.attributes,
+            }));
+            // One statement for the whole batch; empty cells (nulls) keep what's there.
+            await tx.execute(sql`
+              update contact set
+                name = coalesce(v.name, contact.name),
+                phone = coalesce(v.phone, contact.phone),
+                email = coalesce(v.email, contact.email),
+                tag_ids = case when v.tags is null then contact.tag_ids
+                  else array(select distinct unnest(contact.tag_ids || v.tags)) end,
+                attributes = contact.attributes || v.attrs,
+                updated_at = now()
+              from jsonb_to_recordset(${JSON.stringify(values)}::jsonb)
+                as v(id text, name text, phone text, email text, tags text[], attrs jsonb)
+              where contact.id = v.id`);
+          }
+          if (optOuts.size)
+            await tx
+              .insert(schema.contactOptOut)
+              .values(
+                [...optOuts].map((contactId) => ({
+                  id: newId("contactOptOut"),
+                  organizationId: orgId,
+                  contactId,
+                  channelAccountId: null,
+                  source: "import" as const,
+                  createdByUserId: imp.userId,
+                })),
+              )
+              .onConflictDoNothing();
+        });
+        counts.processed += batch.length;
+      }
+
+      for (let start = 0; start < sheet.rows.length; start += BATCH) {
+        await importBatch(
+          sheet.rows.slice(start, start + BATCH).map((row, i) => ({ index: start + i, row })),
+        );
+        await save();
       }
       await save({ status: "done", finishedAt: new Date() });
     } catch (err) {

@@ -107,7 +107,9 @@ export function ImportDialog({
       const best = [...res.sheets].sort((a, b) => b.total - a.total)[0];
       if (best) pickSheet(res, best.name);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "That file couldn't be uploaded.");
+      setError(
+        err instanceof ApiError || err instanceof Error ? err.message : "That file couldn't be uploaded.",
+      );
     } finally {
       setUploading(false);
     }

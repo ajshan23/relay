@@ -207,6 +207,8 @@ export const contactView = pgTable(
 );
 
 export const importStatus = pgEnum("contact_import_status", [
+  /** The worker is reading the uploaded file. */
+  "reading",
   "mapping",
   "queued",
   "running",
@@ -229,6 +231,10 @@ export const contactImport = pgTable(
     fileName: text("file_name").notNull(),
     storageKey: text("storage_key").notNull(),
     sheet: text("sheet"),
+    /** What the worker read from the file: every sheet's headers, preview and guesses (ImportSheet[]). */
+    sheets: jsonb("sheets").$type<unknown[]>(),
+    /** Why the file couldn't be read, when status is failed before mapping. */
+    readError: text("read_error"),
     /** Column header → target: { kind: "core"|"field"|"tags"|"new_field"|"skip", ... }. */
     mapping: jsonb("mapping").$type<Record<string, unknown>>(),
     /** Match existing contacts by phone or email: update them, or skip those rows. */

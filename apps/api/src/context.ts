@@ -12,6 +12,7 @@ export function createContext() {
   const outboxQueue = new Queue(queues.outbox, { connection: redis });
   const templatesQueue = new Queue(queues.templates, { connection: redis });
   const contactsQueue = new Queue(queues.contacts, { connection: redis });
+  const contactFilesQueue = new Queue(queues.contactFiles, { connection: redis });
 
   return {
     config,
@@ -22,6 +23,7 @@ export function createContext() {
       outbox: outboxQueue,
       templates: templatesQueue,
       contacts: contactsQueue,
+      contactFiles: contactFilesQueue,
     },
     async close() {
       await Promise.all([
@@ -29,6 +31,7 @@ export function createContext() {
         outboxQueue.close(),
         templatesQueue.close(),
         contactsQueue.close(),
+        contactFilesQueue.close(),
       ]);
       redis.disconnect();
       await sql.end();

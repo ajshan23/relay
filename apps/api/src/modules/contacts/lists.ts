@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { newId } from "@relay/core";
-import { and, asc, eq, schema, sql } from "@relay/db";
+import { and, asc, eq, inArray, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
@@ -29,6 +30,8 @@ const filterSchema = z.object({
   rules: z.array(ruleSchema).max(30),
 });
 
+const SMART_COUNT_TTL_S = 60;
+
 export function contactListRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
@@ -44,6 +47,36 @@ export function contactListRoutes(ctx: AppContext) {
     compileFilter(filter as never, fields, lists, 1);
   }
 
+  /**
+   * How many contacts a smart list has. Counting runs its whole filter, so the answer is kept for a
+   * minute: the sidebar asks often, and a count a few seconds old is fine.
+   */
+  async function smartCount(
+    orgId: string,
+    branchId: string,
+    listId: string,
+    filter: unknown,
+    fields: Map<string, never>,
+    lists: Awaited<ReturnType<typeof listsById>>,
+  ) {
+    const key = `relay:list-count:${listId}:${createHash("sha1").update(JSON.stringify(filter)).digest("hex")}`;
+    const cached = await ctx.redis.get(key).catch(() => null);
+    if (cached !== null) return Number(cached);
+    let count = 0;
+    try {
+      const where = compileFilter(filter as never, fields, lists, 1);
+      const [n] = await ctx.db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(c)
+        .where(and(eq(c.organizationId, orgId), eq(c.branchId, branchId), where));
+      count = n?.n ?? 0;
+    } catch {
+      // A smart list whose field was archived counts as empty until it's fixed.
+    }
+    await ctx.redis.set(key, String(count), "EX", SMART_COUNT_TTL_S).catch(() => undefined);
+    return count;
+  }
+
   app.get("/", async (c2) => {
     const access = c2.var.access;
     const branchId = c2.var.branchId;
@@ -54,27 +87,22 @@ export function contactListRoutes(ctx: AppContext) {
       .orderBy(asc(l.name));
     const fields = new Map((await activeFields(ctx.db, access.orgId)).map((f) => [f.key, f as never]));
     const lists = await listsById(ctx.db, access.orgId, branchId);
+    // Static lists: one grouped count for all of them.
+    const staticIds = rows.filter((r) => r.kind === "static").map((r) => r.id);
+    const members = staticIds.length
+      ? await ctx.db
+          .select({ listId: schema.contactListMember.listId, n: sql<number>`count(*)::int` })
+          .from(schema.contactListMember)
+          .where(inArray(schema.contactListMember.listId, staticIds))
+          .groupBy(schema.contactListMember.listId)
+      : [];
+    const memberCount = new Map(members.map((m) => [m.listId, m.n]));
     const out = await Promise.all(
       rows.map(async (r) => {
-        let count = 0;
-        try {
-          if (r.kind === "static") {
-            const [n] = await ctx.db
-              .select({ n: sql<number>`count(*)::int` })
-              .from(schema.contactListMember)
-              .where(eq(schema.contactListMember.listId, r.id));
-            count = n?.n ?? 0;
-          } else {
-            const where = compileFilter(r.filter as never, fields, lists, 1);
-            const [n] = await ctx.db
-              .select({ n: sql<number>`count(*)::int` })
-              .from(c)
-              .where(and(eq(c.organizationId, access.orgId), eq(c.branchId, branchId), where));
-            count = n?.n ?? 0;
-          }
-        } catch {
-          // A smart list whose field was archived counts as empty until it's fixed.
-        }
+        const count =
+          r.kind === "static"
+            ? (memberCount.get(r.id) ?? 0)
+            : await smartCount(access.orgId, branchId, r.id, r.filter, fields, lists);
         return { id: r.id, name: r.name, kind: r.kind, filter: r.filter, count, createdAt: r.createdAt };
       }),
     );

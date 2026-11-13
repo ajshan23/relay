@@ -61,8 +61,11 @@ export const contact = pgTable(
   },
   (t) => [
     index("contact_org_idx").on(t.organizationId, t.createdAt),
-    index("contact_org_last_message_idx").on(t.organizationId, t.lastMessageAt),
-    index("contact_org_phone_idx").on(t.organizationId, t.phone),
+    // The contacts table is always one branch, sorted newest first with id as the tie-breaker.
+    index("contact_branch_last_message_idx").on(t.branchId, t.lastMessageAt.desc().nullsLast(), t.id.desc()),
+    index("contact_branch_created_idx").on(t.branchId, t.createdAt.desc(), t.id.desc()),
+    index("contact_branch_phone_idx").on(t.branchId, t.phone),
+    index("contact_branch_email_idx").on(t.branchId, t.email),
     index("contact_phone_trgm").using("gin", sql`${t.phone} gin_trgm_ops`),
     index("contact_attributes_gin").using("gin", sql`${t.attributes} jsonb_path_ops`),
     index("contact_tags_gin").using("gin", t.tagIds),
@@ -108,7 +111,7 @@ export const contactIdentity = pgTable(
       t.externalId,
     ),
     index("contact_identity_contact_idx").on(t.contactId),
-    index("contact_identity_phone_idx").on(t.organizationId, t.phone),
+    index("contact_identity_phone_idx").on(t.branchId, t.phone),
     index("contact_identity_phone_trgm").using("gin", sql`${t.phone} gin_trgm_ops`),
   ],
 );

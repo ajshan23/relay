@@ -7,8 +7,30 @@ export const queues = {
   media: "media",
   /** Publishing, editing, removing and importing message templates on channels. */
   templates: "templates",
-  /** Contact imports from Excel or CSV. The job id is the import id. */
+  /** Contact imports from Excel or CSV, one at a time. The job id is the import id. */
   contacts: "contacts",
+  /**
+   * Contacts files, a few at once: "read" an uploaded file (job id read_<import id>) and "export" a
+   * view to a file (job id export_<uuid>).
+   */
+  contactFiles: "contact-files",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];
+
+/** A contacts export, compiled by the API and run by the worker (queue "contact-files", job "export"). */
+export type ExportJob = {
+  orgId: string;
+  branchId: string;
+  userId: string;
+  /** The table's query, with its parameters. */
+  sql: string;
+  params: unknown[];
+  /** Names of the query's columns, in order. */
+  keys: string[];
+  /** The table's visible columns, in order. */
+  columns: string[];
+  format: "xlsx" | "csv";
+};
+
+export type ExportResult = { storageKey: string; fileName: string; rows: number };

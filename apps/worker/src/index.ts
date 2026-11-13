@@ -1,14 +1,16 @@
 import { createServer } from "node:http";
-import { env, queues } from "@relay/core";
+import { type ExportJob, env, queues } from "@relay/core";
 import { createDb } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
-import { Queue, Worker } from "bullmq";
+import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createMediaProcessor } from "./channels/media";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
 import { createTemplateProcessor, type TemplateJob } from "./channels/templates";
 import { createWebhookProcessor, type MediaJob, type WebhookJob } from "./channels/webhooks";
+import { createExportProcessor } from "./contacts/export";
 import { createImportProcessor, type ImportJob } from "./contacts/import";
+import { createReadProcessor, type ReadJob } from "./contacts/read";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -54,13 +56,29 @@ webhooks.on("failed", (job, err) =>
   console.error(`webhook ${job?.data.eventId} failed (attempt ${job?.attemptsMade})`, err.message),
 );
 
-/* Contact imports from Excel or CSV: one at a time, rows in order. */
+/* Contact imports from Excel or CSV: one at a time, rows in order, a batch at a time. */
 const contactImports = new Worker<ImportJob>(queues.contacts, createImportProcessor({ db }), {
   connection,
   concurrency: 1,
 });
 contactImports.on("failed", (job, err) =>
   console.error(`contact import ${job?.data.importId} failed: ${err.message}`),
+);
+
+/* Contacts files: reading uploaded spreadsheets and writing exports, off the API's CPU. */
+const readFile = createReadProcessor({ db });
+const writeExport = createExportProcessor({ db, sql });
+const contactFiles = new Worker(
+  queues.contactFiles,
+  async (job: Job) => {
+    if (job.name === "read") return readFile(job as Job<ReadJob>);
+    if (job.name === "export") return writeExport(job as Job<ExportJob>);
+    throw new Error(`Unknown contacts file job "${job.name}".`);
+  },
+  { connection, concurrency: 3 },
+);
+contactFiles.on("failed", (job, err) =>
+  console.error(`contacts ${job?.name} ${job?.id} failed: ${err.message}`),
 );
 
 /* Message templates: publishing to channels, removing, importing. */
@@ -96,6 +114,7 @@ const health = createServer((_req, res) => {
         media: media.isRunning(),
         templates: templates.isRunning(),
         contacts: contactImports.isRunning(),
+        contactFiles: contactFiles.isRunning(),
       },
     }),
   );
@@ -111,6 +130,7 @@ async function shutdown() {
     media.close(),
     templates.close(),
     contactImports.close(),
+    contactFiles.close(),
     mediaQueue.close(),
   ]);
   connection.disconnect();

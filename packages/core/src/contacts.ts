@@ -288,6 +288,59 @@ export function guessType(values: unknown[]): FieldType {
   return "text";
 }
 
+/** Most distinct values a new choice field takes from a column. */
+export const MAX_IMPORT_OPTIONS = 50;
+
+/** What the import screen needs about one sheet, worked out once by the worker. */
+export type ImportSheet = {
+  name: string;
+  headers: string[];
+  total: number;
+  preview: unknown[][];
+  guesses: ImportTarget[];
+  /**
+   * Distinct values per column, up to MAX_IMPORT_OPTIONS + 1, for new choice fields: whole cells
+   * (single choice) and comma-separated parts (multiple choice).
+   */
+  values: string[][];
+  parts: string[][];
+};
+
+/** Summarises a parsed sheet for the import screen. */
+export function summarizeSheet(
+  sheet: { name: string; headers: string[]; rows: unknown[][] },
+  fields: ContactFieldDef[],
+): ImportSheet {
+  const distinct = (i: number, split: boolean) => {
+    const seen = new Map<string, string>();
+    for (const r of sheet.rows) {
+      const raw = r[i];
+      if (raw === null || raw === undefined) continue;
+      for (const p of split ? String(raw).split(/[,;]/) : [String(raw)]) {
+        const v = p.trim();
+        if (v && !seen.has(v.toLowerCase())) seen.set(v.toLowerCase(), v);
+      }
+      if (seen.size > MAX_IMPORT_OPTIONS) break;
+    }
+    return [...seen.values()];
+  };
+  return {
+    name: sheet.name,
+    headers: sheet.headers,
+    total: sheet.rows.length,
+    preview: sheet.rows.slice(0, 5),
+    guesses: sheet.headers.map((h, i) =>
+      guessTarget(
+        h,
+        fields,
+        sheet.rows.slice(0, 200).map((r) => r[i]),
+      ),
+    ),
+    values: sheet.headers.map((_, i) => distinct(i, false)),
+    parts: sheet.headers.map((_, i) => distinct(i, true)),
+  };
+}
+
 /** Truthy spreadsheet values: yes, true, y, 1, x. */
 export const isYes = (v: unknown) => v === true || /^(yes|true|y|1|x)$/i.test(String(v ?? "").trim());
 
@@ -321,4 +374,79 @@ export function optOutReply(text: string | null | undefined): "stop" | "start" |
   if (stopWords.has(t)) return "stop";
   if (startWords.has(t)) return "start";
   return null;
+}
+
+/* ------------------------------------------------------------------ export */
+
+/** One contact as the export reads it. */
+export type ExportRow = {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  tagIds: string[];
+  attributes: Record<string, unknown>;
+  optOuts: (string | null)[];
+  lastMessageAt: Date | string | null;
+  createdAt: Date | string;
+  [key: string]: unknown;
+};
+
+const exportHeaders: Record<string, string> = {
+  name: "Name",
+  phone: "Phone",
+  email: "Email",
+  tags: "Tags",
+  lastMessageAt: "Last message",
+  createdAt: "Added on",
+  marketing: "Marketing opt-out",
+};
+
+/** The header row and cells of an export: labels for choices, names for tags and channels. */
+export function exportTable(
+  columns: string[],
+  rows: ExportRow[],
+  names: { fields: ContactFieldDef[]; tags: Map<string, string>; channels: Map<string, string> },
+) {
+  const fields = new Map(names.fields.map((f) => [f.key, f]));
+  const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
+  const cols = columns.filter((id) => !id.startsWith("attr.") || fields.has(id.slice(5)));
+  const headers = cols.map((id) =>
+    id.startsWith("attr.") ? (fields.get(id.slice(5))?.label ?? id) : (exportHeaders[id] ?? id),
+  );
+  const cells = rows.map((r) =>
+    cols.map((id) => {
+      if (id.startsWith("attr.")) {
+        const f = fields.get(id.slice(5));
+        const v = r.attributes[id.slice(5)];
+        if (v === undefined || v === null) return null;
+        if (f?.type === "select") return f.options.find((o) => o.value === v)?.label ?? v;
+        if (f?.type === "multi_select")
+          return (v as string[]).map((x) => f.options.find((o) => o.value === x)?.label ?? x).join(", ");
+        if (f?.type === "boolean") return v ? "Yes" : "No";
+        return v;
+      }
+      switch (id) {
+        case "phone":
+          return r.phone ? `+${r.phone}` : null;
+        case "tags":
+          return (
+            r.tagIds
+              .map((t) => names.tags.get(t))
+              .filter(Boolean)
+              .join(", ") || null
+          );
+        case "lastMessageAt":
+          return day(r.lastMessageAt);
+        case "createdAt":
+          return day(r.createdAt);
+        case "marketing":
+          return r.optOuts.length
+            ? r.optOuts.map((ch) => (ch ? (names.channels.get(ch) ?? ch) : "All channels")).join(", ")
+            : null;
+        default:
+          return r[id] ?? null;
+      }
+    }),
+  );
+  return { headers, cells };
 }

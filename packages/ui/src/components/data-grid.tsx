@@ -55,6 +55,9 @@ export type DataGridProps<T> = {
   page?: number;
   pageSize?: number;
   total?: number;
+  /** `total` is a floor ("10,000+"): there may be more, and `hasMore` says if there's a next page. */
+  totalCapped?: boolean;
+  hasMore?: boolean;
   onPageChange?: (page: number) => void;
   /** Extra header cell at the end, e.g. an "Add column" button. */
   trailingHeader?: ReactNode;
@@ -79,6 +82,8 @@ export function DataGrid<T>({
   page = 1,
   pageSize = 50,
   total,
+  totalCapped = false,
+  hasMore = false,
   onPageChange,
   trailingHeader,
   "aria-label": ariaLabel,
@@ -132,7 +137,13 @@ export function DataGrid<T>({
     }
   };
 
-  const pageCount = total ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  const pageCount = total
+    ? Math.max(1, Math.ceil(total / pageSize), totalCapped ? page + (hasMore ? 1 : 0) : 0)
+    : 1;
+  const from = (page - 1) * pageSize + 1;
+  const summary = totalCapped
+    ? `${from.toLocaleString()}–${(from + rows.length - 1).toLocaleString()} of ${total?.toLocaleString()}+`
+    : undefined;
 
   return (
     <div data-slot="data-grid" className={cn("flex min-h-0 flex-col gap-3", className)}>
@@ -302,6 +313,7 @@ export function DataGrid<T>({
           onPageChange={onPageChange}
           totalCount={total}
           pageSize={pageSize}
+          summary={summary}
         />
       ) : null}
     </div>

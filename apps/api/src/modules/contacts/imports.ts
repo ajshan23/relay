@@ -1,6 +1,12 @@
 import { localFileStorage, newId } from "@relay/core";
-import { type FieldType, guessTarget, type ImportMapping, type ImportTarget } from "@relay/core/contacts";
-import { readWorkbook, writeWorkbook } from "@relay/core/sheets";
+import {
+  type FieldType,
+  type ImportMapping,
+  type ImportSheet,
+  type ImportTarget,
+  MAX_IMPORT_OPTIONS,
+} from "@relay/core/contacts";
+import { writeWorkbook } from "@relay/core/sheets";
 import { and, desc, eq, schema } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -11,9 +17,11 @@ import { parseBody } from "../branches/routes";
 import { activeFields, type BranchEnv, canEditContacts, createField, requireBranch } from "./shared";
 
 /*
- * Importing contacts from Excel (.xlsx, .xls) or CSV.
- *   POST /api/contacts/imports              upload (multipart "file"): sheets, headers, a preview and
- *                                           a guessed target for every column
+ * Importing contacts from Excel (.xlsx, .xls) or CSV. The API never parses spreadsheets itself (a big
+ * file is seconds of CPU); the worker reads them.
+ *   POST /api/contacts/imports              upload (multipart "file"): stores it; the worker reads it
+ *                                           (status "reading", then "mapping" with `sheets`: headers,
+ *                                           a preview and a guessed target for every column)
  *   POST /api/contacts/imports/:id/start    { sheet, mapping, onMatch }: creates new fields, then the
  *                                           worker imports the rows in the background
  *   GET  /api/contacts/imports/:id          progress and the first failed rows
@@ -21,7 +29,6 @@ import { activeFields, type BranchEnv, canEditContacts, createField, requireBran
  */
 
 const MAX_BYTES = 20 * 1024 * 1024;
-const PREVIEW_ROWS = 5;
 const kinds = ["xlsx", "xls", "csv"] as const;
 
 const targetSchema = z.discriminatedUnion("kind", [
@@ -50,8 +57,16 @@ export function contactImportRoutes(ctx: AppContext) {
   }
 
   const publicImport = (r: typeof im.$inferSelect) => {
-    const { storageKey: _, organizationId: __, ...rest } = r;
-    return { ...rest, errors: r.errors.slice(0, 50) };
+    const { storageKey: _, organizationId: __, sheets, ...rest } = r;
+    return {
+      ...rest,
+      errors: r.errors.slice(0, 50),
+      // The screen shows headers, the preview and guesses; the distinct values stay here.
+      sheets:
+        r.status === "mapping"
+          ? ((sheets ?? []) as ImportSheet[]).map(({ values: _v, parts: _p, ...sh }) => sh)
+          : null,
+    };
   };
 
   app.post("/", async (c2) => {
@@ -65,18 +80,6 @@ export function contactImportRoutes(ctx: AppContext) {
       return fail(c2, 422, "invalid_input", "Use an Excel (.xlsx, .xls) or CSV file.");
     if (file.size > MAX_BYTES) return fail(c2, 422, "too_large", "Files can be up to 20 MB.");
     const bytes = new Uint8Array(await file.arrayBuffer());
-    let sheets: ReturnType<typeof readWorkbook>;
-    try {
-      sheets = readWorkbook(bytes).filter((s) => s.headers.length);
-    } catch {
-      return fail(
-        c2,
-        422,
-        "unreadable",
-        "We couldn't read that file. Save it as .xlsx or .csv and try again.",
-      );
-    }
-    if (!sheets.length) return fail(c2, 422, "empty", "That file has no rows to import.");
     const id = newId("contactImport");
     const storageKey = `imports/${access.orgId}/${id}.${ext}`;
     await storage.put(storageKey, bytes);
@@ -89,26 +92,15 @@ export function contactImportRoutes(ctx: AppContext) {
         userId: access.userId,
         fileName: file.name,
         storageKey,
+        status: "reading",
       })
       .returning();
+    await ctx.queues.contactFiles.add("read", { importId: id }, { jobId: `read_${id}`, attempts: 1 });
     const fields = await activeFields(ctx.db, access.orgId);
     return c2.json(
       {
         import: row && publicImport(row),
         fields: fields.map((f) => ({ key: f.key, label: f.label, type: f.type })),
-        sheets: sheets.map((s) => ({
-          name: s.name,
-          headers: s.headers,
-          total: s.rows.length,
-          preview: s.rows.slice(0, PREVIEW_ROWS),
-          guesses: s.headers.map((h, i) =>
-            guessTarget(
-              h,
-              fields as never,
-              s.rows.slice(0, 200).map((r) => r[i]),
-            ),
-          ),
-        })),
       },
       201,
     );
@@ -160,8 +152,8 @@ export function contactImportRoutes(ctx: AppContext) {
       if (m.target.kind === "field" && !fields.some((f) => f.key === (m.target as { key: string }).key))
         return fail(c2, 422, "invalid_input", `Column "${m.header}" points at a field that doesn't exist.`);
 
-    // New choice fields get their options from the values in the column.
-    const sheet = readWorkbook(await storage.get(imp.storageKey)).find((s) => s.name === b.sheet);
+    // New choice fields get their options from the column's values, which the worker collected.
+    const sheet = ((imp.sheets ?? []) as ImportSheet[]).find((s) => s.name === b.sheet);
     if (!sheet) return fail(c2, 422, "invalid_input", "That sheet isn't in the file.");
     const mapping: ImportMapping = [];
     for (const m of b.mapping) {
@@ -172,25 +164,15 @@ export function contactImportRoutes(ctx: AppContext) {
       const t = m.target as { label: string; type: FieldType };
       let options: { label: string }[] | undefined;
       if (t.type === "select" || t.type === "multi_select") {
-        const seen = new Map<string, string>();
-        for (const r of sheet.rows) {
-          const raw = r[m.column];
-          if (raw === null || raw === undefined) continue;
-          const parts = t.type === "multi_select" ? String(raw).split(/[,;]/) : [String(raw)];
-          for (const p of parts) {
-            const v = p.trim();
-            if (v && !seen.has(v.toLowerCase())) seen.set(v.toLowerCase(), v);
-          }
-          if (seen.size > 50) break;
-        }
-        if (seen.size > 50)
+        const values = (t.type === "multi_select" ? sheet.parts : sheet.values)[m.column] ?? [];
+        if (values.length > MAX_IMPORT_OPTIONS)
           return fail(
             c2,
             422,
             "invalid_input",
-            `"${m.header}" has more than 50 different values. Import it as text.`,
+            `"${m.header}" has more than ${MAX_IMPORT_OPTIONS} different values. Import it as text.`,
           );
-        options = [...seen.values()].map((label) => ({ label }));
+        options = values.map((label) => ({ label }));
       }
       const field = await createField(ctx.db, access.orgId, access.userId, {
         label: t.label,
@@ -211,7 +193,7 @@ export function contactImportRoutes(ctx: AppContext) {
         mapping: mapping as never,
         onMatch: b.onMatch,
         status: "queued",
-        total: sheet.rows.length,
+        total: sheet.total,
       })
       .where(eq(im.id, imp.id))
       .returning();

@@ -13,6 +13,8 @@ export type TablePaginationProps = {
   /** When given with `pageSize`, shows "1–25 of 312" on the left. */
   totalCount?: number;
   pageSize?: number;
+  /** Replaces the "1–25 of 312" text, e.g. when the total is only known to be "10,000+". */
+  summary?: string;
   className?: string;
 };
 
@@ -41,6 +43,7 @@ export function TablePagination({
   onPageChange,
   totalCount,
   pageSize,
+  summary,
   className,
 }: TablePaginationProps) {
   const pages = Math.max(1, pageCount);
@@ -56,7 +59,7 @@ export function TablePagination({
       className={cn("flex flex-wrap items-center justify-between gap-3 text-[13px]", className)}
     >
       <p className="text-muted-foreground tabular-nums" aria-live="polite">
-        {hasSummary ? `${from}–${to} of ${totalCount}` : `Page ${current} of ${pages}`}
+        {summary ?? (hasSummary ? `${from}–${to} of ${totalCount}` : `Page ${current} of ${pages}`)}
       </p>
       <ul className="flex items-center gap-1">
         <li>

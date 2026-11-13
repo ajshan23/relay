@@ -1,4 +1,5 @@
-import { newId } from "@relay/core";
+import { randomUUID } from "node:crypto";
+import { type ExportJob, type ExportResult, localFileStorage, newId } from "@relay/core";
 import {
   type ContactFieldDef,
   coerceFieldValue,
@@ -6,7 +7,6 @@ import {
   fieldKey,
   optionColours,
 } from "@relay/core/contacts";
-import { writeWorkbook } from "@relay/core/sheets";
 import { and, asc, desc, eq, inArray, isNull, or, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -14,7 +14,7 @@ import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { compileFilter, compileSort, FilterError } from "./filter";
+import { compileFilter, compileKeyset, compileSort, FilterError } from "./filter";
 import {
   type BranchEnv,
   canEditContacts,
@@ -34,6 +34,15 @@ import {
 
 const PAGE_SIZE_MAX = 100;
 const EXPORT_MAX = 50_000;
+/** Finished exports can be downloaded for a day. */
+const EXPORT_KEEP_S = 24 * 60 * 60;
+/** Totals are exact up to here; past it the table says "10,000+" instead of counting every row. */
+const COUNT_CAP = 10_000;
+/** Typed field indexes are only made for businesses with at least this many contacts... */
+const INDEX_MIN_CONTACTS = 20_000;
+/** ...and at most this many per business. */
+const MAX_FIELD_INDEXES = 10;
+const fieldIndexName = (fieldId: string) => `contact_attr_${fieldId.replace(/[^a-z0-9_]/gi, "_")}`;
 const c = schema.contact;
 /** contact.id spelled out: inside a subquery a bare "id" would mean the subquery's own row. */
 const contactId = sql.raw('"contact"."id"');
@@ -56,6 +65,8 @@ const querySchema = z.object({
   listId: z.string().max(60).optional(),
   page: z.number().int().min(1).default(1),
   pageSize: z.number().int().min(1).max(PAGE_SIZE_MAX).default(50),
+  /** The last contact of the previous page: continue after it instead of counting rows from the top. */
+  after: z.string().max(60).optional(),
 });
 
 const optionSchema = z.object({
@@ -78,6 +89,7 @@ const fieldTypeSchema = z.enum([
 export function contactRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  const exportStorage = localFileStorage(ctx.config.MEDIA_DIR);
 
   /* ---------------------------------------------------------------- access */
 
@@ -119,25 +131,52 @@ export function contactRoutes(ctx: AppContext) {
     return rows.map((r) => r.id);
   }
 
+  /** Whether the business has enough contacts that a typed field index pays off (cached 10 min). */
+  async function isLarge(orgId: string) {
+    const key = `relay:contacts-large:${orgId}`;
+    const cached = await ctx.redis.get(key).catch(() => null);
+    if (cached !== null) return cached === "1";
+    const sample = ctx.db
+      .select({ one: sql`1` })
+      .from(c)
+      .where(eq(c.organizationId, orgId))
+      .limit(INDEX_MIN_CONTACTS)
+      .as("sample");
+    const [row] = await ctx.db.select({ n: sql<number>`count(*)::int` }).from(sample);
+    const large = (row?.n ?? 0) >= INDEX_MIN_CONTACTS;
+    await ctx.redis.set(key, large ? "1" : "0", "EX", 600).catch(() => undefined);
+    return large;
+  }
+
   /**
    * Sorting or range-filtering a number or date field gets a typed index, created in the background the
-   * first time it's needed. Partial per business, so one business's fields never slow another's.
+   * first time it's needed. Partial per business, so one business's fields never slow another's. Only
+   * for businesses big enough to need it (smaller ones are fast without), and at most
+   * MAX_FIELD_INDEXES each: every index on the shared contact table slows every write to it.
    */
-  async function ensureIndexes(orgId: string, fields: ContactFieldDef[], used: string[]) {
-    for (const f of fields) {
-      if (!used.includes(f.key) || (f.type !== "number" && f.type !== "date")) continue;
-      const [row] = await ctx.db
-        .select({ indexed: schema.contactField.indexed })
-        .from(schema.contactField)
-        .where(eq(schema.contactField.id, f.id))
-        .limit(1);
-      if (!row || row.indexed) continue;
-      await ctx.db.update(schema.contactField).set({ indexed: true }).where(eq(schema.contactField.id, f.id));
+  async function ensureIndexes(
+    orgId: string,
+    fields: (ContactFieldDef & { indexed?: boolean })[],
+    used: string[],
+  ) {
+    const wanted = fields.filter(
+      (f) => used.includes(f.key) && (f.type === "number" || f.type === "date") && !f.indexed,
+    );
+    if (!wanted.length || !(await isLarge(orgId))) return;
+    for (const f of wanted) {
+      // Claim the slot atomically: only if this field isn't indexed yet and the business has room.
+      const claimed = await ctx.db.execute(sql`
+        update contact_field set indexed = true
+        where id = ${f.id} and not indexed
+          and (select count(*) from contact_field where organization_id = ${orgId} and indexed) < ${MAX_FIELD_INDEXES}
+        returning id`);
+      if (!claimed.length) continue;
       const fn = f.type === "number" ? "relay_attr_num" : "relay_attr_date";
-      const name = `contact_attr_${f.id.replace(/[^a-z0-9_]/gi, "_")}`;
       // Identifiers can't be bound parameters; every part here is generated by Relay, never user text.
-      const ddl = `create index concurrently if not exists "${name}" on contact (${fn}(attributes, '${f.key.replace(/'/g, "")}')) where organization_id = '${orgId.replace(/'/g, "")}'`;
-      void ctx.db.execute(sql.raw(ddl)).catch((err) => console.warn("contact field index", name, err));
+      const ddl = `create index concurrently if not exists "${fieldIndexName(f.id)}" on contact (${fn}(attributes, '${f.key.replace(/'/g, "")}')) where organization_id = '${orgId.replace(/'/g, "")}'`;
+      void ctx.db
+        .execute(sql.raw(ddl))
+        .catch((err) => console.warn("contact field index", fieldIndexName(f.id), err));
     }
   }
 
@@ -207,33 +246,89 @@ export function contactRoutes(ctx: AppContext) {
       from ${schema.contactIdentity} i where i.contact_id = ${contactId}), '[]'::json)`,
   };
 
-  // The table: filters, sort, search and paging, with the total count.
+  // The table: filters, sort, search and paging, with the total count (exact up to COUNT_CAP).
   app.post("/query", async (c2) => {
     const access = c2.var.access;
+    const branchId = c2.var.branchId;
     const parsed = await parseBody(c2, querySchema);
     if ("error" in parsed) return parsed.error;
-    const { page, pageSize } = parsed.data;
+    const { page, pageSize, after } = parsed.data;
     let query: Awaited<ReturnType<typeof tableQuery>>;
+    let keyset: ReturnType<typeof compileKeyset>;
     try {
-      query = await tableQuery(access.orgId, c2.var.branchId, parsed.data);
+      query = await tableQuery(access.orgId, branchId, parsed.data);
+      const sort = parsed.data.sort === undefined ? defaultView.sort : parsed.data.sort;
+      keyset = compileKeyset(sort, byKey(query.fields));
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
     }
-    const [rows, [total]] = await Promise.all([
-      ctx.db
-        .select(rowColumns)
-        .from(c)
-        .where(query.cond)
+    // One extra row says whether there's a next page.
+    const take = pageSize + 1;
+    const select = () => ctx.db.select(rowColumns).from(c);
+
+    async function pageRows() {
+      const [cursor] = after
+        ? await ctx.db
+            .select({ value: keyset.key })
+            .from(c)
+            .where(and(eq(c.id, after), eq(c.branchId, branchId)))
+            .limit(1)
+        : [];
+      // No cursor, or its contact is gone: count rows from the top instead.
+      if (!after || !cursor)
+        return select()
+          .where(query.cond)
+          .orderBy(query.order)
+          .limit(take)
+          .offset((page - 1) * pageSize);
+      if (cursor.value === null)
+        return select()
+          .where(and(query.cond, keyset.nulls(after)))
+          .orderBy(keyset.nullsOrder)
+          .limit(take);
+      const rows = await select()
+        .where(and(query.cond, keyset.after(cursor.value, after)))
         .orderBy(query.order)
-        .limit(pageSize)
-        .offset((page - 1) * pageSize),
-      ctx.db.select({ n: sql<number>`count(*)::int` }).from(c).where(query.cond),
+        .limit(take);
+      // Contacts with no value sort after everyone with one.
+      if (rows.length < take)
+        rows.push(
+          ...(await select()
+            .where(and(query.cond, keyset.nulls()))
+            .orderBy(keyset.nullsOrder)
+            .limit(take - rows.length)),
+        );
+      return rows;
+    }
+
+    const capped = ctx.db
+      .select({ one: sql`1` })
+      .from(c)
+      .where(query.cond)
+      .limit(COUNT_CAP + 1)
+      .as("capped");
+    const [rows, [counted]] = await Promise.all([
+      pageRows(),
+      ctx.db.select({ n: sql<number>`count(*)::int` }).from(capped),
     ]);
-    return c2.json({ contacts: rows, total: total?.n ?? 0, page, pageSize });
+    const n = counted?.n ?? 0;
+    return c2.json({
+      contacts: rows.slice(0, pageSize),
+      total: Math.min(n, COUNT_CAP),
+      /** True when there are more than `total` contacts. */
+      totalCapped: n > COUNT_CAP,
+      hasMore: rows.length > pageSize,
+      page,
+      pageSize,
+    });
   });
 
-  // The current view as an Excel or CSV file: its visible columns, filters, sort and search.
+  /*
+   * Exports: the current view as an Excel or CSV file. Building a big file takes seconds of CPU, so
+   * the API only compiles the query; the worker runs it and writes the file, and the browser polls
+   * GET /exports/:id and downloads /exports/:id/file when it's ready.
+   */
   app.post("/export", async (c2) => {
     const access = c2.var.access;
     const parsed = await parseBody(
@@ -251,95 +346,65 @@ export function contactRoutes(ctx: AppContext) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
     }
-    const rows = await ctx.db
+    const compiled = ctx.db
       .select(rowColumns)
       .from(c)
       .where(query.cond)
       .orderBy(query.order)
-      .limit(EXPORT_MAX);
-    const [tags, branches, channels] = await Promise.all([
-      ctx.db
-        .select({ id: schema.tag.id, name: schema.tag.name })
-        .from(schema.tag)
-        .where(eq(schema.tag.organizationId, access.orgId)),
-      ctx.db
-        .select({ id: schema.branch.id, name: schema.branch.name })
-        .from(schema.branch)
-        .where(eq(schema.branch.organizationId, access.orgId)),
-      ctx.db
-        .select({ id: schema.channelAccount.id, name: schema.channelAccount.displayName })
-        .from(schema.channelAccount)
-        .where(eq(schema.channelAccount.organizationId, access.orgId)),
-    ]);
-    const tagName = new Map(tags.map((t) => [t.id, t.name]));
-    const branchName = new Map(branches.map((b) => [b.id, b.name]));
-    const channelName = new Map(channels.map((ch) => [ch.id, ch.name]));
-    const fields = byKey(query.fields);
-    const day = (d: Date | string | null) => (d ? new Date(d).toISOString().slice(0, 10) : null);
-    const cols = parsed.data.columns.filter((id) => !id.startsWith("attr.") || fields.has(id.slice(5)));
-    const headers = cols.map((id) => {
-      if (id.startsWith("attr.")) return fields.get(id.slice(5))?.label ?? id;
-      return (
-        (
-          {
-            name: "Name",
-            phone: "Phone",
-            email: "Email",
-            tags: "Tags",
-            branch: "Branch",
-            lastMessageAt: "Last message",
-            createdAt: "Added on",
-            marketing: "Marketing opt-out",
-          } as Record<string, string>
-        )[id] ?? id
-      );
+      .limit(EXPORT_MAX)
+      .toSQL();
+    const id = `export_${randomUUID()}`;
+    const job: ExportJob = {
+      orgId: access.orgId,
+      branchId: c2.var.branchId,
+      userId: access.userId,
+      sql: compiled.sql,
+      params: compiled.params,
+      keys: Object.keys(rowColumns),
+      columns: parsed.data.columns,
+      format: parsed.data.format,
+    };
+    await ctx.queues.contactFiles.add("export", job, {
+      jobId: id,
+      attempts: 1,
+      removeOnComplete: { age: EXPORT_KEEP_S },
+      removeOnFail: { age: EXPORT_KEEP_S },
     });
-    const out = rows.map((r) =>
-      cols.map((id) => {
-        if (id.startsWith("attr.")) {
-          const f = fields.get(id.slice(5));
-          const v = r.attributes[id.slice(5)];
-          if (v === undefined || v === null) return null;
-          if (f?.type === "select") return f.options.find((o) => o.value === v)?.label ?? v;
-          if (f?.type === "multi_select")
-            return (v as string[]).map((x) => f.options.find((o) => o.value === x)?.label ?? x).join(", ");
-          if (f?.type === "boolean") return v ? "Yes" : "No";
-          return v;
-        }
-        switch (id) {
-          case "phone":
-            return r.phone ? `+${r.phone}` : null;
-          case "tags":
-            return (
-              r.tagIds
-                .map((t) => tagName.get(t))
-                .filter(Boolean)
-                .join(", ") || null
-            );
-          case "branch":
-            return r.branchId ? (branchName.get(r.branchId) ?? null) : null;
-          case "lastMessageAt":
-            return day(r.lastMessageAt);
-          case "createdAt":
-            return day(r.createdAt);
-          case "marketing":
-            return r.optOuts.length
-              ? r.optOuts.map((ch) => (ch ? (channelName.get(ch) ?? ch) : "All channels")).join(", ")
-              : null;
-          default:
-            return (r as Record<string, unknown>)[id] ?? null;
-        }
-      }),
-    );
-    const format = parsed.data.format;
-    const bytes = writeWorkbook(headers, out, format);
-    const name = `contacts-${new Date().toISOString().slice(0, 10)}.${format}`;
+    return c2.json({ exportId: id }, 202);
+  });
+
+  /** An export job the caller started, in this branch. */
+  async function findExport(access: Access, branchId: string, id: string) {
+    if (!id.startsWith("export_")) return null;
+    const job = await ctx.queues.contactFiles.getJob(id);
+    const d = job?.data as ExportJob | undefined;
+    if (!job || !d || d.orgId !== access.orgId || d.branchId !== branchId || d.userId !== access.userId)
+      return null;
+    return job;
+  }
+
+  app.get("/exports/:id", async (c2) => {
+    const job = await findExport(c2.var.access, c2.var.branchId, c2.req.param("id"));
+    if (!job) return fail(c2, 404, "not_found");
+    const state = await job.getState();
+    return c2.json({
+      status: state === "completed" ? "done" : state === "failed" ? "failed" : "running",
+      rows: (job.returnvalue as ExportResult | null)?.rows ?? null,
+    });
+  });
+
+  app.get("/exports/:id/file", async (c2) => {
+    const job = await findExport(c2.var.access, c2.var.branchId, c2.req.param("id"));
+    const result = job?.returnvalue as ExportResult | null | undefined;
+    if (!job || !result) return fail(c2, 404, "not_found");
+    const bytes = await exportStorage.get(result.storageKey);
+    const format = (job.data as ExportJob).format;
     return c2.body(bytes as unknown as ArrayBuffer, 200, {
       "Content-Type":
         format === "csv"
           ? "text/csv; charset=utf-8"
           : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="${name}"`,
+      "Content-Disposition": `attachment; filename="${result.fileName}"`,
     });
   });
 
@@ -838,10 +903,14 @@ export function contactFieldRoutes(ctx: AppContext) {
     if (!isOrgAdmin(access.orgRole)) return fail(c2, 403, "forbidden");
     const [row] = await ctx.db
       .update(f)
-      .set({ archivedAt: new Date(), updatedAt: new Date() })
+      .set({ archivedAt: new Date(), updatedAt: new Date(), indexed: false })
       .where(and(eq(f.id, c2.req.param("id")), eq(f.organizationId, access.orgId)))
       .returning();
     if (!row) return fail(c2, 404, "not_found");
+    // An archived field is never sorted on again; its index only slows writes. Generated name only.
+    void ctx.db
+      .execute(sql.raw(`drop index concurrently if exists "${fieldIndexName(row.id)}"`))
+      .catch((err) => console.warn("drop contact field index", err));
     return c2.body(null, 204);
   });
 
@@ -890,7 +959,9 @@ export function tagRoutes(ctx: AppContext) {
         colour: t.colour,
         branchId: t.branchId,
         channelAccountId: t.channelAccountId,
-        contacts: sql<number>`(select count(*)::int from ${schema.contact} ct where ${t.id} = any(ct.tag_ids))`,
+        // "tag"."id" spelled out (a bare "id" would be the contact's); @> uses the tag_ids index.
+        contacts: sql<number>`(select count(*)::int from ${schema.contact} ct
+          where ct.organization_id = "tag"."organization_id" and ct.tag_ids @> array["tag"."id"])`,
       })
       .from(t)
       .where(eq(t.organizationId, c2.var.access.orgId))

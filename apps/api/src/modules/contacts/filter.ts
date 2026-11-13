@@ -230,37 +230,65 @@ export function compileFilter(
   return sql`(${sql.join(parts, filter.match === "any" ? sql` or ` : sql` and `)})`;
 }
 
-/** ORDER BY for a sort, with id as the tie-breaker so pages never repeat or skip rows. */
-export function compileSort(sort: ViewConfig["sort"], fields: Map<string, ContactFieldDef>): SQL {
-  const dir = sort?.dir === "asc" ? sql`asc` : sql`desc`;
-  const nulls = sql`nulls last`;
-  let expr: SQL;
+/** The expression a sort orders by, its SQL type and its direction. */
+function sortKey(sort: ViewConfig["sort"], fields: Map<string, ContactFieldDef>) {
   const f = sort?.field ?? "lastMessageAt";
+  const asc = sort?.dir === "asc";
   if (f.startsWith("attr.")) {
     const field = fields.get(f.slice(5));
     if (!field) throw new FilterError(`Unknown field "${f.slice(5)}".`);
-    expr =
-      field.type === "number"
-        ? sql`relay_attr_num(${c.attributes}, ${field.key})`
-        : field.type === "date"
-          ? sql`relay_attr_date(${c.attributes}, ${field.key})`
-          : field.type === "boolean"
-            ? sql`(${c.attributes} -> ${field.key})`
-            : sql`lower(${c.attributes} ->> ${field.key})`;
-  } else {
-    const columns: Record<string, SQL> = {
-      name: sql`lower(${c.name})`,
-      email: sql`lower(${c.email})`,
-      phone: sql`${c.phone}`,
-      lastMessageAt: sql`${c.lastMessageAt}`,
-      createdAt: sql`${c.createdAt}`,
-      branch: sql`${c.branchId}`,
-      marketing: sql`(select count(*) from ${schema.contactOptOut} o where o.contact_id = ${contactId})`,
-      tags: sql`cardinality(${c.tagIds})`,
-    };
-    const col = columns[f];
-    if (!col) throw new FilterError(`Can't sort by "${f}".`);
-    expr = col;
+    if (field.type === "number")
+      return { expr: sql`relay_attr_num(${c.attributes}, ${field.key})`, type: "numeric", asc };
+    if (field.type === "date")
+      return { expr: sql`relay_attr_date(${c.attributes}, ${field.key})`, type: "date", asc };
+    if (field.type === "boolean") return { expr: sql`(${c.attributes} -> ${field.key})`, type: "jsonb", asc };
+    return { expr: sql`lower(${c.attributes} ->> ${field.key})`, type: "text", asc };
   }
-  return sql`${expr} ${dir} ${nulls}, ${c.id} ${dir}`;
+  const columns: Record<string, [SQL, string]> = {
+    name: [sql`lower(${c.name})`, "text"],
+    email: [sql`lower(${c.email})`, "text"],
+    phone: [sql`${c.phone}`, "text"],
+    lastMessageAt: [sql`${c.lastMessageAt}`, "timestamp"],
+    createdAt: [sql`${c.createdAt}`, "timestamp"],
+    branch: [sql`${c.branchId}`, "text"],
+    marketing: [
+      sql`(select count(*) from ${schema.contactOptOut} o where o.contact_id = ${contactId})`,
+      "bigint",
+    ],
+    tags: [sql`cardinality(${c.tagIds})`, "int"],
+  };
+  const col = columns[f];
+  if (!col) throw new FilterError(`Can't sort by "${f}".`);
+  return { expr: col[0], type: col[1], asc };
+}
+
+/**
+ * ORDER BY for a sort, with id as the tie-breaker so pages never repeat or skip rows. Empty values go
+ * last either way. Newest-first matches the (branch, last message / added on, id) indexes.
+ */
+export function compileSort(sort: ViewConfig["sort"], fields: Map<string, ContactFieldDef>): SQL {
+  const { expr, asc } = sortKey(sort, fields);
+  const dir = asc ? sql`asc` : sql`desc`;
+  return sql`${expr} ${dir} nulls last, ${contactId} ${dir} nulls last`;
+}
+
+/**
+ * Keyset paging: the rows after a given contact in the sort order, so page 400 costs what page 2 does.
+ * `key` is the sort value as text, read from the cursor's row. With it, `after(value)` is the WHERE for the
+ * rest of the rows that have a value, and `nulls` the WHERE for the empty ones that follow them (empty
+ * values sort last, and a row comparison can't reach them, so they're a second, separate range).
+ */
+export function compileKeyset(sort: ViewConfig["sort"], fields: Map<string, ContactFieldDef>) {
+  const { expr, type, asc } = sortKey(sort, fields);
+  const beyond = asc ? sql`>` : sql`<`;
+  const cast = sql.raw(type);
+  return {
+    /** The sort value as text, to read from the cursor's row. */
+    key: sql<string | null>`(${expr})::text`,
+    after: (value: string, afterId: string) =>
+      sql`(${expr}, ${contactId}) ${beyond} (${value}::${cast}, ${afterId})`,
+    nulls: (afterId?: string) =>
+      afterId ? sql`(${expr} is null and ${contactId} ${beyond} ${afterId})` : sql`${expr} is null`,
+    nullsOrder: asc ? sql`${contactId} asc` : sql`${contactId} desc nulls last`,
+  };
 }

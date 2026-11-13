@@ -2,20 +2,26 @@
 
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
+import { useBranch } from "@/components/shell/branch-context";
 import { keys } from "./queries";
 
 /*
  * Data for the signed-in app, plus live updates from /api/events.
  * Events are hints ("conversation X changed"); this refreshes the matching queries, a few at a time,
  * so a burst of webhooks causes one refetch, not fifty. After a reconnect everything is refreshed,
- * since events sent while offline are lost.
+ * since events sent while offline are lost. The stream carries only the selected branch's events and
+ * reconnects when the branch changes. A delivery receipt (message.updated) refreshes only that
+ * conversation's messages, never the lists or counts.
  */
 
 type Hint = { type: string; conversationId: string; messageId?: string; userId?: string };
 
-function LiveUpdates() {
+/** Rendered inside BranchProvider (see the app layout). */
+export function LiveUpdates() {
   const qc = useQueryClient();
+  const branchId = useBranch().branch.id;
   useEffect(() => {
+    if (!branchId) return;
     let source: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -57,7 +63,7 @@ function LiveUpdates() {
 
     const connect = () => {
       if (stopped) return;
-      source = new EventSource("/api/events");
+      source = new EventSource(`/api/events?branch=${encodeURIComponent(branchId)}`);
       source.addEventListener("ready", () => {
         if (everConnected) void qc.invalidateQueries({ queryKey: keys.all });
         everConnected = true;
@@ -80,7 +86,7 @@ function LiveUpdates() {
       clearTimeout(timer);
       clearTimeout(retry);
     };
-  }, [qc]);
+  }, [qc, branchId]);
   return null;
 }
 
@@ -93,10 +99,5 @@ export function DataProvider({ children }: { children: ReactNode }) {
         },
       }),
   );
-  return (
-    <QueryClientProvider client={client}>
-      <LiveUpdates />
-      {children}
-    </QueryClientProvider>
-  );
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
