@@ -11,12 +11,14 @@ import { Progress } from "@relay/ui/ui/progress";
 import { Spinner } from "@relay/ui/ui/spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, useEffect, useRef, useState } from "react";
+import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   type ContactsMeta,
   contactKeys,
   download,
+  inBranch,
   startImport,
   type UploadedFile,
   uploadImport,
@@ -34,7 +36,6 @@ const fixedTargets: { value: string; label: string }[] = [
   { value: "phone", label: "Phone" },
   { value: "email", label: "Email" },
   { value: "tags", label: "Tags" },
-  { value: "branch", label: "Branch" },
   { value: "opt_out", label: "Marketing opt-out (yes / no)" },
 ];
 
@@ -58,6 +59,7 @@ export function ImportDialog({
   meta: ContactsMeta;
 }) {
   const qc = useQueryClient();
+  const { branch } = useBranch();
   const [file, setFile] = useState<UploadedFile | null>(null);
   const [uploading, setUploading] = useState(false);
   const [sheet, setSheet] = useState("");
@@ -100,7 +102,7 @@ export function ImportDialog({
     setError(null);
     setUploading(true);
     try {
-      const res = await uploadImport(f);
+      const res = await uploadImport(branch.id, f);
       setFile(res);
       const best = [...res.sheets].sort((a, b) => b.total - a.total)[0];
       if (best) pickSheet(res, best.name);
@@ -133,7 +135,7 @@ export function ImportDialog({
       ts.map((t, j) =>
         j === i
           ? next
-          : ["name", "phone", "email", "branch", "opt_out"].includes(next.kind) && t.kind === next.kind
+          : ["name", "phone", "email", "opt_out"].includes(next.kind) && t.kind === next.kind
             ? { kind: "skip" }
             : t,
       ),
@@ -150,7 +152,7 @@ export function ImportDialog({
       target: targets[column] ?? { kind: "skip" },
     }));
     try {
-      await startImport(file.import.id, { sheet, mapping, onMatch });
+      await startImport(branch.id, file.import.id, { sheet, mapping, onMatch });
       setRunning(file.import.id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The import couldn't start.");
@@ -198,7 +200,7 @@ export function ImportDialog({
               <Button
                 variant="outline"
                 onClick={() =>
-                  download(`/contacts/imports/${imp.id}/report`).catch((e: Error) =>
+                  download(inBranch(`/contacts/imports/${imp.id}/report`, branch.id)).catch((e: Error) =>
                     notify.error("Couldn't download", { description: e.message }),
                   )
                 }

@@ -57,14 +57,6 @@ export function createImportProcessor({ db }: { db: Db }) {
             .where(and(eq(schema.contactField.organizationId, orgId), isNull(schema.contactField.archivedAt)))
         ).map((f) => [f.key, f as unknown as ContactFieldDef]),
       );
-      const branches = new Map(
-        (
-          await db
-            .select({ id: schema.branch.id, name: schema.branch.name })
-            .from(schema.branch)
-            .where(eq(schema.branch.organizationId, orgId))
-        ).map((b) => [b.name.trim().toLowerCase(), b.id]),
-      );
       // Tags made by an import are for the whole business.
       const tags = new Map(
         (
@@ -125,7 +117,6 @@ export function createImportProcessor({ db }: { db: Db }) {
         let name: string | null = null;
         let phone: string | null = null;
         let email: string | null = null;
-        let branchId: string | null = null;
         let addTags: string[] = [];
         let optOut = false;
         const attributes: Record<string, unknown> = {};
@@ -150,12 +141,6 @@ export function createImportProcessor({ db }: { db: Db }) {
               if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
                 throw new RowError(`${m.header}: "${cell}" isn't an email address.`);
               email = e;
-              break;
-            }
-            case "branch": {
-              const id = branches.get(String(cell).trim().toLowerCase());
-              if (!id) throw new RowError(`${m.header}: there's no branch called "${cell}".`);
-              branchId = id;
               break;
             }
             case "tags":
@@ -184,6 +169,7 @@ export function createImportProcessor({ db }: { db: Db }) {
             .where(
               and(
                 eq(c.organizationId, orgId),
+                eq(c.branchId, imp.branchId),
                 sql`(${c.phone} = ${phone} or exists (select 1 from ${schema.contactIdentity} i where i.contact_id = ${c.id} and i.phone = ${phone}))`,
               ),
             )
@@ -194,7 +180,7 @@ export function createImportProcessor({ db }: { db: Db }) {
           const [hit] = await db
             .select({ id: c.id })
             .from(c)
-            .where(and(eq(c.organizationId, orgId), eq(c.email, email)))
+            .where(and(eq(c.organizationId, orgId), eq(c.branchId, imp.branchId), eq(c.email, email)))
             .limit(1);
           existingId = hit?.id ?? null;
         }
@@ -217,7 +203,6 @@ export function createImportProcessor({ db }: { db: Db }) {
               ...(name ? { name } : {}),
               ...(phone ? { phone } : {}),
               ...(email ? { email } : {}),
-              ...(branchId ? { branchId } : {}),
               ...(tagArr ? { tagIds: sql`array(select distinct unnest(${c.tagIds} || ${tagArr}))` } : {}),
               ...(Object.keys(attributes).length
                 ? { attributes: sql`${c.attributes} || ${JSON.stringify(attributes)}::jsonb` }
@@ -235,7 +220,7 @@ export function createImportProcessor({ db }: { db: Db }) {
             name,
             phone,
             email,
-            branchId,
+            branchId: imp.branchId,
             tagIds: addTags,
             attributes,
             source: "import",

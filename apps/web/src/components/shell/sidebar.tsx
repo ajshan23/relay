@@ -370,6 +370,23 @@ function SubTopicLinksFromUrl({ section }: { section: Section }) {
 
 function BranchList() {
   const { branches, branch, setBranch } = useBranch();
+  const pathname = usePathname();
+  const router = useRouter();
+  /** Switching branch drops what belonged to the old one: the open chat, a channel, a list or saved view. */
+  const switchTo = (id: string) => {
+    if (id === branch.id) return;
+    setBranch(id);
+    if (pathname.startsWith("/conversations")) {
+      const view = new URLSearchParams(window.location.search).get("view");
+      router.replace(view ? `/conversations?view=${view}` : "/conversations", { scroll: false });
+    } else if (pathname.startsWith("/contacts")) {
+      const view = new URLSearchParams(window.location.search).get("view");
+      // Built-in views exist in every branch; saved views and lists don't.
+      router.replace(view && !view.startsWith("cview_") ? `/contacts?view=${view}` : "/contacts", {
+        scroll: false,
+      });
+    }
+  };
   // A single branch needs no switcher.
   if (branches.length < 2) return null;
   return (
@@ -380,15 +397,10 @@ function BranchList() {
           key={b.id}
           type="button"
           aria-pressed={branch.id === b.id}
-          onClick={() => setBranch(b.id)}
+          onClick={() => switchTo(b.id)}
           className={sideItem(branch.id === b.id)}
         >
-          <span
-            className={cn(
-              "size-3 shrink-0 rounded-sm",
-              b.id === "all" ? "bg-nav-muted" : branchSwatches[i % branchSwatches.length],
-            )}
-          />
+          <span className={cn("size-3 shrink-0 rounded-sm", branchSwatches[i % branchSwatches.length])} />
           <span className="truncate">{b.name}</span>
         </button>
       ))}

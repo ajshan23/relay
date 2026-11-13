@@ -30,10 +30,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { channelIcon } from "@/components/inbox/conversation-list";
 import { listTime } from "@/components/inbox/format";
+import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
 import { AddFieldPopover } from "./add-field";
 import { EditableCell, FieldEditor, FieldValue, TagChips } from "./cells";
-import { BranchMenu, ContactProfile } from "./contact-profile";
+import { ContactProfile } from "./contact-profile";
 import { FilterBar } from "./filter-bar";
 import { ImportDialog } from "./import-dialog";
 import { MarketingEditor, MarketingStatus } from "./marketing";
@@ -42,6 +43,7 @@ import {
   type ContactRow,
   type ContactsMeta,
   download,
+  inBranch,
   type SavedView,
   useContactActions,
   useContacts,
@@ -73,7 +75,6 @@ const coreWidths: Record<string, number> = {
   phone: 170,
   email: 220,
   tags: 220,
-  branch: 150,
   lastMessageAt: 140,
   createdAt: 130,
   marketing: 190,
@@ -150,6 +151,7 @@ function ContactsTable({
   title: string;
 }) {
   const actions = useContactActions();
+  const branchId = useBranch().branch.id;
   const [confirm, confirmElement] = useConfirm();
   const [config, setConfig] = useState<ViewConfig>(base);
   const [q, setQ] = useState("");
@@ -317,31 +319,6 @@ function ContactsTable({
             ),
           });
           break;
-        case "branch":
-          out.push({
-            id,
-            header,
-            width: w,
-            sortable: true,
-            cell: (r) => {
-              const name = meta.branches.find((b) => b.id === r.branchId)?.name;
-              return (
-                <EditableCell
-                  canEdit={meta.canEdit}
-                  label="branch"
-                  display={<span className={name ? "truncate" : "text-muted-foreground"}>{name ?? "—"}</span>}
-                  editor={(close) => (
-                    <BranchMenu
-                      branches={meta.branches}
-                      value={r.branchId}
-                      onPick={(branchId) => save(r.id, { branchId }, close)}
-                    />
-                  )}
-                />
-              );
-            },
-          });
-          break;
         case "lastMessageAt":
           out.push({
             id,
@@ -425,7 +402,7 @@ function ContactsTable({
     );
 
   const exportAs = (format: "xlsx" | "csv") =>
-    download("/contacts/export", {
+    download(inBranch("/contacts/export", branchId), {
       method: "POST",
       json: {
         filter: config.filter,
@@ -622,15 +599,6 @@ function ContactsTable({
                       ))}
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
-                ))}
-                {meta.branches.length ? <DropdownMenuSeparator /> : null}
-                {meta.branches.map((b) => (
-                  <DropdownMenuItem
-                    key={b.id}
-                    onSelect={() => bulk("set_branch", { branchId: b.id }, `Moved to ${b.name}`)}
-                  >
-                    Move to {b.name}
-                  </DropdownMenuItem>
                 ))}
                 {meta.canManage ? (
                   <>

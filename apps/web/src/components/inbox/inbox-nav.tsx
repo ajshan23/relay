@@ -68,18 +68,20 @@ export function InboxNav({
         >
           <span className="truncate">All channels</span>
         </Link>
-        {(channels.data ?? []).map((c) => (
-          <Link
-            key={c.id}
-            href={href({ channel: c.id })}
-            aria-current={channel === c.id ? "page" : undefined}
-            className={cn(itemClass(channel === c.id), c.status !== "active" && "opacity-60")}
-            title={c.displayPhone ?? undefined}
-          >
-            <Icon name={channelIcon(c.type)} size="xs" className="shrink-0" />
-            <span className="truncate">{c.displayName}</span>
-          </Link>
-        ))}
+        {(channels.data ?? [])
+          .filter((c) => c.defaultBranchId === branch.id)
+          .map((c) => (
+            <Link
+              key={c.id}
+              href={href({ channel: c.id })}
+              aria-current={channel === c.id ? "page" : undefined}
+              className={cn(itemClass(channel === c.id), c.status !== "active" && "opacity-60")}
+              title={c.displayPhone ?? undefined}
+            >
+              <Icon name={channelIcon(c.type)} size="xs" className="shrink-0" />
+              <span className="truncate">{c.displayName}</span>
+            </Link>
+          ))}
         {channels.data && !channels.data.length ? (
           <p className="px-2 py-1 text-xs text-nav-muted">No channels connected</p>
         ) : null}

@@ -150,6 +150,9 @@ export const contactList = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     kind: listKind("kind").notNull(),
     /** Smart lists: the filter (same shape as the contacts table filter). */
@@ -158,7 +161,7 @@ export const contactList = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("contact_list_name_uidx").on(t.organizationId, sql`lower(${t.name})`)],
+  (t) => [uniqueIndex("contact_list_name_uidx").on(t.branchId, sql`lower(${t.name})`)],
 );
 
 export const contactListMember = pgTable(
@@ -189,6 +192,9 @@ export const contactView = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     /** Null: shared with the whole business. */
     ownerUserId: text("owner_user_id").references(() => user.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
@@ -197,7 +203,7 @@ export const contactView = pgTable(
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
-  (t) => [index("contact_view_org_idx").on(t.organizationId, t.ownerUserId)],
+  (t) => [index("contact_view_branch_idx").on(t.branchId, t.ownerUserId)],
 );
 
 export const importStatus = pgEnum("contact_import_status", [
@@ -216,6 +222,9 @@ export const contactImport = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
     fileName: text("file_name").notNull(),
     storageKey: text("storage_key").notNull(),

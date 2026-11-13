@@ -143,7 +143,6 @@ export const coreColumns = {
   phone: { label: "Phone", type: "phone" },
   email: { label: "Email", type: "email" },
   tags: { label: "Tags", type: "tags" },
-  branch: { label: "Branch", type: "branch" },
   lastMessageAt: { label: "Last message", type: "date" },
   createdAt: { label: "Added on", type: "date" },
   marketing: { label: "Marketing", type: "marketing" },
@@ -231,7 +230,6 @@ export const defaultView: ViewConfig = {
     { id: "name" },
     { id: "phone" },
     { id: "tags" },
-    { id: "branch" },
     { id: "lastMessageAt" },
     { id: "createdAt" },
     { id: "marketing" },
@@ -249,7 +247,6 @@ export type ImportTarget =
   | { kind: "phone" }
   | { kind: "email" }
   | { kind: "tags" }
-  | { kind: "branch" }
   /** Yes/true/1 opts the contact out of marketing on every channel. */
   | { kind: "opt_out" }
   | { kind: "field"; key: string }
@@ -262,7 +259,6 @@ const headerHints: [RegExp, ImportTarget["kind"]][] = [
   [/phone|mobile|whats ?app|cell|msisdn|tel/i, "phone"],
   [/e-?mail/i, "email"],
   [/^tags?$|labels?/i, "tags"],
-  [/^branch|location|clinic|store/i, "branch"],
   [/opt.?out|unsubscribed|do not (contact|message)|dnd/i, "opt_out"],
 ];
 

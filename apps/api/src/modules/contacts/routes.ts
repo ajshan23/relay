@@ -16,11 +16,13 @@ import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../br
 import { parseBody } from "../branches/routes";
 import { compileFilter, compileSort, FilterError } from "./filter";
 import {
+  type BranchEnv,
   canEditContacts,
   createField,
   listsById,
   activeFields as loadFields,
   ownChannel,
+  requireBranch,
   setOptOut,
 } from "./shared";
 
@@ -74,12 +76,12 @@ const fieldTypeSchema = z.enum([
 ]);
 
 export function contactRoutes(ctx: AppContext) {
-  const app = new Hono<AccessEnv>();
-  app.use(requireSession, requireOrg(ctx));
+  const app = new Hono<BranchEnv>();
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
 
   /* ---------------------------------------------------------------- access */
 
-  const canEdit = (access: Access) => canEditContacts(ctx.db, access);
+  const canEdit = (access: Access, branchId: string) => canEditContacts(ctx.db, access, branchId);
 
   const activeFields = (orgId: string) => loadFields(ctx.db, orgId);
   const byKey = (rows: { key: string }[]) =>
@@ -142,12 +144,12 @@ export function contactRoutes(ctx: AppContext) {
   /* ----------------------------------------------------------------- query */
 
   /** The WHERE and ORDER BY for the table's filters, sort and search. Throws FilterError. */
-  async function tableQuery(orgId: string, b: z.infer<typeof querySchema>) {
+  async function tableQuery(orgId: string, branchId: string, b: z.infer<typeof querySchema>) {
     const { filter, sort, q } = b;
     const fields = await activeFields(orgId);
     const map = byKey(fields);
     const usesLists = !!b.listId || (filter?.rules ?? []).some((r) => r.field === "list");
-    const lists = usesLists ? await listsById(ctx.db, orgId) : undefined;
+    const lists = usesLists ? await listsById(ctx.db, orgId, branchId) : undefined;
     const where = compileFilter(filter as never, map, lists);
     const inList = b.listId
       ? compileFilter(
@@ -176,7 +178,11 @@ export function contactRoutes(ctx: AppContext) {
       .filter((f) => f.startsWith("attr."))
       .map((f) => f.slice(5));
     void ensureIndexes(orgId, fields as unknown as ContactFieldDef[], used);
-    return { fields, cond: and(eq(c.organizationId, orgId), inList, where, search), order };
+    return {
+      fields,
+      cond: and(eq(c.organizationId, orgId), eq(c.branchId, branchId), inList, where, search),
+      order,
+    };
   }
 
   const rowColumns = {
@@ -209,7 +215,7 @@ export function contactRoutes(ctx: AppContext) {
     const { page, pageSize } = parsed.data;
     let query: Awaited<ReturnType<typeof tableQuery>>;
     try {
-      query = await tableQuery(access.orgId, parsed.data);
+      query = await tableQuery(access.orgId, c2.var.branchId, parsed.data);
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
@@ -240,7 +246,7 @@ export function contactRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     let query: Awaited<ReturnType<typeof tableQuery>>;
     try {
-      query = await tableQuery(access.orgId, parsed.data);
+      query = await tableQuery(access.orgId, c2.var.branchId, parsed.data);
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
@@ -345,7 +351,12 @@ export function contactRoutes(ctx: AppContext) {
       ctx.db
         .select()
         .from(schema.tag)
-        .where(eq(schema.tag.organizationId, access.orgId))
+        .where(
+          and(
+            eq(schema.tag.organizationId, access.orgId),
+            or(isNull(schema.tag.branchId), eq(schema.tag.branchId, c2.var.branchId)),
+          ),
+        )
         .orderBy(asc(schema.tag.name)),
       ctx.db
         .select({ id: schema.branch.id, name: schema.branch.name })
@@ -359,13 +370,19 @@ export function contactRoutes(ctx: AppContext) {
           type: schema.channelAccount.type,
         })
         .from(schema.channelAccount)
-        .where(eq(schema.channelAccount.organizationId, access.orgId)),
+        .where(
+          and(
+            eq(schema.channelAccount.organizationId, access.orgId),
+            eq(schema.channelAccount.defaultBranchId, c2.var.branchId),
+          ),
+        ),
       ctx.db
         .select()
         .from(schema.contactView)
         .where(
           and(
             eq(schema.contactView.organizationId, access.orgId),
+            eq(schema.contactView.branchId, c2.var.branchId),
             or(isNull(schema.contactView.ownerUserId), eq(schema.contactView.ownerUserId, access.userId)),
           ),
         )
@@ -378,7 +395,12 @@ export function contactRoutes(ctx: AppContext) {
           filter: schema.contactList.filter,
         })
         .from(schema.contactList)
-        .where(eq(schema.contactList.organizationId, access.orgId))
+        .where(
+          and(
+            eq(schema.contactList.organizationId, access.orgId),
+            eq(schema.contactList.branchId, c2.var.branchId),
+          ),
+        )
         .orderBy(asc(schema.contactList.name)),
     ]);
     return c2.json({
@@ -388,25 +410,25 @@ export function contactRoutes(ctx: AppContext) {
       channels,
       views: views.map((v) => ({ ...v, shared: v.ownerUserId === null })),
       lists,
-      canEdit: await canEdit(access),
+      canEdit: await canEdit(access, c2.var.branchId),
       canManage: isOrgAdmin(access.orgRole),
     });
   });
 
   /* ---------------------------------------------------------------- one contact */
 
-  async function findContact(orgId: string, id: string) {
+  async function findContact(orgId: string, branchId: string, id: string) {
     const [row] = await ctx.db
       .select()
       .from(c)
-      .where(and(eq(c.id, id), eq(c.organizationId, orgId)))
+      .where(and(eq(c.id, id), eq(c.organizationId, orgId), eq(c.branchId, branchId)))
       .limit(1);
     return row ?? null;
   }
 
   app.get("/:id", async (c2) => {
     const access = c2.var.access;
-    const contact = await findContact(access.orgId, c2.req.param("id"));
+    const contact = await findContact(access.orgId, c2.var.branchId, c2.req.param("id"));
     if (!contact) return fail(c2, 404, "not_found");
     const [identities, notes, lists, conversations, optOuts] = await Promise.all([
       ctx.db
@@ -458,7 +480,6 @@ export function contactRoutes(ctx: AppContext) {
     name: z.string().trim().max(120).nullable().optional(),
     phone: z.string().trim().max(30).nullable().optional(),
     email: z.string().trim().max(200).nullable().optional(),
-    branchId: z.string().nullable().optional(),
     tagIds: z.array(z.string()).max(50).optional(),
     attributes: z.record(z.string(), z.unknown()).optional(),
     /** Marketing on one channel (or every channel when channelAccountId is null): opt out or back in. */
@@ -481,17 +502,6 @@ export function contactRoutes(ctx: AppContext) {
         throw new FilterError("That email address doesn't look right.");
       out.email = e || null;
     }
-    if (b.branchId !== undefined) {
-      if (b.branchId) {
-        const [br] = await ctx.db
-          .select({ id: schema.branch.id })
-          .from(schema.branch)
-          .where(and(eq(schema.branch.id, b.branchId), eq(schema.branch.organizationId, orgId)))
-          .limit(1);
-        if (!br) throw new FilterError("That branch doesn't exist.");
-      }
-      out.branchId = b.branchId;
-    }
     if (b.tagIds) out.tagIds = await knownTags(orgId, b.tagIds);
     if (b.optOut?.channelAccountId && !(await ownChannel(ctx.db, orgId, b.optOut.channelAccountId)))
       throw new FilterError("That channel doesn't exist.");
@@ -500,7 +510,8 @@ export function contactRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEdit(access))) return fail(c2, 403, "forbidden", "Viewers can't add contacts.");
+    if (!(await canEdit(access, c2.var.branchId)))
+      return fail(c2, 403, "forbidden", "Viewers can't add contacts.");
     const parsed = await parseBody(c2, contactBody);
     if ("error" in parsed) return parsed.error;
     try {
@@ -511,7 +522,13 @@ export function contactRoutes(ctx: AppContext) {
         const [dupe] = await ctx.db
           .select({ id: c.id })
           .from(c)
-          .where(and(eq(c.organizationId, access.orgId), eq(c.phone, values.phone as string)))
+          .where(
+            and(
+              eq(c.organizationId, access.orgId),
+              eq(c.branchId, c2.var.branchId),
+              eq(c.phone, values.phone as string),
+            ),
+          )
           .limit(1);
         if (dupe) return fail(c2, 409, "duplicate", "A contact with this phone number already exists.");
       }
@@ -523,6 +540,7 @@ export function contactRoutes(ctx: AppContext) {
         .values({
           id: newId("contact"),
           organizationId: access.orgId,
+          branchId: c2.var.branchId,
           source: "manual",
           createdByUserId: access.userId,
           ...values,
@@ -549,10 +567,11 @@ export function contactRoutes(ctx: AppContext) {
   // Edit fixed columns and any of the business's fields (attributes merge; null clears one).
   app.patch("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEdit(access))) return fail(c2, 403, "forbidden", "Viewers can't change contacts.");
+    if (!(await canEdit(access, c2.var.branchId)))
+      return fail(c2, 403, "forbidden", "Viewers can't change contacts.");
     const parsed = await parseBody(c2, contactBody);
     if ("error" in parsed) return parsed.error;
-    const contact = await findContact(access.orgId, c2.req.param("id"));
+    const contact = await findContact(access.orgId, c2.var.branchId, c2.req.param("id"));
     if (!contact) return fail(c2, 404, "not_found");
     try {
       const values = await contactValues(access.orgId, parsed.data);
@@ -592,7 +611,6 @@ export function contactRoutes(ctx: AppContext) {
       "remove_tags",
       "opt_out",
       "opt_in",
-      "set_branch",
       "add_to_list",
       "remove_from_list",
       "delete",
@@ -600,7 +618,6 @@ export function contactRoutes(ctx: AppContext) {
     /** opt_out / opt_in: one channel, or every channel when left out. */
     channelAccountId: z.string().nullable().optional(),
     tagIds: z.array(z.string()).optional(),
-    branchId: z.string().nullable().optional(),
     listId: z.string().optional(),
   });
 
@@ -610,9 +627,13 @@ export function contactRoutes(ctx: AppContext) {
     const parsed = await parseBody(c2, bulkSchema);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
-    if (b.action === "delete" ? !isOrgAdmin(access.orgRole) : !(await canEdit(access)))
+    if (b.action === "delete" ? !isOrgAdmin(access.orgRole) : !(await canEdit(access, c2.var.branchId)))
       return fail(c2, 403, "forbidden");
-    const scope = and(eq(c.organizationId, access.orgId), inArray(c.id, b.ids));
+    const scope = and(
+      eq(c.organizationId, access.orgId),
+      eq(c.branchId, c2.var.branchId),
+      inArray(c.id, b.ids),
+    );
     const now = new Date();
     let affected = 0;
     if (b.action === "add_tags" || b.action === "remove_tags") {
@@ -649,13 +670,6 @@ export function contactRoutes(ctx: AppContext) {
         access.userId,
       );
       affected = found.length;
-    } else if (b.action === "set_branch") {
-      const res = await ctx.db
-        .update(c)
-        .set({ branchId: b.branchId ?? null, updatedAt: now })
-        .where(scope)
-        .returning({ id: c.id });
-      affected = res.length;
     } else if (b.action === "remove_from_list") {
       const res = await ctx.db
         .delete(schema.contactListMember)
@@ -673,7 +687,11 @@ export function contactRoutes(ctx: AppContext) {
         .select()
         .from(schema.contactList)
         .where(
-          and(eq(schema.contactList.id, b.listId ?? ""), eq(schema.contactList.organizationId, access.orgId)),
+          and(
+            eq(schema.contactList.id, b.listId ?? ""),
+            eq(schema.contactList.organizationId, access.orgId),
+            eq(schema.contactList.branchId, c2.var.branchId),
+          ),
         )
         .limit(1);
       if (!list || list.kind !== "static")
@@ -698,7 +716,13 @@ export function contactRoutes(ctx: AppContext) {
       return fail(c2, 403, "forbidden", "Only owners and admins can delete contacts.");
     const res = await ctx.db
       .delete(c)
-      .where(and(eq(c.id, c2.req.param("id")), eq(c.organizationId, access.orgId)))
+      .where(
+        and(
+          eq(c.id, c2.req.param("id")),
+          eq(c.organizationId, access.orgId),
+          eq(c.branchId, c2.var.branchId),
+        ),
+      )
       .returning({ id: c.id });
     if (!res.length) return fail(c2, 404, "not_found");
     return c2.body(null, 204);
@@ -708,10 +732,10 @@ export function contactRoutes(ctx: AppContext) {
 
   app.post("/:id/notes", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEdit(access))) return fail(c2, 403, "forbidden");
+    if (!(await canEdit(access, c2.var.branchId))) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(c2, z.object({ body: z.string().trim().min(1).max(5000) }));
     if ("error" in parsed) return parsed.error;
-    const contact = await findContact(access.orgId, c2.req.param("id"));
+    const contact = await findContact(access.orgId, c2.var.branchId, c2.req.param("id"));
     if (!contact) return fail(c2, 404, "not_found");
     const [note] = await ctx.db
       .insert(schema.contactNote)
@@ -728,6 +752,8 @@ export function contactRoutes(ctx: AppContext) {
 
   app.delete("/:id/notes/:noteId", async (c2) => {
     const access = c2.var.access;
+    if (!(await findContact(access.orgId, c2.var.branchId, c2.req.param("id"))))
+      return fail(c2, 404, "not_found");
     const where = and(
       eq(schema.contactNote.id, c2.req.param("noteId")),
       eq(schema.contactNote.contactId, c2.req.param("id")),
@@ -942,8 +968,8 @@ export function tagRoutes(ctx: AppContext) {
 /* ====================================================================== views */
 
 export function contactViewRoutes(ctx: AppContext) {
-  const app = new Hono<AccessEnv>();
-  app.use(requireSession, requireOrg(ctx));
+  const app = new Hono<BranchEnv>();
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
   const v = schema.contactView;
   const viewBody = z.object({
     name: z.string().trim().min(1).max(60),
@@ -957,10 +983,11 @@ export function contactViewRoutes(ctx: AppContext) {
     }),
   });
   // Your own views, or shared ones (owners and admins may change shared views).
-  const mine = (access: Access, id: string) =>
+  const mine = (access: Access, branchId: string, id: string) =>
     and(
       eq(v.id, id),
       eq(v.organizationId, access.orgId),
+      eq(v.branchId, branchId),
       isOrgAdmin(access.orgRole)
         ? or(isNull(v.ownerUserId), eq(v.ownerUserId, access.userId))
         : eq(v.ownerUserId, access.userId),
@@ -978,6 +1005,7 @@ export function contactViewRoutes(ctx: AppContext) {
       .values({
         id: newId("contactView"),
         organizationId: access.orgId,
+        branchId: c2.var.branchId,
         ownerUserId: b.shared ? null : access.userId,
         name: b.name,
         config: b.config,
@@ -994,7 +1022,7 @@ export function contactViewRoutes(ctx: AppContext) {
     const [row] = await ctx.db
       .update(v)
       .set({ ...b, updatedAt: new Date() })
-      .where(mine(access, c2.req.param("id")))
+      .where(mine(access, c2.var.branchId, c2.req.param("id")))
       .returning();
     if (!row) return fail(c2, 404, "not_found");
     return c2.json({ view: row });
@@ -1003,7 +1031,7 @@ export function contactViewRoutes(ctx: AppContext) {
   app.delete("/:id", async (c2) => {
     const res = await ctx.db
       .delete(v)
-      .where(mine(c2.var.access, c2.req.param("id")))
+      .where(mine(c2.var.access, c2.var.branchId, c2.req.param("id")))
       .returning({ id: v.id });
     if (!res.length) return fail(c2, 404, "not_found");
     return c2.body(null, 204);

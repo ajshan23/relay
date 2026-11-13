@@ -64,6 +64,13 @@
       "when": 1794573859969,
       "tag": "0008_contact_opt_out",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794575158968,
+      "tag": "0009_branch_scoped_contacts",
+      "breakpoints": true
     }
   ]
 }

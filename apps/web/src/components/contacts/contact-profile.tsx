@@ -89,7 +89,6 @@ export function ContactProfile({
   };
 
   const title = c ? (c.name ?? (c.phone ? `+${c.phone}` : "Unnamed contact")) : "Contact";
-  const branchName = meta.branches.find((b) => b.id === c?.branchId)?.name;
 
   return (
     <SidePanel
@@ -181,22 +180,6 @@ export function ContactProfile({
                     field={textField("email", "Email", "email")}
                     value={c.email}
                     onSave={(v) => save({ email: (v as string) ?? null }, close)}
-                  />
-                )}
-              />
-            </Row>
-            <Row label="Branch">
-              <EditableCell
-                canEdit={canEdit}
-                label="branch"
-                display={
-                  <span className={branchName ? "" : "text-muted-foreground"}>{branchName ?? "—"}</span>
-                }
-                editor={(close) => (
-                  <BranchMenu
-                    branches={meta.branches}
-                    value={c.branchId}
-                    onPick={(branchId) => save({ branchId }, close)}
                   />
                 )}
               />
@@ -355,31 +338,5 @@ export function ContactProfile({
         </div>
       )}
     </SidePanel>
-  );
-}
-
-export function BranchMenu({
-  branches,
-  value,
-  onPick,
-}: {
-  branches: { id: string; name: string }[];
-  value: string | null;
-  onPick: (id: string | null) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      {[{ id: null as string | null, name: "No branch" }, ...branches].map((b) => (
-        <button
-          key={b.id ?? "none"}
-          type="button"
-          onClick={() => onPick(b.id)}
-          className="flex items-center justify-between rounded-md px-2 py-1.5 text-left text-sm outline-none hover:bg-muted focus-visible:bg-muted"
-        >
-          <span className={b.id ? "" : "text-muted-foreground"}>{b.name}</span>
-          {value === b.id ? <Icon name="check" size="sm" /> : null}
-        </button>
-      ))}
-    </div>
   );
 }

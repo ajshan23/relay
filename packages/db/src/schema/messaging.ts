@@ -40,7 +40,10 @@ export const contact = pgTable(
     phone: text("phone"),
     email: text("email"),
     /** Home branch, used as a filter (contacts belong to the business). */
-    branchId: text("branch_id").references(() => branch.id, { onDelete: "set null" }),
+    /** Contacts belong to one branch: the same person in two branches is two contacts. */
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     /**
      * The business's own fields, keyed by contact_field.key, in their real JSON types (numbers, booleans,
      * ISO dates, arrays for multiple choice). Validated against the field type on every write.
@@ -82,6 +85,10 @@ export const contactIdentity = pgTable(
     contactId: text("contact_id")
       .notNull()
       .references(() => contact.id, { onDelete: "cascade" }),
+    /** The contact's branch: one customer id can belong to a contact in each branch. */
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     channelType: channelType("channel_type").notNull(),
     /** Where the id is valid. WhatsApp ids are scoped to a business portfolio; Page/IG ids to one account. */
     scope: text("scope").notNull(),
@@ -93,7 +100,13 @@ export const contactIdentity = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("contact_identity_uidx").on(t.organizationId, t.channelType, t.scope, t.externalId),
+    uniqueIndex("contact_identity_uidx").on(
+      t.organizationId,
+      t.branchId,
+      t.channelType,
+      t.scope,
+      t.externalId,
+    ),
     index("contact_identity_contact_idx").on(t.contactId),
     index("contact_identity_phone_idx").on(t.organizationId, t.phone),
     index("contact_identity_phone_trgm").using("gin", sql`${t.phone} gin_trgm_ops`),

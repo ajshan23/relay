@@ -149,4 +149,6 @@ export type ChannelSummary = {
   displayName: string;
   displayPhone: string | null;
   status: string;
+  /** The branch this channel's conversations and contacts belong to. */
+  defaultBranchId: string | null;
 };

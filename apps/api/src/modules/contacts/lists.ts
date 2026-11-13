@@ -4,10 +4,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type AccessEnv, fail, requireOrg } from "../branches/access";
+import { fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { compileFilter, FilterError } from "./filter";
-import { activeFields, canEditContacts, listsById } from "./shared";
+import { activeFields, type BranchEnv, canEditContacts, listsById, requireBranch } from "./shared";
 
 /*
  * Lists: who a broadcast goes to. Static lists are picked by hand (members added from the table);
@@ -30,25 +30,30 @@ const filterSchema = z.object({
 });
 
 export function contactListRoutes(ctx: AppContext) {
-  const app = new Hono<AccessEnv>();
-  app.use(requireSession, requireOrg(ctx));
+  const app = new Hono<BranchEnv>();
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
   const l = schema.contactList;
   const c = schema.contact;
 
   /** Checks a smart list's filter compiles (known fields, no list-in-list loops). */
-  async function checkFilter(orgId: string, filter: z.infer<typeof filterSchema>) {
+  async function checkFilter(orgId: string, branchId: string, filter: z.infer<typeof filterSchema>) {
     if (!filter.rules.length) throw new FilterError("A smart list needs at least one filter.");
     const fields = new Map((await activeFields(ctx.db, orgId)).map((f) => [f.key, f as never]));
-    const lists = await listsById(ctx.db, orgId);
+    const lists = await listsById(ctx.db, orgId, branchId);
     // Compiling as if nested rejects smart lists that refer to other smart lists.
     compileFilter(filter as never, fields, lists, 1);
   }
 
   app.get("/", async (c2) => {
     const access = c2.var.access;
-    const rows = await ctx.db.select().from(l).where(eq(l.organizationId, access.orgId)).orderBy(asc(l.name));
+    const branchId = c2.var.branchId;
+    const rows = await ctx.db
+      .select()
+      .from(l)
+      .where(and(eq(l.organizationId, access.orgId), eq(l.branchId, branchId)))
+      .orderBy(asc(l.name));
     const fields = new Map((await activeFields(ctx.db, access.orgId)).map((f) => [f.key, f as never]));
-    const lists = await listsById(ctx.db, access.orgId);
+    const lists = await listsById(ctx.db, access.orgId, branchId);
     const out = await Promise.all(
       rows.map(async (r) => {
         let count = 0;
@@ -64,7 +69,7 @@ export function contactListRoutes(ctx: AppContext) {
             const [n] = await ctx.db
               .select({ n: sql<number>`count(*)::int` })
               .from(c)
-              .where(and(eq(c.organizationId, access.orgId), where));
+              .where(and(eq(c.organizationId, access.orgId), eq(c.branchId, branchId), where));
             count = n?.n ?? 0;
           }
         } catch {
@@ -78,7 +83,7 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access))) return fail(c2, 403, "forbidden");
+    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({
@@ -90,7 +95,8 @@ export function contactListRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
     try {
-      if (b.kind === "smart") await checkFilter(access.orgId, b.filter ?? { match: "all", rules: [] });
+      if (b.kind === "smart")
+        await checkFilter(access.orgId, c2.var.branchId, b.filter ?? { match: "all", rules: [] });
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
@@ -100,6 +106,7 @@ export function contactListRoutes(ctx: AppContext) {
       .values({
         id: newId("contactList"),
         organizationId: access.orgId,
+        branchId: c2.var.branchId,
         name: b.name,
         kind: b.kind,
         filter: b.kind === "smart" ? (b.filter as never) : null,
@@ -113,7 +120,7 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access))) return fail(c2, 403, "forbidden");
+    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({ name: z.string().trim().min(1).max(80).optional(), filter: filterSchema.optional() }),
@@ -122,12 +129,18 @@ export function contactListRoutes(ctx: AppContext) {
     const [list] = await ctx.db
       .select()
       .from(l)
-      .where(and(eq(l.id, c2.req.param("id")), eq(l.organizationId, access.orgId)))
+      .where(
+        and(
+          eq(l.id, c2.req.param("id")),
+          eq(l.organizationId, access.orgId),
+          eq(l.branchId, c2.var.branchId),
+        ),
+      )
       .limit(1);
     if (!list) return fail(c2, 404, "not_found");
     const b = parsed.data;
     try {
-      if (b.filter && list.kind === "smart") await checkFilter(access.orgId, b.filter);
+      if (b.filter && list.kind === "smart") await checkFilter(access.orgId, c2.var.branchId, b.filter);
     } catch (err) {
       if (err instanceof FilterError) return fail(c2, 422, "invalid_filter", err.message);
       throw err;
@@ -151,10 +164,16 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access))) return fail(c2, 403, "forbidden");
+    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
     const res = await ctx.db
       .delete(l)
-      .where(and(eq(l.id, c2.req.param("id")), eq(l.organizationId, access.orgId)))
+      .where(
+        and(
+          eq(l.id, c2.req.param("id")),
+          eq(l.organizationId, access.orgId),
+          eq(l.branchId, c2.var.branchId),
+        ),
+      )
       .returning({ id: l.id });
     if (!res.length) return fail(c2, 404, "not_found");
     return c2.body(null, 204);

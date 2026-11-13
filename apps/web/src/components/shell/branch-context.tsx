@@ -3,10 +3,11 @@
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 import { useMe } from "@/lib/me";
 
-/** A branch the signed-in person can reach, or the "All branches" choice. */
+/** A branch the signed-in person can reach. Everything (inbox, contacts) shows one branch at a time. */
 export type Branch = { id: string; name: string };
 
-export const ALL_BRANCHES: Branch = { id: "all", name: "All branches" };
+/** Before /api/me has loaded, or for someone in no branch yet. */
+const NO_BRANCH: Branch = { id: "", name: "No branch" };
 
 const STORAGE_KEY = "relay.branch";
 const CHANGE_EVENT = "relay:branch-change";
@@ -50,15 +51,12 @@ type BranchContextValue = {
 const BranchContext = createContext<BranchContextValue | null>(null);
 
 export function BranchProvider({ children }: { children: ReactNode }) {
-  // The server and the first client render use "All branches"; the stored choice applies right after.
+  // The server and the first client render use the first branch; the stored choice applies right after.
   const storedId = useSyncExternalStore(subscribe, readStored, () => null);
   const { me } = useMe();
-  // "All branches" is only a choice when there is more than one branch to combine.
-  const branches = useMemo<Branch[]>(
-    () => (me.branches.length > 1 ? [...me.branches, ALL_BRANCHES] : me.branches),
-    [me.branches],
-  );
-  const branch = branches.find((b) => b.id === storedId) ?? branches.at(-1) ?? ALL_BRANCHES;
+  // Owners and admins get every branch here, everyone else the branches they work in.
+  const branches = useMemo<Branch[]>(() => me.branches, [me.branches]);
+  const branch = branches.find((b) => b.id === storedId) ?? branches[0] ?? NO_BRANCH;
   const setBranch = useCallback((id: string) => writeStored(id), []);
   const value = useMemo(() => ({ branches, branch, setBranch }), [branches, branch, setBranch]);
   return <BranchContext.Provider value={value}>{children}</BranchContext.Provider>;

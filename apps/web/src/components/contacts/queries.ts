@@ -10,6 +10,7 @@ import type {
   ViewConfig,
 } from "@relay/core/contacts";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useBranch } from "@/components/shell/branch-context";
 import { api } from "@/lib/api";
 
 /* Shapes from /api/contacts, /api/contacts/fields, /api/tags and /api/contacts/views. */
@@ -78,21 +79,35 @@ export type ContactQuery = {
 
 export const contactKeys = {
   all: ["contacts"] as const,
-  meta: () => ["contacts", "meta"] as const,
-  list: (q: ContactQuery) => ["contacts", "list", q] as const,
-  lists: () => ["contacts", "lists"] as const,
-  import: (id: string) => ["contacts", "import", id] as const,
-  one: (id: string) => ["contacts", "one", id] as const,
+  meta: (branch: string) => ["contacts", branch, "meta"] as const,
+  list: (branch: string, q: ContactQuery) => ["contacts", branch, "list", q] as const,
+  lists: (branch: string) => ["contacts", branch, "lists"] as const,
+  import: (branch: string, id: string) => ["contacts", branch, "import", id] as const,
+  one: (branch: string, id: string) => ["contacts", branch, "one", id] as const,
 };
 
+/** Contacts, lists, views and imports belong to a branch: every call names the selected one. */
+export const inBranch = (path: string, branch: string) =>
+  `${path}${path.includes("?") ? "&" : "?"}branch=${encodeURIComponent(branch)}`;
+
+/** The selected branch's id, for the calls below. */
+const useBranchId = () => useBranch().branch.id;
+
 export function useContactsMeta() {
-  return useQuery({ queryKey: contactKeys.meta(), queryFn: () => api<ContactsMeta>("/contacts/meta") });
+  const branch = useBranchId();
+  return useQuery({
+    queryKey: contactKeys.meta(branch),
+    queryFn: () => api<ContactsMeta>(inBranch("/contacts/meta", branch)),
+    enabled: !!branch,
+  });
 }
 
 export function useContacts(q: ContactQuery) {
+  const branch = useBranchId();
   return useQuery({
-    queryKey: contactKeys.list(q),
-    queryFn: () => api<ContactPage>("/contacts/query", { method: "POST", json: q }),
+    queryKey: contactKeys.list(branch, q),
+    queryFn: () => api<ContactPage>(inBranch("/contacts/query", branch), { method: "POST", json: q }),
+    enabled: !!branch,
     placeholderData: keepPreviousData,
   });
 }
@@ -119,9 +134,10 @@ export type ContactDetail = {
 };
 
 export function useContact(id: string | null) {
+  const branch = useBranchId();
   return useQuery({
-    queryKey: contactKeys.one(id ?? ""),
-    queryFn: () => api<ContactDetail>(`/contacts/${id}`),
+    queryKey: contactKeys.one(branch, id ?? ""),
+    queryFn: () => api<ContactDetail>(inBranch(`/contacts/${id}`, branch)),
     enabled: !!id,
   });
 }
@@ -139,16 +155,18 @@ export type ContactPatch = {
 
 export function useContactActions() {
   const qc = useQueryClient();
+  const branch = useBranchId();
+  const b = (path: string) => inBranch(path, branch);
   const refresh = () => qc.invalidateQueries({ queryKey: contactKeys.all });
   return {
     update: useMutation({
       mutationFn: ({ id, patch }: { id: string; patch: ContactPatch }) =>
-        api(`/contacts/${id}`, { method: "PATCH", json: patch }),
+        api(b(`/contacts/${id}`), { method: "PATCH", json: patch }),
       onSettled: refresh,
     }),
     create: useMutation({
       mutationFn: (body: ContactPatch) =>
-        api<{ contact: ContactRow }>("/contacts", { method: "POST", json: body }),
+        api<{ contact: ContactRow }>(b("/contacts"), { method: "POST", json: body }),
       onSettled: refresh,
     }),
     bulk: useMutation({
@@ -159,21 +177,21 @@ export function useContactActions() {
         branchId?: string | null;
         listId?: string;
         channelAccountId?: string | null;
-      }) => api<{ affected: number }>("/contacts/bulk", { method: "POST", json: body }),
+      }) => api<{ affected: number }>(b("/contacts/bulk"), { method: "POST", json: body }),
       onSettled: refresh,
     }),
     remove: useMutation({
-      mutationFn: (id: string) => api(`/contacts/${id}`, { method: "DELETE" }),
+      mutationFn: (id: string) => api(b(`/contacts/${id}`), { method: "DELETE" }),
       onSettled: refresh,
     }),
     addNote: useMutation({
       mutationFn: ({ id, body }: { id: string; body: string }) =>
-        api(`/contacts/${id}/notes`, { method: "POST", json: { body } }),
+        api(b(`/contacts/${id}/notes`), { method: "POST", json: { body } }),
       onSettled: refresh,
     }),
     deleteNote: useMutation({
       mutationFn: ({ id, noteId }: { id: string; noteId: string }) =>
-        api(`/contacts/${id}/notes/${noteId}`, { method: "DELETE" }),
+        api(b(`/contacts/${id}/notes/${noteId}`), { method: "DELETE" }),
       onSettled: refresh,
     }),
     addField: useMutation({
@@ -202,8 +220,11 @@ export function useContactActions() {
     saveView: useMutation({
       mutationFn: ({ id, ...body }: { id?: string; name: string; shared?: boolean; config: ViewConfig }) =>
         id
-          ? api<{ view: SavedView }>(`/contacts/views/${id}`, { method: "PATCH", json: body })
-          : api<{ view: SavedView }>("/contacts/views", { method: "POST", json: { shared: false, ...body } }),
+          ? api<{ view: SavedView }>(b(`/contacts/views/${id}`), { method: "PATCH", json: body })
+          : api<{ view: SavedView }>(b("/contacts/views"), {
+              method: "POST",
+              json: { shared: false, ...body },
+            }),
       onSettled: refresh,
     }),
     saveList: useMutation({
@@ -217,16 +238,16 @@ export function useContactActions() {
         filter?: ContactFilter;
       }) =>
         id
-          ? api<{ list: ContactList }>(`/contacts/lists/${id}`, { method: "PATCH", json: body })
-          : api<{ list: ContactList }>("/contacts/lists", { method: "POST", json: body }),
+          ? api<{ list: ContactList }>(b(`/contacts/lists/${id}`), { method: "PATCH", json: body })
+          : api<{ list: ContactList }>(b("/contacts/lists"), { method: "POST", json: body }),
       onSettled: refresh,
     }),
     deleteList: useMutation({
-      mutationFn: (id: string) => api(`/contacts/lists/${id}`, { method: "DELETE" }),
+      mutationFn: (id: string) => api(b(`/contacts/lists/${id}`), { method: "DELETE" }),
       onSettled: refresh,
     }),
     deleteView: useMutation({
-      mutationFn: (id: string) => api(`/contacts/views/${id}`, { method: "DELETE" }),
+      mutationFn: (id: string) => api(b(`/contacts/views/${id}`), { method: "DELETE" }),
       onSettled: refresh,
     }),
   };
@@ -235,9 +256,11 @@ export function useContactActions() {
 /* ------------------------------------------------------------------ lists */
 
 export function useLists() {
+  const branch = useBranchId();
   return useQuery({
-    queryKey: contactKeys.lists(),
-    queryFn: () => api<{ lists: (ContactList & { count: number })[] }>("/contacts/lists"),
+    queryKey: contactKeys.lists(branch),
+    queryFn: () => api<{ lists: (ContactList & { count: number })[] }>(inBranch("/contacts/lists", branch)),
+    enabled: !!branch,
   });
 }
 
@@ -263,22 +286,28 @@ export type UploadedFile = {
   sheets: { name: string; headers: string[]; total: number; preview: unknown[][]; guesses: ImportTarget[] }[];
 };
 
-export const uploadImport = (file: File) => {
+export const uploadImport = (branch: string, file: File) => {
   const body = new FormData();
   body.set("file", file);
-  return api<UploadedFile>("/contacts/imports", { method: "POST", body });
+  return api<UploadedFile>(inBranch("/contacts/imports", branch), { method: "POST", body });
 };
 
 export const startImport = (
+  branch: string,
   id: string,
   body: { sheet: string; mapping: ImportMapping; onMatch: "update" | "skip" },
-) => api<{ import: ImportRow }>(`/contacts/imports/${id}/start`, { method: "POST", json: body });
+) =>
+  api<{ import: ImportRow }>(inBranch(`/contacts/imports/${id}/start`, branch), {
+    method: "POST",
+    json: body,
+  });
 
 /** An import's progress, checked every second while it runs. */
 export function useImport(id: string | null) {
+  const branch = useBranchId();
   return useQuery({
-    queryKey: contactKeys.import(id ?? ""),
-    queryFn: () => api<{ import: ImportRow }>(`/contacts/imports/${id}`),
+    queryKey: contactKeys.import(branch, id ?? ""),
+    queryFn: () => api<{ import: ImportRow }>(inBranch(`/contacts/imports/${id}`, branch)),
     enabled: !!id,
     refetchInterval: (q) => {
       const s = q.state.data?.import.status;

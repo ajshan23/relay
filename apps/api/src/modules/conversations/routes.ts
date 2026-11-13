@@ -106,7 +106,9 @@ export function conversationRoutes(ctx: AppContext) {
       ? (c.req.query("view") as View)
       : "open";
     const channelId = c.req.query("channel");
+    // The inbox shows one branch at a time.
     const branchId = c.req.query("branch");
+    if (!branchId || branchId === "all") return fail(c, 422, "branch_required", "Pick a branch.");
     const q = c.req.query("q")?.trim();
     const cursor = c.req.query("cursor");
     const [cursorAt, cursorId] = cursor ? cursor.split("|") : [];
@@ -155,7 +157,7 @@ export function conversationRoutes(ctx: AppContext) {
           visibleTo(access, branches),
           viewFilter(view, access.userId),
           channelId ? eq(schema.conversation.channelAccountId, channelId) : undefined,
-          branchId && branchId !== "all" ? eq(schema.conversation.branchId, branchId) : undefined,
+          eq(schema.conversation.branchId, branchId),
           like
             ? or(
                 ilike(schema.contact.name, like),
@@ -196,7 +198,9 @@ export function conversationRoutes(ctx: AppContext) {
     const access = c.var.access;
     const branches = await reachableBranches(ctx, access);
     const me = access.userId;
+    // The inbox shows one branch at a time.
     const branchId = c.req.query("branch");
+    if (!branchId || branchId === "all") return fail(c, 422, "branch_required", "Pick a branch.");
     const [row] = await ctx.db
       .select({
         open: sql<number>`count(*) filter (where ${schema.conversation.status} = 'open')::int`,
@@ -213,12 +217,7 @@ export function conversationRoutes(ctx: AppContext) {
           eq(schema.conversationRead.userId, me),
         ),
       )
-      .where(
-        and(
-          visibleTo(access, branches),
-          branchId && branchId !== "all" ? eq(schema.conversation.branchId, branchId) : undefined,
-        ),
-      );
+      .where(and(visibleTo(access, branches), eq(schema.conversation.branchId, branchId)));
     return c.json(row);
   });
 

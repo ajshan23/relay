@@ -82,11 +82,33 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     return row;
   }
 
-  /** Finds or creates the contact identity, following a switch from phone-based id to BSUID. */
+  // A channel without a branch counts as the business's first branch (oldest, not archived).
+  const firstBranch = new Map<string, string>();
+  async function branchFor(account: Account): Promise<string> {
+    if (account.defaultBranchId) return account.defaultBranchId;
+    const known = firstBranch.get(account.organizationId);
+    if (known) return known;
+    const [row] = await db
+      .select({ id: schema.branch.id })
+      .from(schema.branch)
+      .where(eq(schema.branch.organizationId, account.organizationId))
+      .orderBy(sql`${schema.branch.archivedAt} is not null`, schema.branch.createdAt)
+      .limit(1);
+    if (!row) throw new Error(`organization ${account.organizationId} has no branch`);
+    firstBranch.set(account.organizationId, row.id);
+    return row.id;
+  }
+
+  /**
+   * Finds or creates the contact identity, following a switch from phone-based id to BSUID. Contacts
+   * belong to a branch, so the same customer writing to two branches' numbers is two contacts.
+   */
   async function upsertIdentity(account: Account, from: ChannelIdentity): Promise<Identity> {
+    const branchId = await branchFor(account);
     const where = (externalId: string) =>
       and(
         eq(schema.contactIdentity.organizationId, account.organizationId),
+        eq(schema.contactIdentity.branchId, branchId),
         eq(schema.contactIdentity.channelType, account.type),
         eq(schema.contactIdentity.scope, from.scope),
         eq(schema.contactIdentity.externalId, externalId),
@@ -124,6 +146,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
           .where(
             and(
               eq(schema.contact.organizationId, account.organizationId),
+              eq(schema.contact.branchId, branchId),
               eq(schema.contact.phone, from.phone),
             ),
           )
@@ -138,7 +161,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
             organizationId: account.organizationId,
             name: from.profileName,
             phone: from.phone,
-            branchId: account.defaultBranchId,
+            branchId,
           });
         const [row] = await tx
           .insert(schema.contactIdentity)
@@ -146,6 +169,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
             id: newId("contactIdentity"),
             organizationId: account.organizationId,
             contactId,
+            branchId,
             channelType: account.type,
             scope: from.scope,
             externalId: from.externalId,
@@ -174,7 +198,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
       .values({
         id: newId("conversation"),
         organizationId: account.organizationId,
-        branchId: account.defaultBranchId,
+        branchId: await branchFor(account),
         channelAccountId: account.id,
         kind: "direct",
         contactId: identity.contactId,
@@ -226,7 +250,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
       .values({
         id: newId("conversation"),
         organizationId: account.organizationId,
-        branchId: group.branchId ?? account.defaultBranchId,
+        branchId: group.branchId ?? (await branchFor(account)),
         channelAccountId: account.id,
         kind: "group",
         groupId: group.id,

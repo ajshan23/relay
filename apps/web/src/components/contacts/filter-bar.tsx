@@ -34,11 +34,9 @@ export function filterColumns(meta: ContactsMeta): Column[] {
     options:
       id === "tags"
         ? meta.tags.map((t) => ({ value: t.id, label: t.name, colour: t.colour }))
-        : id === "branch"
-          ? meta.branches.map((b) => ({ value: b.id, label: b.name }))
-          : id === "marketing"
-            ? meta.channels.map((c) => ({ value: c.id, label: c.name }))
-            : undefined,
+        : id === "marketing"
+          ? meta.channels.map((c) => ({ value: c.id, label: c.name }))
+          : undefined,
   }));
   const lists: Column[] = meta.lists.length
     ? [

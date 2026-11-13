@@ -1,8 +1,9 @@
 import { newId } from "@relay/core";
 import { type FieldOption, type FieldType, fieldKey, optionColours } from "@relay/core/contacts";
 import { and, eq, inArray, isNull, schema, sql } from "@relay/db";
+import type { MiddlewareHandler } from "hono";
 import type { AppContext } from "../../context";
-import { type Access, isOrgAdmin } from "../branches/access";
+import { type Access, type AccessEnv, fail, isOrgAdmin } from "../branches/access";
 import type { ListsById } from "./filter";
 
 /* Pieces the contacts routes, lists and imports share. */
@@ -121,11 +122,11 @@ export async function setOptOut(
 }
 
 /** Every list of the business, for filters that say "in list". */
-export async function listsById(db: Db, orgId: string): Promise<ListsById> {
+export async function listsById(db: Db, orgId: string, branchId: string): Promise<ListsById> {
   const rows = await db
     .select({ id: schema.contactList.id, kind: schema.contactList.kind, filter: schema.contactList.filter })
     .from(schema.contactList)
-    .where(eq(schema.contactList.organizationId, orgId));
+    .where(and(eq(schema.contactList.organizationId, orgId), eq(schema.contactList.branchId, branchId)));
   return new Map(rows.map((r) => [r.id, { kind: r.kind, filter: r.filter }]));
 }
 
@@ -138,15 +139,52 @@ export async function activeFields(db: Db, orgId: string) {
     .orderBy(schema.contactField.position, schema.contactField.createdAt);
 }
 
-/** Owners and admins, or anyone who manages or works in a branch, may change contacts. */
-export async function canEditContacts(db: Db, access: Access) {
+/** Requests that work inside one branch: contacts, lists, saved views and imports. */
+export type BranchEnv = { Variables: AccessEnv["Variables"] & { branchId: string } };
+
+/**
+ * Contacts belong to a branch. Every request names the branch it's for (?branch=), and the caller must
+ * be able to see it: owners and admins see every branch, everyone else only the branches they're in.
+ */
+export function requireBranch(ctx: AppContext): MiddlewareHandler<BranchEnv> {
+  return async (c, next) => {
+    const access = c.var.access;
+    const id = c.req.query("branch");
+    if (!id) return fail(c, 422, "branch_required", "Pick a branch.");
+    const [found] = await ctx.db
+      .select({ id: schema.branch.id })
+      .from(schema.branch)
+      .where(
+        and(
+          eq(schema.branch.id, id),
+          eq(schema.branch.organizationId, access.orgId),
+          isNull(schema.branch.archivedAt),
+        ),
+      )
+      .limit(1);
+    if (!found) return fail(c, 404, "branch_not_found", "That branch doesn't exist.");
+    if (!isOrgAdmin(access.orgRole)) {
+      const [member] = await ctx.db
+        .select({ n: sql<number>`1` })
+        .from(schema.branchMember)
+        .where(and(eq(schema.branchMember.branchId, id), eq(schema.branchMember.userId, access.userId)))
+        .limit(1);
+      if (!member) return fail(c, 403, "forbidden", "You don't work in that branch.");
+    }
+    c.set("branchId", id);
+    await next();
+  };
+}
+
+/** Owners and admins, or the branch's managers and agents, may change its contacts. */
+export async function canEditContacts(db: Db, access: Access, branchId: string) {
   if (isOrgAdmin(access.orgRole)) return true;
   const [row] = await db
     .select({ n: sql<number>`1` })
     .from(schema.branchMember)
     .where(
       and(
-        eq(schema.branchMember.organizationId, access.orgId),
+        eq(schema.branchMember.branchId, branchId),
         eq(schema.branchMember.userId, access.userId),
         inArray(schema.branchMember.role, ["manager", "agent"]),
       ),
