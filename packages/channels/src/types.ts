@@ -89,19 +89,27 @@ type Routed = {
   accountExternalId: string;
 };
 
+/** Where a message belongs: a one-to-one chat with the sender, or a group chat. */
+export type ConversationTarget = { kind: "direct" } | { kind: "group"; groupExternalId: string };
+
 export type MessageReceived = Routed & {
   kind: "message.received";
   externalId: string;
   sentAt: Date;
+  /** Who wrote it. In a group, this is the participant. */
   from: ChannelIdentity;
+  conversation: ConversationTarget;
   content: MessageContent;
   context: MessageContext;
   errors: ProviderError[];
-  /** Group chats carry a group id; one-to-one chats do not. */
-  groupId: string | null;
 };
 
 export type DeliveryStatus = "sent" | "delivered" | "read" | "played" | "failed";
+
+/** Who a status is about: the customer of a direct chat, or one participant of a group. */
+export type StatusRecipient =
+  | { kind: "direct"; externalId: string | null }
+  | { kind: "group"; groupExternalId: string; participant: ChannelIdentity | null };
 
 export type MessageStatusEvent = Routed & {
   kind: "message.status";
@@ -111,7 +119,7 @@ export type MessageStatusEvent = Routed & {
   at: Date;
   /** Our own message id, echoed back by the provider (WhatsApp biz_opaque_callback_data). */
   ourMessageId: string | null;
-  recipientExternalId: string | null;
+  recipient: StatusRecipient;
   errors: ProviderError[];
   pricing: { category: string | null; type: string | null } | null;
 };
@@ -121,6 +129,7 @@ export type ReactionEvent = Routed & {
   externalId: string;
   at: Date;
   from: ChannelIdentity;
+  conversation: ConversationTarget;
   targetExternalId: string;
   /** Null when the reaction was removed. */
   emoji: string | null;
@@ -145,12 +154,65 @@ export type AccountEvent = Routed & {
   errors: ProviderError[];
 };
 
+/*
+ * Group events: the same on every channel that has groups. Channels that manage groups
+ * asynchronously (WhatsApp) answer our requests with these, matched by `requestId`.
+ */
+type GroupBase = Routed & {
+  /** The channel's group id. Can be null on a failed create. */
+  groupExternalId: string | null;
+  /** Echo of the request that caused this, when the channel gives one. */
+  requestId: string | null;
+  at: Date;
+};
+
+export type GroupEvent =
+  | (GroupBase & {
+      kind: "group.created";
+      subject: string | null;
+      description: string | null;
+      inviteLink: string | null;
+      joinApprovalMode: string | null;
+    })
+  | (GroupBase & { kind: "group.failed"; operation: "create" | "update" | "delete"; errors: ProviderError[] })
+  | (GroupBase & { kind: "group.deleted" })
+  | (GroupBase & {
+      kind: "group.updated";
+      /** Only the parts that changed successfully are set. */
+      subject?: string;
+      description?: string;
+      iconChanged?: boolean;
+      errors: ProviderError[];
+    })
+  | (GroupBase & { kind: "group.suspended" })
+  | (GroupBase & { kind: "group.restored" })
+  | (GroupBase & { kind: "group.participants_added"; participants: ChannelIdentity[]; reason: string | null })
+  | (GroupBase & {
+      kind: "group.participants_removed";
+      participants: ChannelIdentity[];
+      /** "participant" when they left on their own; "business" when we removed them. */
+      initiatedBy: "business" | "participant" | null;
+      failed: { participant: ChannelIdentity; errors: ProviderError[] }[];
+    })
+  | (GroupBase & { kind: "group.join_requested"; requestExternalId: string; participant: ChannelIdentity })
+  | (GroupBase & {
+      kind: "group.join_request_withdrawn";
+      requestExternalId: string;
+      participant: ChannelIdentity;
+    });
+
 export type NormalizedEvent =
   | MessageReceived
   | MessageStatusEvent
   | ReactionEvent
   | ContactChangedEvent
-  | AccountEvent;
+  | AccountEvent
+  | GroupEvent;
+
+/** Who a message goes to: one customer (by phone or channel id), or a group. */
+export type Recipient =
+  | { kind: "direct"; phone: string | null; userId: string | null }
+  | { kind: "group"; groupExternalId: string };
 
 /** What Relay asks a channel to send. */
 export type OutboundMessage = (
@@ -179,4 +241,24 @@ export type ChannelCapabilities = {
   readReceipts: boolean;
   typingIndicator: boolean;
   reactions: boolean;
+  /** What this channel's group chats can do, or null when the channel has no groups. */
+  groups: GroupCapabilities | null;
+};
+
+export type GroupCapabilities = {
+  /** The business can create groups through the channel. */
+  canCreate: boolean;
+  /** How people get in: by an invite link, by being added directly, or either. */
+  joinBy: "invite_link" | "direct_add" | "both";
+  /** Joining can require approval. */
+  joinRequests: boolean;
+  canRemoveParticipants: boolean;
+  canRename: boolean;
+  maxParticipants: number | null;
+  /** Message types the business can send into a group. */
+  outboundTypes: OutboundMessage["type"][];
+  /** Delivered/read is reported per participant. */
+  perParticipantReceipts: boolean;
+  /** Hours a group stays open for free-form replies after any member writes. Null: no window. */
+  replyWindowHours: number | null;
 };

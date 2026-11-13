@@ -21,6 +21,7 @@ export const idPrefixes = {
   outbox: "out",
   email: "eml",
   group: "grp",
+  groupParticipant: "gpt",
   groupJoinRequest: "gjr",
   receipt: "rcp",
 } as const;

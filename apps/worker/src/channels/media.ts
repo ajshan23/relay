@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { createGraphClient, fetchWhatsAppMedia, GraphError, whatsappCapabilities } from "@relay/channels";
-import { decryptSecretJson, env, localFileStorage } from "@relay/core";
+import { GraphError } from "@relay/channels";
+import { env, localFileStorage } from "@relay/core";
 import { type createDb, eq, schema } from "@relay/db";
 import { type Job, UnrecoverableError } from "bullmq";
+import { accountRef, channels } from "./registry";
 import type { MediaJob } from "./webhooks";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -21,17 +22,12 @@ const extensions: Record<string, string> = {
 };
 
 /**
- * Copies one customer file from Meta into our storage. Meta's media links last 5 minutes and media
- * ids 7 days, so this runs right after the message arrives.
+ * Copies one customer file from the channel into our storage, through its adapter. Provider links
+ * expire quickly (WhatsApp: 5 minutes, ids 7 days), so this runs right after the message arrives.
  */
 export function createMediaProcessor({ db }: { db: Db }) {
   const config = env();
   const storage = localFileStorage(config.MEDIA_DIR);
-  const graph = createGraphClient({
-    baseUrl: config.META_GRAPH_URL,
-    version: config.META_GRAPH_VERSION,
-    timeoutMs: 60_000,
-  });
 
   return async function downloadMedia(job: Job<MediaJob>) {
     const [row] = await db
@@ -53,18 +49,11 @@ export function createMediaProcessor({ db }: { db: Db }) {
         .where(eq(schema.attachment.id, attachment.id));
 
     try {
-      const { accessToken } = decryptSecretJson<{ accessToken: string }>(
-        account.credentials,
-        config.CHANNEL_SECRET_KEY ?? "",
-      );
-      const limits = whatsappCapabilities.media as Record<string, { maxBytes: number }>;
+      const adapter = channels().get(account.type);
+      if (!adapter) throw new UnrecoverableError(`No adapter for ${account.type}`);
+      const limits = adapter.capabilities.media as Record<string, { maxBytes: number }>;
       const maxBytes = limits[attachment.kind]?.maxBytes ?? 100 * 1024 * 1024;
-      const file = await fetchWhatsAppMedia(
-        graph,
-        { phoneNumberId: account.externalId, accessToken },
-        mediaId,
-        maxBytes,
-      );
+      const file = await adapter.fetchMedia(accountRef(account), mediaId, maxBytes);
 
       const mimeType =
         file.mimeType?.split(";")[0]?.trim() ?? attachment.mimeType ?? "application/octet-stream";

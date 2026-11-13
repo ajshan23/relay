@@ -1,6 +1,7 @@
 import { type createDb, eq, schema, sql } from "@relay/db";
 import type { Job, Queue } from "bullmq";
-import { createIngest, parseStoredEvent } from "./ingest";
+import { createIngest } from "./ingest";
+import { channels } from "./registry";
 
 type Db = ReturnType<typeof createDb>["db"];
 export type WebhookJob = { eventId: string };
@@ -11,7 +12,7 @@ export type MediaJob = { attachmentId: string };
  * webhook_event row. Throwing makes the queue retry; the raw event stays stored for replay.
  */
 export function createWebhookProcessor({ db, mediaQueue }: { db: Db; mediaQueue: Queue<MediaJob> }) {
-  const { ingest } = createIngest(db);
+  const { ingest } = createIngest(db, channels());
 
   return async function processWebhook(job: Job<WebhookJob>) {
     const [event] = await db
@@ -21,7 +22,7 @@ export function createWebhookProcessor({ db, mediaQueue }: { db: Db; mediaQueue:
       .limit(1);
     if (!event) return;
     try {
-      const result = await ingest(parseStoredEvent(event.provider, event.payload));
+      const result = await ingest(channels().parse(event.provider, event.payload));
       for (const attachmentId of result.media) {
         await mediaQueue.add(
           "download",

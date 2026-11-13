@@ -63,9 +63,19 @@ describe("Status ordering", () => {
 });
 
 describe("WhatsApp send body", () => {
+  it("sends to a group by its id", () => {
+    const body = buildWhatsAppSendBody(
+      { kind: "group", groupExternalId: "GROUP_1" },
+      { type: "text", text: "Hi all" },
+      "msg_g",
+    );
+    assert.equal(body.recipient_type, "group");
+    assert.equal(body.to, "GROUP_1");
+    assert.deepEqual(body.text, { body: "Hi all", preview_url: false });
+  });
   it("builds a text reply with our id for status matching", () => {
     const body = buildWhatsAppSendBody(
-      { phone: "15550001111", userId: "US.1" },
+      { kind: "direct", phone: "15550001111", userId: "US.1" },
       { type: "text", text: "Hello", replyToExternalId: "wamid.in" },
       "msg_1",
     );
@@ -81,7 +91,7 @@ describe("WhatsApp send body", () => {
   });
   it("sends by BSUID when the phone is hidden, and builds media", () => {
     const body = buildWhatsAppSendBody(
-      { phone: null, userId: "US.1" },
+      { kind: "direct", phone: null, userId: "US.1" },
       { type: "document", providerMediaId: "M1", caption: "c", fileName: "a.pdf" },
       "msg_2",
     );

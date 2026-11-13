@@ -160,8 +160,8 @@ describe("WhatsApp webhook parser", () => {
       }),
     );
     assert.deepEqual(
-      [sent.kind, sent.status, sent.ourMessageId, sent.recipientExternalId],
-      ["message.status", "delivered", "msg_1", CUSTOMER_BSUID],
+      [sent.kind, sent.status, sent.ourMessageId, sent.recipient],
+      ["message.status", "delivered", "msg_1", { kind: "direct", externalId: CUSTOMER_BSUID }],
     );
     assert.equal(sent.pricing.category, "service");
     const failed = one(

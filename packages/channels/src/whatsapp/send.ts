@@ -1,5 +1,5 @@
 import type { GraphClient } from "../meta/graph";
-import type { OutboundMessage } from "../types";
+import type { OutboundMessage, Recipient } from "../types";
 
 /** What a WhatsApp channel account needs to send: its phone number id and access token. */
 export type WhatsAppAccount = { phoneNumberId: string; accessToken: string };
@@ -8,15 +8,13 @@ export type WhatsAppAccount = { phoneNumberId: string; accessToken: string };
  * The /messages request body for one outbound message. `ourMessageId` goes into
  * biz_opaque_callback_data so status webhooks can be matched even if the send response is lost.
  */
-export function buildWhatsAppSendBody(
-  to: { phone: string | null; userId: string | null },
-  message: OutboundMessage,
-  ourMessageId: string,
-) {
-  const recipient = to.phone ? { to: to.phone } : { recipient: to.userId };
+export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, ourMessageId: string) {
+  const recipient =
+    to.kind === "group"
+      ? { recipient_type: "group", to: to.groupExternalId }
+      : { recipient_type: "individual", ...(to.phone ? { to: to.phone } : { recipient: to.userId }) };
   const body: Record<string, unknown> = {
     messaging_product: "whatsapp",
-    recipient_type: "individual",
     ...recipient,
     biz_opaque_callback_data: ourMessageId,
   };
@@ -41,7 +39,7 @@ export function buildWhatsAppSendBody(
 export async function sendWhatsAppMessage(
   graph: GraphClient,
   account: WhatsAppAccount,
-  to: { phone: string | null; userId: string | null },
+  to: Recipient,
   message: OutboundMessage,
   ourMessageId: string,
 ): Promise<{ externalId: string }> {

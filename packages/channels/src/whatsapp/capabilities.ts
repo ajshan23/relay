@@ -19,4 +19,17 @@ export const whatsappCapabilities: ChannelCapabilities = {
   readReceipts: true,
   typingIndicator: true,
   reactions: true,
+  // WhatsApp Groups API: Official Business Account numbers only; business-created, invite-link only.
+  groups: {
+    canCreate: true,
+    joinBy: "invite_link",
+    joinRequests: true,
+    canRemoveParticipants: true,
+    canRename: true,
+    maxParticipants: 8,
+    outboundTypes: ["text", "image", "video", "audio", "document"],
+    perParticipantReceipts: true,
+    // Meta does not document the group window length; 24 h assumed until confirmed on a live group.
+    replyWindowHours: 24,
+  },
 };

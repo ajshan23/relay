@@ -1,6 +1,8 @@
 import type {
   ChannelIdentity,
+  ConversationTarget,
   DeliveryStatus,
+  GroupEvent,
   MediaRef,
   MessageContent,
   MessageContext,
@@ -172,6 +174,128 @@ function identity(msg: Json, contacts: Json[], scope: string): ChannelIdentity |
   return { externalId, scope, phone, username: str(profile.username), profileName: str(profile.name) };
 }
 
+/** A group participant as the group webhooks describe them (BSUID always, phone sometimes). */
+function participant(p: Json, scope: string): ChannelIdentity | null {
+  const userId = str(p.user_id);
+  const phone = str(p.wa_id) ?? (str(p.input)?.match(/^\+?\d+$/) ? str(p.input) : null);
+  const externalId = userId ?? phone;
+  if (!externalId) return null;
+  return { externalId, scope, phone, username: str(p.username), profileName: null };
+}
+
+function conversationOf(msg: Json): ConversationTarget {
+  const groupId = str(msg.group_id);
+  return groupId ? { kind: "group", groupExternalId: groupId } : { kind: "direct" };
+}
+
+const groupFields = new Set([
+  "group_lifecycle_update",
+  "group_participants_update",
+  "group_settings_update",
+  "group_status_update",
+]);
+
+/** The four WhatsApp group webhook fields, turned into Relay's channel-agnostic group events. */
+function groupEvents(
+  base: { channel: "whatsapp"; accountExternalId: string },
+  value: Json,
+  scope: string,
+): GroupEvent[] {
+  const out: GroupEvent[] = [];
+  for (const g of asArray(value.groups)) {
+    const type = str(g.type);
+    const common = {
+      ...base,
+      groupExternalId: str(g.group_id),
+      requestId: str(g.request_id),
+      at: seconds(g.timestamp),
+    };
+    const errors = errorsOf(g.errors);
+    const people = (v: unknown) =>
+      asArray(v)
+        .map((p) => participant(p, scope))
+        .filter((p): p is ChannelIdentity => !!p);
+
+    if (type === "group_create") {
+      if (errors.length) out.push({ ...common, kind: "group.failed", operation: "create", errors });
+      else
+        out.push({
+          ...common,
+          kind: "group.created",
+          subject: str(g.subject),
+          description: str(g.description),
+          inviteLink: str(g.invite_link),
+          joinApprovalMode: str(g.join_approval_mode),
+        });
+    } else if (type === "group_delete") {
+      out.push(
+        errors.length
+          ? { ...common, kind: "group.failed", operation: "delete", errors }
+          : { ...common, kind: "group.deleted" },
+      );
+    } else if (type === "group_participants_add") {
+      out.push({
+        ...common,
+        kind: "group.participants_added",
+        participants: people(g.added_participants),
+        reason: str(g.reason),
+      });
+    } else if (type === "group_participants_remove") {
+      const by = str(g.initiated_by);
+      out.push({
+        ...common,
+        kind: "group.participants_removed",
+        participants: people(g.removed_participants),
+        initiatedBy: by === "business" || by === "participant" ? by : null,
+        failed: asArray(g.failed_participants).flatMap((f) => {
+          const p = participant(f, scope);
+          return p ? [{ participant: p, errors: errorsOf(f.errors) }] : [];
+        }),
+      });
+    } else if (type === "group_join_request_created" || type === "group_join_request_revoked") {
+      const p = participant(g, scope);
+      const requestExternalId = str(g.join_request_id);
+      if (!p || !requestExternalId) continue;
+      out.push({
+        ...common,
+        kind: type === "group_join_request_created" ? "group.join_requested" : "group.join_request_withdrawn",
+        requestExternalId,
+        participant: p,
+      });
+    } else if (type === "group_suspend") {
+      out.push({ ...common, kind: "group.suspended" });
+    } else if (type === "group_suspend_cleared") {
+      out.push({ ...common, kind: "group.restored" });
+    } else if (g.group_subject || g.group_description || g.profile_picture) {
+      // Settings results: each section reports success on its own.
+      const section = (v: unknown) => asObject(v);
+      const subject = section(g.group_subject);
+      const description = section(g.group_description);
+      const picture = section(g.profile_picture);
+      const ok = (x: Json) => Object.keys(x).length > 0 && x.update_successful !== false;
+      const sectionErrors = [
+        ...errorsOf(subject.errors),
+        ...errorsOf(description.errors),
+        ...errorsOf(picture.errors),
+        ...errors,
+      ];
+      const changed = {
+        ...(ok(subject) && str(subject.text) !== null ? { subject: str(subject.text) as string } : {}),
+        ...(ok(description) && str(description.text) !== null
+          ? { description: str(description.text) as string }
+          : {}),
+        ...(ok(picture) ? { iconChanged: true } : {}),
+      };
+      if (!Object.keys(changed).length && sectionErrors.length) {
+        out.push({ ...common, kind: "group.failed", operation: "update", errors: sectionErrors });
+      } else {
+        out.push({ ...common, kind: "group.updated", ...changed, errors: sectionErrors });
+      }
+    }
+  }
+  return out;
+}
+
 export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
   const body = asObject(payload);
   if (body.object !== "whatsapp_business_account") return [];
@@ -186,6 +310,10 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
       const accountExternalId = str(metadata.phone_number_id) ?? "";
       const base = { channel: "whatsapp" as const, accountExternalId };
 
+      if (groupFields.has(field)) {
+        events.push(...groupEvents(base, value, scope));
+        continue;
+      }
       if (field !== "messages") {
         events.push({ ...base, kind: "account.update", field, data: value, errors: errorsOf(value.errors) });
         continue;
@@ -224,6 +352,7 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
             externalId,
             at,
             from,
+            conversation: conversationOf(msg),
             targetExternalId: str(r.message_id) ?? "",
             emoji: str(r.emoji),
           });
@@ -236,10 +365,10 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
           externalId,
           sentAt: at,
           from,
+          conversation: conversationOf(msg),
           content: content(msg),
           context: context(msg),
           errors: errorsOf(msg.errors),
-          groupId: str(msg.group_id),
         });
       }
 
@@ -254,7 +383,17 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
           status,
           at: seconds(s.timestamp),
           ourMessageId: str(s.biz_opaque_callback_data),
-          recipientExternalId: str(s.recipient_user_id) ?? str(s.recipient_id),
+          recipient:
+            str(s.recipient_type) === "group"
+              ? {
+                  kind: "group",
+                  groupExternalId: str(s.recipient_id) ?? "",
+                  participant: participant(
+                    { user_id: s.recipient_participant_user_id, wa_id: s.recipient_participant_id },
+                    scope,
+                  ),
+                }
+              : { kind: "direct", externalId: str(s.recipient_user_id) ?? str(s.recipient_id) },
           errors: errorsOf(s.errors),
           pricing: Object.keys(pricing).length
             ? { category: str(pricing.category), type: str(pricing.type) }

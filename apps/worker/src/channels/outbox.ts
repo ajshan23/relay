@@ -1,15 +1,8 @@
-import {
-  createGraphClient,
-  GraphError,
-  GraphUncertainError,
-  type OutboundMessage,
-  sendWhatsAppMessage,
-  type WhatsAppAccount,
-} from "@relay/channels";
-import { decryptSecretJson, env } from "@relay/core";
+import { GraphError, GraphUncertainError, type OutboundMessage, type Recipient } from "@relay/channels";
 import { and, type createDb, eq, inArray, schema, sql } from "@relay/db";
 import { DelayedError, type Job, UnrecoverableError } from "bullmq";
 import type { Redis } from "ioredis";
+import { accountRef, channels } from "./registry";
 
 type Db = ReturnType<typeof createDb>["db"];
 export type OutboxJob = { messageId: string };
@@ -24,13 +17,6 @@ const PER_NUMBER_PER_SECOND = 70;
  * (timeout) is marked failed instead of resent, because a duplicate message is worse than a missing one.
  */
 export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
-  const config = env();
-  const graph = createGraphClient({
-    baseUrl: config.META_GRAPH_URL,
-    version: config.META_GRAPH_VERSION,
-    timeoutMs: config.META_GRAPH_TIMEOUT_MS,
-  });
-
   async function fail(messageId: string, error: Record<string, unknown>) {
     await db
       .update(schema.message)
@@ -83,17 +69,20 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       .select({
         message: schema.message,
         account: schema.channelAccount,
+        conversation: schema.conversation,
         identity: schema.contactIdentity,
-        windowExpiresAt: schema.conversation.windowExpiresAt,
+        group: schema.channelGroup,
       })
       .from(schema.message)
       .innerJoin(schema.conversation, eq(schema.conversation.id, schema.message.conversationId))
       .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.message.channelAccountId))
-      .innerJoin(schema.contactIdentity, eq(schema.contactIdentity.id, schema.conversation.contactIdentityId))
+      // A direct chat has a customer identity; a group chat has a group.
+      .leftJoin(schema.contactIdentity, eq(schema.contactIdentity.id, schema.conversation.contactIdentityId))
+      .leftJoin(schema.channelGroup, eq(schema.channelGroup.id, schema.conversation.groupId))
       .where(eq(schema.message.id, job.data.messageId))
       .limit(1);
     if (!row) return;
-    const { message, account, identity } = row;
+    const { message, account, conversation, identity, group } = row;
     if (message.status !== "queued" && message.status !== "sending") return; // Already sent or given up.
     // "sending" on arrival means an earlier attempt reached the send call and did not finish
     // (a crash, or a failure after Meta accepted it). It may have been sent: never send twice.
@@ -109,19 +98,46 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       await fail(message.id, { reason: "channel_unavailable", message: `The channel is ${account.status}` });
       throw new UnrecoverableError("channel not active");
     }
-    if (!row.windowExpiresAt || row.windowExpiresAt <= new Date()) {
+    if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date()) {
       await fail(message.id, {
         reason: "window_closed",
-        message: "The 24-hour reply window closed before the message was sent",
+        message: "The reply window closed before the message was sent",
       });
       throw new UnrecoverableError("window closed");
     }
-    if (account.type !== "whatsapp") {
+    const adapter = channels().get(account.type);
+    if (!adapter) {
       await fail(message.id, {
         reason: "unsupported_channel",
         message: `Sending on ${account.type} is not built yet`,
       });
       throw new UnrecoverableError("unsupported channel");
+    }
+    let to: Recipient;
+    if (conversation.kind === "group") {
+      if (!group?.externalId || group.status !== "active") {
+        await fail(message.id, {
+          reason: "group_unavailable",
+          message: `The group is ${group?.status ?? "missing"}`,
+        });
+        throw new UnrecoverableError("group not active");
+      }
+      const allowed = adapter.capabilities.groups?.outboundTypes ?? [];
+      if (!allowed.includes((message.content as { type: OutboundMessage["type"] }).type)) {
+        await fail(message.id, {
+          reason: "unsupported_in_group",
+          message: `This channel cannot send ${message.type} messages to groups`,
+        });
+        throw new UnrecoverableError("type not allowed in group");
+      }
+      to = { kind: "group", groupExternalId: group.externalId };
+    } else {
+      if (!identity) throw new UnrecoverableError("direct conversation without identity");
+      to = {
+        kind: "direct",
+        phone: identity.phone,
+        userId: identity.externalId.includes(".") ? identity.externalId : null,
+      };
     }
 
     await throttle(job, account.id, token);
@@ -138,23 +154,9 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       replyToExternalId = target?.externalId ?? undefined;
     }
     const outbound: OutboundMessage = { type: "text", text: content.text ?? "", replyToExternalId };
-    const credentials = decryptSecretJson<{ accessToken: string }>(
-      account.credentials,
-      config.CHANNEL_SECRET_KEY ?? "",
-    );
-    const waAccount: WhatsAppAccount = {
-      phoneNumberId: account.externalId,
-      accessToken: credentials.accessToken,
-    };
 
     try {
-      const { externalId } = await sendWhatsAppMessage(
-        graph,
-        waAccount,
-        { phone: identity.phone, userId: identity.externalId.includes(".") ? identity.externalId : null },
-        outbound,
-        message.id,
-      );
+      const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);
       await recordAccepted(message.id, externalId);
     } catch (err) {
       const lastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);

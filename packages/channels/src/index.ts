@@ -1,7 +1,15 @@
 /*
  * @relay/channels: every messaging channel, translated into one Relay shape.
- * Pure parsing and sending helpers; storage and queues live in the API and worker.
+ * The worker and API use createChannelRegistry(); storage and queues live in the API and worker.
  */
+export {
+  type AccountRef,
+  type ChannelAdapter,
+  type ChannelRegistry,
+  type ConnectResult,
+  createChannelRegistry,
+  type GroupAdapter,
+} from "./adapter";
 export * from "./meta/errors";
 export { createGraphClient, type GraphClient, type GraphConfig } from "./meta/graph";
 export { signMetaPayload, verifyMetaHandshake, verifyMetaSignature } from "./meta/signature";
