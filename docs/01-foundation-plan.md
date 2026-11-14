@@ -1,7 +1,7 @@
 # Foundation plan: channels, data model, build order
 
 Drafted 2026-11-12. Product name is undecided; `relay` is the working folder name.
-Source research: `../research/00-overview.md`.
+Based on private platform research kept outside the repo.
 
 ## 1. Do all Meta channels send the same webhooks?
 

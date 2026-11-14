@@ -7,9 +7,10 @@ dist
 !.env.example
 *.tsbuildinfo
 .DS_Store
-# reference clones, not part of the product
-opensource/*/
-!opensource/notes/
+# Private reference material, kept on this Mac only (copy in ~/Desktop/relay-notes), never pushed
+opensource/
+research/
+rivals/
 
 # Local media storage
 .data/
