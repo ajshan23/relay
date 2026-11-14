@@ -320,6 +320,8 @@ export type OutboundMessage = (
       caption?: string;
       fileName?: string;
     }
+  /** An emoji on one of the customer's (or our) messages; an empty emoji takes ours away. */
+  | { type: "reaction"; targetExternalId: string; emoji: string }
 ) & {
   /** Provider id of the message being replied to. */
   replyToExternalId?: string;

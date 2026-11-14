@@ -47,6 +47,7 @@ import {
   useDeleteNote,
   useMarkRead,
   useMessages,
+  useReact,
   useRetry,
   useUpdateConversation,
 } from "./queries";
@@ -231,6 +232,7 @@ export function Thread({ id, onBack, className }: Props) {
                     highlight={highlight}
                     detail={d}
                     onReply={d.canWork && d.conversation.windowOpen ? setReplyTo : undefined}
+                    canReact={d.canWork && d.conversation.windowOpen && !!d.capabilities?.reactions}
                   />
                 </MessageScrollerContent>
               </MessageScrollerViewport>
@@ -271,6 +273,7 @@ function Messages({
   highlight,
   detail,
   onReply,
+  canReact,
 }: {
   list: Message[];
   /** Where the new messages start, and how many: shown as a divider. */
@@ -279,8 +282,20 @@ function Messages({
   highlight: string | null;
   detail: ConversationDetail;
   onReply?: (m: Message) => void;
+  canReact?: boolean;
 }) {
   const retry = useRetry(detail.conversation.id);
+  const react = useReact(detail.conversation.id);
+  const onReact = (m: Message, emoji: string) =>
+    react.mutate(
+      { messageId: m.id, emoji },
+      {
+        onError: (err) =>
+          notify.error("Reaction not sent", {
+            description: err instanceof ApiError ? err.message : undefined,
+          }),
+      },
+    );
   const deleteNote = useDeleteNote(detail.conversation.id);
   const { me, canManageOrg } = useMe();
   const onDeleteNote = (m: Message) =>
@@ -364,6 +379,7 @@ function Messages({
             last={last}
             isGroup={isGroup}
             onReply={onReply}
+            onReact={canReact ? onReact : undefined}
             onRetry={canRetry ? onRetry : undefined}
             onDeleteNote={m.sender.id === me.user.id || canManageOrg ? onDeleteNote : undefined}
           />

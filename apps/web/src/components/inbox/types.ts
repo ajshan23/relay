@@ -143,7 +143,8 @@ export type Message = {
   deliveredAt: string | null;
   readAt: string | null;
   attachments: Attachment[];
-  reactions: { emoji: string; by: string | null }[];
+  /** One per person; `mine` is the business's own (one per message, shared by the team). */
+  reactions: { emoji: string; by: string | null; mine?: boolean }[];
   replyTo: (Preview & { id: string }) | null;
   receipts: { delivered: number; read: number } | null;
   /** Set on messages shown before the server confirmed them. */

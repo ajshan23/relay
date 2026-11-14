@@ -4,7 +4,8 @@ import { Icon } from "@relay/ui/components/icon";
 import { Person } from "@relay/ui/components/person";
 import { Button } from "@relay/ui/ui/button";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageHeader } from "@relay/ui/ui/message";
-import type { ReactNode } from "react";
+import { Popover, PopoverContent, PopoverTrigger } from "@relay/ui/ui/popover";
+import { type ReactNode, useState } from "react";
 import { ChatBubble } from "@/components/ui/whatsapp/chat-bubble";
 import { ContactBubble } from "@/components/ui/whatsapp/contact-bubble";
 import { FileAttachmentBubble } from "@/components/ui/whatsapp/file-attachment-bubble";
@@ -39,6 +40,8 @@ type Props = {
   isGroup: boolean;
   onRetry?: (m: Msg) => void;
   onReply?: (m: Msg) => void;
+  /** React with an emoji, or "" to take our reaction away. Only while the reply window is open. */
+  onReact?: (m: Msg, emoji: string) => void;
 };
 
 /** Relay's delivery states → the bubble's ticks. Inbound messages show none. */
@@ -118,7 +121,16 @@ function NoteCard({ message: m, onDelete }: { message: Msg; onDelete?: (m: Msg) 
   );
 }
 
-export function MessageBubble({ message: m, first, last, isGroup, onRetry, onReply, onDeleteNote }: Props) {
+export function MessageBubble({
+  message: m,
+  first,
+  last,
+  isGroup,
+  onRetry,
+  onReply,
+  onReact,
+  onDeleteNote,
+}: Props) {
   if (m.type === "note") return <NoteCard message={m} onDelete={onDeleteNote} />;
   const out = m.direction === "outbound";
   const failed = m.status === "failed";
@@ -162,6 +174,9 @@ export function MessageBubble({ message: m, first, last, isGroup, onRetry, onRep
                 </div>
               ) : null}
             </div>
+            {onReact && !m.pending && !failed && (!out || !["queued", "sending"].includes(m.status)) ? (
+              <ReactButton message={m} onReact={onReact} />
+            ) : null}
             {onReply && !m.pending ? (
               <button
                 type="button"
@@ -409,4 +424,48 @@ function Body({
         />
       );
   }
+}
+
+const quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+
+/** The smiley next to a message: six quick reactions; our current one is marked, and picking it again removes it. */
+function ReactButton({ message: m, onReact }: { message: Msg; onReact: (m: Msg, emoji: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const mine = m.reactions.find((r) => r.mine)?.emoji ?? null;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={mine ? `Change your reaction (${mine})` : "React to this message"}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover/row:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/50",
+            open && "opacity-100",
+          )}
+        >
+          <Icon name="emoji" size="sm" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="center" className="flex w-auto gap-0.5 rounded-full p-1">
+        {quickReactions.map((e) => (
+          <button
+            key={e}
+            type="button"
+            aria-label={e === mine ? `Remove your ${e} reaction` : `React ${e}`}
+            aria-pressed={e === mine}
+            onClick={() => {
+              setOpen(false);
+              onReact(m, e === mine ? "" : e);
+            }}
+            className={cn(
+              "inline-flex size-9 items-center justify-center rounded-full text-xl transition-transform outline-none hover:scale-110 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50",
+              e === mine && "bg-primary/15",
+            )}
+          >
+            {e}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
 }

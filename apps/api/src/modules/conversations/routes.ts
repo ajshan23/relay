@@ -789,6 +789,8 @@ export function conversationRoutes(ctx: AppContext) {
               >`coalesce(${schema.contactIdentity.profileName}, ${schema.contactIdentity.phone})`,
               content: schema.message.content,
               sentAt: schema.message.sentAt,
+              direction: schema.message.direction,
+              status: schema.message.status,
             })
             .from(schema.message)
             .leftJoin(schema.contactIdentity, eq(schema.contactIdentity.id, schema.message.senderIdentityId))
@@ -837,14 +839,17 @@ export function conversationRoutes(ctx: AppContext) {
       : [[], [], [], []];
 
     const byExternal = new Map(page.filter((m) => m.externalId).map((m) => [m.externalId, m.id]));
-    const reactionsOf = new Map<string, Map<string, { emoji: string; by: string | null }>>();
+    // One reaction per person per message; the business (everyone on the team) counts as one, as on WhatsApp.
+    const reactionsOf = new Map<string, Map<string, { emoji: string; by: string | null; mine: boolean }>>();
     for (const r of reactions) {
+      if (r.direction === "outbound" && r.status === "failed") continue;
       const content = r.content as { emoji?: string; targetMessageId?: string; targetExternalId?: string };
       const target = content.targetMessageId ?? byExternal.get(content.targetExternalId ?? "");
       if (!target) continue;
       const people = reactionsOf.get(target) ?? new Map();
-      const who = r.senderIdentityId ?? "?";
-      if (content.emoji) people.set(who, { emoji: content.emoji, by: r.senderName });
+      const mine = r.direction === "outbound";
+      const who = mine ? "business" : (r.senderIdentityId ?? "?");
+      if (content.emoji) people.set(who, { emoji: content.emoji, by: mine ? "You" : r.senderName, mine });
       else people.delete(who);
       reactionsOf.set(target, people);
     }
@@ -1069,6 +1074,86 @@ export function conversationRoutes(ctx: AppContext) {
     });
     await ctx.queues.outbox.add("send", { messageId: id }, { jobId: id, ...outboxJobOptions });
     await announce(conversation);
+    return c.json({ message }, 201);
+  });
+
+  // React to a message (or take our reaction away with an empty emoji). WhatsApp: within the reply
+  // window, on messages up to 30 days old; the business has one reaction per message.
+  app.post("/:id/messages/:messageId/react", async (c) => {
+    const access = c.var.access;
+    const parsed = await parseBody(c, z.object({ emoji: z.string().max(16) }));
+    if ("error" in parsed) return parsed.error;
+    const emoji = parsed.data.emoji.trim();
+    const conversation = await findConversation(ctx, access, c.req.param("id"));
+    if (!conversation) return fail(c, 404, "not_found");
+    if (!(await canWork(ctx, access, conversation)))
+      return fail(c, 403, "forbidden", "Viewers can read conversations but not react.");
+    const [account] = await ctx.db
+      .select({ type: schema.channelAccount.type })
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, conversation.channelAccountId))
+      .limit(1);
+    if (!account || !channels().get(account.type)?.capabilities.reactions)
+      return fail(c, 422, "not_supported", "This channel doesn't take reactions.");
+    if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date())
+      return fail(
+        c,
+        409,
+        "window_closed",
+        "WhatsApp allows reactions only within 24 hours of the customer's last message.",
+      );
+    const [target] = await ctx.db
+      .select()
+      .from(schema.message)
+      .where(
+        and(
+          eq(schema.message.id, c.req.param("messageId")),
+          eq(schema.message.conversationId, conversation.id),
+        ),
+      )
+      .limit(1);
+    if (!target || target.type === "reaction") return fail(c, 404, "not_found");
+    if (!target.externalId)
+      return fail(
+        c,
+        409,
+        "not_delivered",
+        "That message hasn't reached WhatsApp yet, so it can't get a reaction.",
+      );
+    if (target.sentAt < new Date(Date.now() - 30 * 24 * 3600 * 1000))
+      return fail(c, 409, "too_old", "WhatsApp allows reactions only on messages from the last 30 days.");
+
+    const id = newId("message");
+    const now = new Date();
+    const content = {
+      type: "reaction",
+      emoji,
+      targetMessageId: target.id,
+      targetExternalId: target.externalId,
+    };
+    const [message] = await ctx.db
+      .insert(schema.message)
+      .values({
+        id,
+        organizationId: conversation.organizationId,
+        conversationId: conversation.id,
+        channelAccountId: conversation.channelAccountId,
+        direction: "outbound",
+        senderType: "user",
+        senderUserId: access.userId,
+        type: "reaction",
+        content,
+        status: "queued",
+        sentAt: now,
+      })
+      .returning();
+    await ctx.queues.outbox.add("send", { messageId: id }, { jobId: id, ...outboxJobOptions });
+    await announce(conversation, {
+      type: "message.updated",
+      conversationId: conversation.id,
+      branchId: conversation.branchId,
+      messageId: target.id,
+    });
     return c.json({ message }, 201);
   });
 

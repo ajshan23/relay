@@ -385,25 +385,52 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         .limit(1);
       replyToExternalId = target?.externalId ?? undefined;
     }
-    const outbound: OutboundMessage = isTemplate
+    // A reaction points at a message by its provider id, known once that message was accepted.
+    let reactionTarget: string | null = null;
+    if (message.type === "reaction") {
+      const r = message.content as { targetMessageId?: string; targetExternalId?: string };
+      if (r.targetExternalId) reactionTarget = r.targetExternalId;
+      else if (r.targetMessageId) {
+        const [target] = await db
+          .select({ externalId: schema.message.externalId })
+          .from(schema.message)
+          .where(eq(schema.message.id, r.targetMessageId))
+          .limit(1);
+        reactionTarget = target?.externalId ?? null;
+      }
+      if (!reactionTarget) {
+        await fail(message.id, {
+          reason: "error",
+          message: "That message hasn't reached WhatsApp, so it can't get a reaction.",
+        });
+        throw new UnrecoverableError("reaction target has no provider id");
+      }
+    }
+    const outbound: OutboundMessage = reactionTarget
       ? {
-          type: "template",
-          name: content.name ?? "",
-          language: content.language ?? "en",
-          values: content.values ?? {},
-          auth: !!content.auth,
-          headerMedia,
-          replyToExternalId,
+          type: "reaction",
+          targetExternalId: reactionTarget,
+          emoji: (message.content as { emoji?: string }).emoji ?? "",
         }
-      : media
+      : isTemplate
         ? {
-            type: message.type as "image" | "video" | "audio" | "document" | "sticker",
-            providerMediaId: media.id,
-            caption: content.caption ?? undefined,
-            fileName: media.file.fileName ?? undefined,
+            type: "template",
+            name: content.name ?? "",
+            language: content.language ?? "en",
+            values: content.values ?? {},
+            auth: !!content.auth,
+            headerMedia,
             replyToExternalId,
           }
-        : { type: "text", text: content.text ?? "", replyToExternalId };
+        : media
+          ? {
+              type: message.type as "image" | "video" | "audio" | "document" | "sticker",
+              providerMediaId: media.id,
+              caption: content.caption ?? undefined,
+              fileName: media.file.fileName ?? undefined,
+              replyToExternalId,
+            }
+          : { type: "text", text: content.text ?? "", replyToExternalId };
 
     try {
       const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);

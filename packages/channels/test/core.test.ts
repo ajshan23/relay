@@ -100,3 +100,27 @@ describe("WhatsApp send body", () => {
     assert.deepEqual(body.document, { id: "M1", caption: "c", filename: "a.pdf" });
   });
 });
+
+describe("WhatsApp reactions we send", async () => {
+  const { buildWhatsAppSendBody } = await import("../src/whatsapp/send");
+  it("sends a reaction to the message's id, never as a reply", () => {
+    const body = buildWhatsAppSendBody(
+      { kind: "direct", phone: "919847000101", userId: null },
+      { type: "reaction", targetExternalId: "wamid.ABC", emoji: "👍", replyToExternalId: "wamid.X" },
+      "msg_1",
+    );
+    assert.equal(body.type, "reaction");
+    assert.deepEqual(body.reaction, { message_id: "wamid.ABC", emoji: "👍" });
+    assert.equal(body.context, undefined);
+    assert.equal(body.to, "919847000101");
+  });
+  it("removes our reaction with an empty emoji, and reaches username-only people by BSUID", () => {
+    const body = buildWhatsAppSendBody(
+      { kind: "direct", phone: null, userId: "IN.123" },
+      { type: "reaction", targetExternalId: "wamid.ABC", emoji: "" },
+      "msg_2",
+    );
+    assert.deepEqual(body.reaction, { message_id: "wamid.ABC", emoji: "" });
+    assert.equal(body.recipient, "IN.123");
+  });
+});

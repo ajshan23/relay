@@ -289,6 +289,19 @@ export function useRetry(conversationId: string) {
   });
 }
 
+/** Reacts to a message with an emoji, or takes our reaction away with "". */
+export function useReact(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      api(`/conversations/${conversationId}/messages/${messageId}/react`, {
+        method: "POST",
+        json: { emoji },
+      }),
+    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+  });
+}
+
 /** Adds an internal note (team only). `text` carries mentions as "@[Name](userId)". */
 export function useAddNote(conversationId: string) {
   const qc = useQueryClient();

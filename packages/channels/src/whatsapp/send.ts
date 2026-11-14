@@ -19,8 +19,12 @@ export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, o
     ...recipient,
     biz_opaque_callback_data: ourMessageId,
   };
-  if (message.replyToExternalId) body.context = { message_id: message.replyToExternalId };
-  if (message.type === "text") {
+  if (message.replyToExternalId && message.type !== "reaction")
+    body.context = { message_id: message.replyToExternalId };
+  if (message.type === "reaction") {
+    body.type = "reaction";
+    body.reaction = { message_id: message.targetExternalId, emoji: message.emoji };
+  } else if (message.type === "text") {
     body.type = "text";
     body.text = { body: message.text, preview_url: message.previewUrl ?? false };
   } else if (message.type === "template") {
