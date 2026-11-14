@@ -5,22 +5,19 @@ import type { ReactNode } from "react";
 import { CardBody } from "./card-body";
 import { ProductPanel } from "./product-panel";
 
-/** The product mark: a chat bubble passing a message on. Placeholder until the product is named. */
+/**
+ * The product mark: two bars passing on, like a relay baton. Same shapes as `brand/relay-logo.svg`
+ * (and the tab icon), drawn without the tile so it sits on light and dark backgrounds.
+ */
 export function RelayMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 32 32" aria-hidden className={cn("size-7", className)}>
-      <rect width="32" height="32" rx="8" className="fill-primary" />
+    <svg viewBox="180 180 664 664" aria-hidden className={cn("size-7", className)}>
+      <path d="M292 592L532 352" strokeWidth="190" strokeLinecap="round" className="stroke-primary" />
       <path
-        d="M9 10.5A2.5 2.5 0 0 1 11.5 8h9A2.5 2.5 0 0 1 23 10.5v7a2.5 2.5 0 0 1-2.5 2.5H15l-4.2 3.4a.5.5 0 0 1-.8-.4V20a2.5 2.5 0 0 1-1-2z"
-        className="fill-primary-foreground/95"
-      />
-      <path
-        d="M13 14h6m-2.2-2.4L19.2 14l-2.4 2.4"
-        fill="none"
-        strokeWidth="1.8"
+        d="M492 672L732 432"
+        strokeWidth="190"
         strokeLinecap="round"
-        strokeLinejoin="round"
-        className="stroke-primary"
+        className="stroke-primary opacity-50"
       />
     </svg>
   );
