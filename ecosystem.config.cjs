@@ -6,6 +6,8 @@
  */
 const env = { NODE_ENV: "production", HOST: "127.0.0.1" };
 const ts = ["--env-file=../../.env", "--import", "tsx"];
+// pm2 6 runs .ts files with Bun unless told otherwise; Relay runs on Node (through tsx).
+const interpreter = "node";
 
 module.exports = {
   apps: [
@@ -21,6 +23,7 @@ module.exports = {
       name: "relay-api",
       cwd: "apps/api",
       script: "src/index.ts",
+      interpreter,
       node_args: ts,
       env,
       max_memory_restart: "400M",
@@ -30,6 +33,7 @@ module.exports = {
       name: "relay-realtime",
       cwd: "apps/api",
       script: "src/realtime.ts",
+      interpreter,
       node_args: ts,
       env,
       max_memory_restart: "200M",
@@ -38,6 +42,7 @@ module.exports = {
       name: "relay-worker",
       cwd: "apps/worker",
       script: "src/index.ts",
+      interpreter,
       node_args: ts,
       env,
       max_memory_restart: "450M",
