@@ -22,7 +22,8 @@ export const channelType = pgEnum("channel_type", [
   "sms",
   "email",
 ]);
-export const channelStatus = pgEnum("channel_status", ["active", "disconnected", "error"]);
+/** setting_up: connected through Embedded Signup but a Meta step (webhooks) is not finished yet. */
+export const channelStatus = pgEnum("channel_status", ["active", "disconnected", "error", "setting_up"]);
 
 /**
  * One connected channel: a WhatsApp number, an Instagram account, a Facebook Page, a website widget.
@@ -31,6 +32,47 @@ export const channelStatus = pgEnum("channel_status", ["active", "disconnected",
 export type ChannelSettings = {
   /** Show customers when the team has read their message and is typing. Missing means on. */
   readReceipts?: boolean;
+};
+
+/** One coexistence sync (phone-app contacts or chat history) and how far it got. */
+export type CoexistenceSync = {
+  status: "pending" | "requested" | "importing" | "done" | "declined" | "expired" | "failed";
+  requestId?: string | null;
+  requestedAt?: string;
+  progress?: number;
+  imported?: number;
+  error?: string | null;
+  updatedAt?: string;
+};
+
+/** What Relay keeps about a WhatsApp number (channel_account.provider_meta). Nothing here is secret. */
+export type WhatsAppProviderMeta = {
+  /** The WhatsApp business (messaging) account id. */
+  wabaId?: string;
+  /** The business portfolio id. WhatsApp user ids (BSUIDs) are scoped to it. */
+  businessId?: string | null;
+  verifiedName?: string;
+  qualityRating?: string;
+  messagingLimit?: string;
+  nameStatus?: string;
+  /** The business username, once claimed. */
+  username?: string | null;
+  healthAt?: string;
+  onboarding?: {
+    method: "embedded_signup" | "manual";
+    version?: string;
+    coexistence: boolean;
+    attemptId?: string;
+    onboardedAt: string;
+    /** When the business token stops working; null means it does not expire. */
+    tokenExpiresAt?: string | null;
+    subscribedFields?: string[];
+  };
+  registration?: { status: "registered" | "not_needed" | "skipped" | "failed"; at: string; error?: string };
+  coexistence?: { windowEndsAt: string; contacts: CoexistenceSync; history: CoexistenceSync };
+  /** Last time an account_update arrived, in Meta's words. */
+  accountEvent?: { event: string; at: string; detail?: string };
+  fake?: boolean;
 };
 
 export const channelAccount = pgTable(
@@ -112,4 +154,33 @@ export const webhookEvent = pgTable(
     uniqueIndex("webhook_event_dedupe_uidx").on(t.provider, t.dedupeKey),
     index("webhook_event_unprocessed_idx").on(t.receivedAt).where(sql`${t.processedAt} is null`),
   ],
+);
+
+/**
+ * One run of Meta's Embedded Signup, keyed by an id the browser makes before opening the popup. Makes
+ * a retried request safe (the same attempt never connects twice) and lets the browser ask "did it
+ * finish?" after a dropped response, since the popup's code works only once.
+ */
+export const onboardingAttempt = pgTable(
+  "onboarding_attempt",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id").references(() => branch.id, { onDelete: "set null" }),
+    userId: text("user_id"),
+    /** running → done | failed. */
+    status: text("status").notNull().default("running"),
+    /** The step reached: exchange, grants, number, save, subscribe, register, sync. */
+    step: text("step").notNull().default("start"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    channelAccountId: text("channel_account_id").references(() => channelAccount.id, { onDelete: "set null" }),
+    /** What the popup said (event, ids), for support. Never the code or token. */
+    session: jsonb("session").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("onboarding_attempt_org_idx").on(t.organizationId, t.createdAt)],
 );

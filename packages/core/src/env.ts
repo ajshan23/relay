@@ -24,8 +24,10 @@ const schema = z.object({
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+  /** Embedded Signup: the Facebook Login for Business configuration id ("WhatsApp Embedded Signup"). */
+  META_CONFIG_ID: z.string().optional(),
   // Pinned Graph API version. Override the base URL only to point tests at a fake Graph server.
-  META_GRAPH_VERSION: z.string().default("v26.0"),
+  META_GRAPH_VERSION: z.string().default("v27.0"),
   META_GRAPH_URL: z.string().url().default("https://graph.facebook.com"),
   // How long to wait for Meta before treating a send as uncertain (never resent blindly).
   META_GRAPH_TIMEOUT_MS: z.coerce.number().default(15_000),

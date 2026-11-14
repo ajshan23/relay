@@ -134,6 +134,13 @@
       "when": 1794613765097,
       "tag": "0018_smarter_broadcasts",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794678291909,
+      "tag": "0019_embedded_signup",
+      "breakpoints": true
     }
   ]
 }
