@@ -167,6 +167,7 @@ export function MessageBubble({
             )}
           >
             <div className={cn("relative min-w-0", m.pending && "opacity-80")}>
+              <AdReferral message={m} />
               <Body message={m} last={last} first={first} memberName={memberName} />
               {outsideReactions ? (
                 <div className={cn("absolute -bottom-3 z-10", out ? "right-3" : "left-3")}>
@@ -258,6 +259,19 @@ function Body({
     </ChatBubble>
   );
 
+  // The customer deleted it (WhatsApp Business app numbers): shown like WhatsApp does.
+  if (c.deleted === true)
+    return (
+      <ChatBubble {...common}>
+        <span className="flex items-center gap-1.5 text-wa-text-secondary italic">
+          <Icon name="blocked" size="xs" />
+          This message was deleted
+        </span>
+      </ChatBubble>
+    );
+  const edited =
+    c.edited === true ? <span className="ml-1.5 text-[11px] text-wa-text-secondary">Edited</span> : null;
+
   switch (m.type) {
     case "text":
       return (
@@ -270,6 +284,7 @@ function Body({
         >
           {quote}
           <MessageText text={str(c.text) ?? ""} />
+          {edited}
         </ChatBubble>
       );
     case "image":
@@ -303,10 +318,32 @@ function Body({
         pendingMedia("Video")
       );
     case "audio":
-      return ready ? (
-        <VoiceMessageBubble {...common} audioSrc={ready} duration="0:00" quote={quote} />
-      ) : (
-        pendingMedia("Voice message")
+      if (!ready) return pendingMedia(c.voice === false ? "Audio file" : "Voice message");
+      // A recorded voice note (WhatsApp says voice: true, or one recorded in Relay); otherwise an audio file.
+      if (c.voice === false)
+        return (
+          <ChatBubble {...common}>
+            {quote}
+            <span className="flex flex-col gap-1.5">
+              <span className="flex items-center gap-1.5 text-sm">
+                <Icon name="file" size="sm" />
+                <span className="truncate">{str(media?.fileName) ?? file?.fileName ?? "Audio file"}</span>
+              </span>
+              {/* biome-ignore lint/a11y/useMediaCaption: customers' audio files have no captions */}
+              <audio controls preload="metadata" src={ready} className="h-9 w-64 max-w-full" />
+            </span>
+          </ChatBubble>
+        );
+      return (
+        <span className="flex flex-col items-end gap-0.5">
+          <VoiceMessageBubble {...common} audioSrc={ready} duration="0:00" quote={quote} />
+          {m.direction === "outbound" && m.status === "played" ? (
+            <span className="flex items-center gap-1 px-1 text-[11px] text-sky-600 dark:text-sky-400">
+              <Icon name="mic" size="xs" />
+              Played
+            </span>
+          ) : null}
+        </span>
       );
     case "document": {
       const name = str(media?.fileName) ?? file?.fileName ?? "Document";
@@ -415,14 +452,20 @@ function Body({
           </span>
         </ChatBubble>
       );
-    default:
+    default: {
+      const what = unsupportedName(str(c.reason), m);
       return (
         <UnsupportedMessageBubble
           {...common}
-          title="This message can't be shown here yet"
-          description="Open the channel's own app to see it."
+          title={what ? `They sent ${what}` : "This message can't be shown here yet"}
+          description={
+            what === "a message to your WhatsApp Business app"
+              ? "It's on the phone that runs the WhatsApp Business app. Replies from Relay still reach them."
+              : "WhatsApp doesn't share this kind of message with business apps yet. Open WhatsApp on the phone to see it."
+          }
         />
       );
+    }
   }
 }
 
@@ -467,5 +510,55 @@ function ReactButton({ message: m, onReact }: { message: Msg; onReact: (m: Msg, 
         ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** What an unsupported message was, in words, from WhatsApp's unsupported.type (or the error). */
+function unsupportedName(reason: string | null, m: Msg): string | null {
+  const errors = (m.content.errors as { code?: number }[] | undefined) ?? [];
+  if (errors.some((e) => e.code === 131060)) return "a message to your WhatsApp Business app";
+  const names: Record<string, string> = {
+    poll_creation: "a poll",
+    poll_update: "a poll vote",
+    gif: "a GIF",
+    group_invite: "a group invite",
+    pin: "a pinned message",
+    keep_in_chat: "a kept message",
+    product: "a product",
+    hsm: "a template message",
+    link_preview: "a link preview",
+    list: "a list",
+    view_once: "a view-once message",
+    event: "an event",
+    media_placeholder: "a photo or file from the phone app, from before Relay was connected",
+  };
+  if (!reason) return null;
+  return names[reason] ?? `a ${reason.replaceAll("_", " ")} message`;
+}
+
+/** The click-to-WhatsApp ad (or post) the customer came from, shown on their first message. */
+function AdReferral({ message: m }: { message: Msg }) {
+  const ad = (m.content.context as { adReferral?: Record<string, unknown> } | undefined)?.adReferral;
+  if (!ad || m.direction !== "inbound") return null;
+  const headline = str(ad.headline) ?? str(ad.body) ?? "an ad";
+  const kind = str(ad.source_type) === "post" ? "a post" : "an ad";
+  const url = str(ad.source_url);
+  return (
+    <span className="mb-1 flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+      <Icon name="campaigns" size="xs" />
+      <span className="truncate">
+        From {kind}: <span className="font-medium text-foreground">{headline}</span>
+      </span>
+      {url ? (
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 underline-offset-2 hover:underline"
+        >
+          Open
+        </a>
+      ) : null}
+    </span>
   );
 }

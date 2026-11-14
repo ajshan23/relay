@@ -141,6 +141,13 @@
       "when": 1794678291909,
       "tag": "0019_embedded_signup",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794685514148,
+      "tag": "0020_played_status",
+      "breakpoints": true
     }
   ]
 }

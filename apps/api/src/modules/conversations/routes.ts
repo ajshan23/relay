@@ -60,6 +60,8 @@ const sendBody = z
   .object({
     text: z.string().trim().max(4096, "Messages can be up to 4096 characters").optional(),
     uploadId: z.string().optional(),
+    /** The uploaded audio is a voice note recorded in Relay (sent as a WhatsApp voice message). */
+    voice: z.boolean().optional(),
     /** Send a ready template, with a value for each of its details. Allowed outside the window. */
     templateId: z.string().optional(),
     values: z.record(z.string(), z.string().max(1000)).optional(),
@@ -1021,6 +1023,7 @@ export function conversationRoutes(ctx: AppContext) {
         ? {
             type,
             caption: text ?? null,
+            ...(type === "audio" && parsed.data.voice ? { voice: true } : {}),
             media: {
               providerMediaId: null,
               mimeType: upload.mimeType,

@@ -428,6 +428,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
               providerMediaId: media.id,
               caption: content.caption ?? undefined,
               fileName: media.file.fileName ?? undefined,
+              voice: message.type === "audio" && (message.content as { voice?: boolean }).voice === true,
               replyToExternalId,
             }
           : { type: "text", text: content.text ?? "", replyToExternalId };

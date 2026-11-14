@@ -198,6 +198,7 @@ export function useSend(conversationId: string) {
         json: {
           text: text || undefined,
           uploadId: upload?.id,
+          voice: upload?.voice || undefined,
           replyToMessageId,
           templateId: template?.id,
           values: template?.values,

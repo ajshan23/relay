@@ -160,6 +160,9 @@ export type Upload = {
   fileName: string;
   sizeBytes: number;
   url: string;
+  /** A voice note recorded in Relay (converted to WhatsApp's voice format). */
+  voice?: boolean;
+  seconds?: number | null;
 };
 
 export type ChannelSummary = {

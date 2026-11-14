@@ -185,6 +185,8 @@ export const messageStatus = pgEnum("message_status", [
   "sent",
   "delivered",
   "read",
+  /** A voice note's first play (WhatsApp, since March 2026). */
+  "played",
   "failed",
 ]);
 

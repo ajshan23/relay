@@ -196,3 +196,57 @@ describe("WhatsApp coexistence webhooks", () => {
     );
   });
 });
+
+describe("WhatsApp edits, deletions, unsupported and voice", () => {
+  const msg = (m: Record<string, unknown>) =>
+    hook("messages", {
+      contacts: [{ profile: { name: "Anil" }, wa_id: "919847000101", user_id: "IN.111" }],
+      messages: [
+        { from: "919847000101", from_user_id: "IN.111", id: "wamid.NEW", timestamp: "1730000000", ...m },
+      ],
+    });
+
+  it("reads an edit as a change to the original message", () => {
+    const [ev] = parseWhatsAppWebhook(
+      msg({
+        type: "edit",
+        edit: { original_message_id: "wamid.OLD", message: { type: "text", text: { body: "5pm works" } } },
+      }),
+    ) as Loose[];
+    assert.deepEqual(
+      [ev?.kind, ev?.targetExternalId, ev?.content.text],
+      ["message.edited", "wamid.OLD", "5pm works"],
+    );
+  });
+
+  it("reads a revoke as the original message being deleted", () => {
+    const [ev] = parseWhatsAppWebhook(
+      msg({ type: "revoke", revoke: { original_message_id: "wamid.OLD" } }),
+    ) as Loose[];
+    assert.deepEqual([ev?.kind, ev?.targetExternalId], ["message.revoked", "wamid.OLD"]);
+  });
+
+  it("keeps the real type of an unsupported message (a poll) and its error", () => {
+    const [ev] = parseWhatsAppWebhook(
+      msg({
+        type: "unsupported",
+        unsupported: { type: "poll_creation" },
+        errors: [{ code: 131051, title: "Message type unknown" }],
+      }),
+    ) as Loose[];
+    assert.deepEqual(
+      [ev?.content.type, ev?.content.reason, ev?.errors[0].code],
+      ["unsupported", "poll_creation", 131051],
+    );
+  });
+
+  it("tells a voice note from an audio file", () => {
+    const [v] = parseWhatsAppWebhook(
+      msg({ type: "audio", audio: { id: "A1", mime_type: "audio/ogg; codecs=opus", voice: true } }),
+    ) as Loose[];
+    const [f] = parseWhatsAppWebhook(
+      msg({ type: "audio", audio: { id: "A2", mime_type: "audio/mpeg", voice: false } }),
+    ) as Loose[];
+    assert.deepEqual([v?.content.voice, f?.content.voice], [true, false]);
+  });
+});

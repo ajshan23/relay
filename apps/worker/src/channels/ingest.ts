@@ -8,7 +8,9 @@ import {
   type GroupEvent,
   type HistoryProgressEvent,
   identityScope,
+  type MessageEditedEvent,
   type MessageReceived,
+  type MessageRevokedEvent,
   type MessageStatusEvent,
   type NormalizedEvent,
   type PhoneAppMessageEvent,
@@ -501,10 +503,10 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         .limit(1);
       if (!receipt || shouldApplyStatus(receipt.status as StoredStatus, next)) {
         const times = {
-          ...(next === "delivered" || next === "read"
+          ...(next === "delivered" || next === "read" || next === "played"
             ? { deliveredAt: receipt?.deliveredAt ?? event.at }
             : {}),
-          ...(next === "read" ? { readAt: event.at } : {}),
+          ...(next === "read" || next === "played" ? { readAt: receipt?.readAt ?? event.at } : {}),
           ...(next === "failed" ? { failedAt: event.at, error: { errors: event.errors } } : {}),
         };
         await db
@@ -531,8 +533,10 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
       sent: {},
       delivered: { deliveredAt: event.at },
       read: { readAt: event.at, deliveredAt: row.deliveredAt ?? event.at },
+      // A first play implies it was read; keep the earlier read time when there is one.
+      played: { readAt: row.readAt ?? event.at, deliveredAt: row.deliveredAt ?? event.at },
       failed: { failedAt: event.at },
-    }[next as "sent" | "delivered" | "read" | "failed"];
+    }[next as "sent" | "delivered" | "read" | "played" | "failed"];
     await db
       .update(schema.message)
       .set({
@@ -1074,6 +1078,33 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     // Anything else stays in webhook_event only.
   }
 
+  /** The customer edited or deleted a message they sent: the stored message follows, like WhatsApp. */
+  async function editedOrRevoked(account: Account, event: MessageEditedEvent | MessageRevokedEvent) {
+    const [row] = await db
+      .select()
+      .from(schema.message)
+      .where(
+        and(
+          eq(schema.message.channelAccountId, account.id),
+          eq(schema.message.externalId, event.targetExternalId),
+        ),
+      )
+      .limit(1);
+    if (!row) return; // Not in Relay (older than the connection): nothing to change.
+    const old = row.content as Record<string, unknown>;
+    const content =
+      event.kind === "message.edited"
+        ? {
+            ...event.content,
+            edited: true,
+            editedAt: event.at.toISOString(),
+            previous: old.text ?? old.caption ?? null,
+          }
+        : { type: row.type, deleted: true, deletedAt: event.at.toISOString() };
+    await db.update(schema.message).set({ content }).where(eq(schema.message.id, row.id));
+    await messageChanged(row);
+  }
+
   /** Applies every event in one stored webhook. */
   async function ingest(events: NormalizedEvent[]): Promise<IngestResult> {
     changed = [];
@@ -1109,6 +1140,8 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         result.media.push(...(await received(account, event)));
       else if (event.kind === "message.status") await status(account, event);
       else if (event.kind === "contact.changed") await contactChanged(account, event);
+      else if (event.kind === "message.edited" || event.kind === "message.revoked")
+        await editedOrRevoked(account, event);
       else if (event.kind === "message.phone_app")
         result.media.push(...(await phoneAppMessage(account, event)));
       else if (event.kind === "contacts.synced") await contactsSynced(account, event);

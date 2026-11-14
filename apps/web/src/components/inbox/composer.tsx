@@ -27,6 +27,7 @@ import { upload as uploadFile, useAddNote, useAssignees, useSend, useTypingSigna
 import { type Suggestion, SuggestionList, tokenAtCaret } from "./suggestions";
 import { TemplatePicker } from "./template-picker";
 import type { ConversationDetail, Message, Upload } from "./types";
+import { VoiceRecorder } from "./voice-recorder";
 
 type Props = {
   detail: ConversationDetail;
@@ -483,6 +484,25 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
                 </TooltipTrigger>
                 <TooltipContent>Attach a photo, video, audio or document</TooltipContent>
               </Tooltip>
+              {caps?.outboundTypes.includes("audio") && caps.media.audio.mimeTypes.includes("audio/ogg") ? (
+                <VoiceRecorder
+                  conversationId={id}
+                  disabled={!!pending || !!lock || send.isPending}
+                  onRecorded={(up) =>
+                    send.mutate(
+                      { upload: up, replyToMessageId: replyTo?.id, senderName: me.user.name },
+                      {
+                        onError: (err) =>
+                          notify.error("Voice note not sent", {
+                            description:
+                              err instanceof ApiError ? err.message : "Check your connection and try again.",
+                          }),
+                        onSuccess: () => onClearReply(),
+                      },
+                    )
+                  }
+                />
+              ) : null}
               {canTemplate ? (
                 <Tooltip>
                   <TooltipTrigger asChild>

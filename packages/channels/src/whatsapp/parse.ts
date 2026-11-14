@@ -347,7 +347,7 @@ function phoneAppContent(msg: Json): MessageContent {
   if (str(msg.type) === "media_placeholder")
     return {
       type: "unsupported",
-      reason: "A photo or file from the phone app, from before Relay was connected",
+      reason: "media_placeholder",
     };
   return content(msg);
 }
@@ -555,6 +555,26 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
             newPhone: str(s.wa_id),
             description: str(s.body),
           });
+          continue;
+        }
+
+        // Edits and deletions point at an earlier message (coexistence numbers only).
+        if (type === "edit") {
+          const e = asObject(msg.edit);
+          const target = str(e.original_message_id);
+          if (target)
+            events.push({
+              ...base,
+              kind: "message.edited",
+              targetExternalId: target,
+              content: content(asObject(e.message)),
+              at,
+            });
+          continue;
+        }
+        if (type === "revoke") {
+          const target = str(asObject(msg.revoke).original_message_id);
+          if (target) events.push({ ...base, kind: "message.revoked", targetExternalId: target, at });
           continue;
         }
 

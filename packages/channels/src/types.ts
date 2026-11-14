@@ -280,7 +280,25 @@ export type HistoryProgressEvent = Routed & {
   errors: ProviderError[];
 };
 
+/** The customer edited a message they sent (WhatsApp coexistence numbers, within 15 minutes). */
+export type MessageEditedEvent = Routed & {
+  kind: "message.edited";
+  /** The provider id of the message that was edited. */
+  targetExternalId: string;
+  content: MessageContent;
+  at: Date;
+};
+
+/** The customer deleted a message they sent (WhatsApp coexistence numbers, within 2 days). */
+export type MessageRevokedEvent = Routed & {
+  kind: "message.revoked";
+  targetExternalId: string;
+  at: Date;
+};
+
 export type NormalizedEvent =
+  | MessageEditedEvent
+  | MessageRevokedEvent
   | PhoneAppMessageEvent
   | ContactsSyncedEvent
   | HistoryProgressEvent
@@ -319,6 +337,8 @@ export type OutboundMessage = (
       providerMediaId: string;
       caption?: string;
       fileName?: string;
+      /** Audio only: show it as a voice note (WhatsApp needs Ogg/Opus mono). */
+      voice?: boolean;
     }
   /** An emoji on one of the customer's (or our) messages; an empty emoji takes ours away. */
   | { type: "reaction"; targetExternalId: string; emoji: string }

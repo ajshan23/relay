@@ -8,6 +8,7 @@ import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, requireOrg } from "../branches/access";
 import { canWork, findConversation } from "../conversations/access";
+import { FfmpegMissing, toVoiceNote } from "./voice";
 
 /*
  * Files in conversations.
@@ -68,6 +69,63 @@ export function fileRoutes(ctx: AppContext) {
     }
     const caps = accountType ? channels().get(accountType as never)?.capabilities : null;
     if (!caps) return fail(c, 409, "unsupported_channel", "Files can't be sent on this channel yet.");
+
+    // A voice note recorded in Relay: converted to Ogg/Opus mono, WhatsApp's voice format.
+    if (form?.get("use") === "voice") {
+      if (!caps.media.audio.mimeTypes.includes("audio/ogg"))
+        return fail(c, 409, "unsupported_channel", "This channel can't receive voice messages.");
+      if (file.size === 0) return fail(c, 422, "empty_file", "The recording is empty.");
+      if (file.size > 20 * 1024 * 1024) return fail(c, 413, "file_too_large", "The recording is too long.");
+      let voice: Awaited<ReturnType<typeof toVoiceNote>>;
+      try {
+        voice = await toVoiceNote(new Uint8Array(await file.arrayBuffer()));
+      } catch (err) {
+        if (err instanceof FfmpegMissing)
+          return fail(c, 503, "voice_unavailable", "Voice notes need ffmpeg installed on the server.");
+        console.warn("voice note conversion", err);
+        return fail(c, 422, "voice_unreadable", "That recording couldn't be read. Try recording again.");
+      }
+      if (voice.bytes.byteLength > caps.media.audio.maxBytes)
+        return fail(c, 413, "file_too_large", "The voice note is too long.");
+      const { file: stored } = await storeFile(ctx.db, storage, {
+        organizationId: access.orgId,
+        bytes: voice.bytes,
+        mimeType: "audio/ogg",
+        newId: () => newId("storedFile"),
+      });
+      const [row] = await ctx.db
+        .insert(schema.attachment)
+        .values({
+          id: newId("attachment"),
+          organizationId: access.orgId,
+          uploadedByUserId: access.userId,
+          kind: "audio",
+          mimeType: "audio/ogg",
+          fileName: "voice-note.ogg",
+          sizeBytes: voice.bytes.byteLength,
+          sha256: createHash("sha256").update(voice.bytes).digest("base64"),
+          fileId: stored.id,
+          storageKey: stored.storageKey,
+          status: "stored",
+        })
+        .returning();
+      if (!row) return fail(c, 500, "internal_error");
+      return c.json(
+        {
+          upload: {
+            id: row.id,
+            kind: row.kind,
+            mimeType: row.mimeType,
+            fileName: row.fileName,
+            sizeBytes: row.sizeBytes,
+            url: `/api/attachments/${row.id}`,
+            voice: true,
+            seconds: voice.seconds,
+          },
+        },
+        201,
+      );
+    }
 
     const mimeType = (file.type || "application/octet-stream").split(";")[0]?.trim() ?? "";
     // Stickers are only sent as stickers on purpose, never because a .webp was attached.

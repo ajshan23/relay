@@ -53,8 +53,12 @@ describe("Status ordering", () => {
     assert.equal(shouldApplyStatus("delivered", "failed"), false);
     assert.equal(shouldApplyStatus("accepted", "failed"), true);
   });
-  it("treats played as read and computes the 24-hour window", () => {
-    assert.equal(toStoredStatus("played"), "read");
+  it("keeps played (a voice note's first play) above read, and computes the 24-hour window", () => {
+    assert.equal(toStoredStatus("played"), "played");
+    assert.equal(shouldApplyStatus("read", "played"), true);
+    assert.equal(shouldApplyStatus("played", "read"), false);
+    assert.equal(shouldApplyStatus("played", "failed"), false);
+    assert.equal(shouldApplyStatus("failed", "played"), true);
     assert.equal(
       windowExpiresAt(new Date("2026-11-13T10:00:00Z"), 24).toISOString(),
       "2026-11-14T10:00:00.000Z",
@@ -122,5 +126,16 @@ describe("WhatsApp reactions we send", async () => {
     );
     assert.deepEqual(body.reaction, { message_id: "wamid.ABC", emoji: "" });
     assert.equal(body.recipient, "IN.123");
+  });
+});
+
+describe("WhatsApp voice notes we send", async () => {
+  const { buildWhatsAppSendBody } = await import("../src/whatsapp/send");
+  it("marks recorded audio as a voice message, and leaves audio files as files", () => {
+    const to = { kind: "direct" as const, phone: "919847000101", userId: null };
+    const voice = buildWhatsAppSendBody(to, { type: "audio", providerMediaId: "M1", voice: true }, "m1");
+    assert.deepEqual(voice.audio, { id: "M1", voice: true });
+    const file = buildWhatsAppSendBody(to, { type: "audio", providerMediaId: "M2" }, "m2");
+    assert.deepEqual(file.audio, { id: "M2" });
   });
 });

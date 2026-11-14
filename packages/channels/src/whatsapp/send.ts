@@ -38,6 +38,7 @@ export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, o
         ? { caption: message.caption }
         : {}),
       ...(message.type === "document" && message.fileName ? { filename: message.fileName } : {}),
+      ...(message.type === "audio" && message.voice ? { voice: true } : {}),
     };
   }
   return body;

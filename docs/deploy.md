@@ -26,6 +26,11 @@ grep -q '^maxmemory-policy ' /etc/redis/redis.conf || echo 'maxmemory-policy noe
 systemctl enable --now redis-server && systemctl restart redis-server && redis-cli ping
 ```
 
+**2b. ffmpeg** (voice notes recorded in Relay are converted to WhatsApp's Ogg/Opus voice format; video previews use it too):
+```bash
+apt-get install -y ffmpeg && ffmpeg -version | head -1
+```
+
 **3. Read-only access to the private repo** (a deploy key; add the printed key in GitHub → repo → Settings → Deploy keys, "Allow write access" off):
 ```bash
 ssh-keygen -t ed25519 -f /root/.ssh/relay_deploy -N "" -C "relay-deploy@$(hostname)"
