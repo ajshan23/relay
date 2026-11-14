@@ -205,7 +205,12 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     return existing;
   }
 
-  async function upsertDirectConversation(account: Account, identity: { id: string; contactId: string }) {
+  async function upsertDirectConversation(
+    account: Account,
+    identity: { id: string; contactId: string },
+    /** A conversation made by importing old phone-app chats starts closed, so the inbox isn't flooded. */
+    opts: { closed?: boolean } = {},
+  ) {
     await db
       .insert(schema.conversation)
       .values({
@@ -216,6 +221,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         kind: "direct",
         contactId: identity.contactId,
         contactIdentityId: identity.id,
+        ...(opts.closed ? { status: "closed" as const } : {}),
       })
       .onConflictDoNothing();
     const [row] = await db
@@ -832,8 +838,8 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   async function phoneAppMessage(account: Account, event: PhoneAppMessageEvent): Promise<string[]> {
     if (!event.externalId) return [];
     const identity = await upsertIdentity(account, event.customer);
-    const conversation = await upsertDirectConversation(account, identity);
     const history = event.source === "history";
+    const conversation = await upsertDirectConversation(account, identity, { closed: history });
     const via = history ? "phone_app_history" : "phone_app";
     const content = { ...event.content, via } as Record<string, unknown>;
     const media = "media" in event.content && event.content.media.providerMediaId ? event.content : null;
@@ -873,7 +879,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
           lastMessageAt: latest(schema.conversation.lastMessageAt, event.sentAt),
           ...(!outbound ? { lastInboundAt: latest(schema.conversation.lastInboundAt, event.sentAt) } : {}),
           ...(window ? { windowExpiresAt: latest(schema.conversation.windowExpiresAt, window) } : {}),
-          lastMessagePreview: sql`case when ${schema.conversation.lastMessageAt} is null or ${schema.conversation.lastMessageAt} <= ${event.sentAt.toISOString()}::timestamp then ${messagePreview(event.content.type, content, event.direction, null)} else ${schema.conversation.lastMessagePreview} end`,
+          lastMessagePreview: sql`case when ${schema.conversation.lastMessageAt} is null or ${schema.conversation.lastMessageAt} <= ${event.sentAt.toISOString()}::timestamp then ${JSON.stringify(messagePreview(event.content.type, content, event.direction, null))}::jsonb else ${schema.conversation.lastMessagePreview} end`,
           updatedAt: new Date(),
         } as never)
         .where(eq(schema.conversation.id, conversation.id));
@@ -930,7 +936,9 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
       .update(ca)
       .set({
         providerMeta: sql`jsonb_set(${ca.providerMeta}, ${path}, coalesce(${ca.providerMeta} #> ${path}, '{}'::jsonb) || jsonb_build_object(
-          'status', case when ${progress} >= 100 then 'done' else 'importing' end,
+          -- Chunks are processed in parallel: once any reached 100, the import stays done.
+          'status', case when ${progress}::int >= 100 or coalesce(${ca.providerMeta} #>> '{coexistence,history,status}', '') = 'done'
+            or coalesce((${ca.providerMeta} #>> '{coexistence,history,progress}')::int, 0) >= 100 then 'done' else 'importing' end,
           'progress', greatest(coalesce((${ca.providerMeta} #>> '{coexistence,history,progress}')::int, 0), ${progress}::int),
           'imported', coalesce((${ca.providerMeta} #>> '{coexistence,history,imported}')::int, 0) + ${event.messages}::int,
           'updatedAt', ${new Date().toISOString()}::text

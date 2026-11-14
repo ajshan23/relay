@@ -174,4 +174,23 @@ export type ChannelSummary = {
   settings?: { readReceipts?: boolean };
   /** Whether this kind of channel can show customers read receipts and "typing…". */
   canShowRead?: boolean;
+  /** What Relay knows about the number (not secret): account, quality, limit, onboarding, coexistence sync. */
+  providerMeta?: ChannelMeta;
+};
+
+type CoexistenceSync = { status?: string; progress?: number; imported?: number; error?: string | null };
+
+export type ChannelMeta = {
+  wabaId?: string;
+  businessId?: string | null;
+  verifiedName?: string;
+  qualityRating?: string;
+  qualityFlag?: string;
+  messagingLimit?: string | number;
+  nameStatus?: string | null;
+  username?: string | null;
+  onboarding?: { method?: string; coexistence?: boolean; tokenExpiresAt?: string | null };
+  registration?: { status?: string; error?: string };
+  coexistence?: { windowEndsAt?: string; contacts?: CoexistenceSync; history?: CoexistenceSync };
+  fake?: boolean;
 };

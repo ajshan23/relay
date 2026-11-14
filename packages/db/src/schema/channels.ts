@@ -176,7 +176,9 @@ export const onboardingAttempt = pgTable(
     step: text("step").notNull().default("start"),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
-    channelAccountId: text("channel_account_id").references(() => channelAccount.id, { onDelete: "set null" }),
+    channelAccountId: text("channel_account_id").references(() => channelAccount.id, {
+      onDelete: "set null",
+    }),
     /** What the popup said (event, ids), for support. Never the code or token. */
     session: jsonb("session").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at").notNull().defaultNow(),

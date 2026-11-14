@@ -7,7 +7,7 @@ browser ──https──▶ nginx (app.relay.operium.pro)
                      ├─ /api/events  ─▶ relay-realtime 127.0.0.1:3203  (live updates, no buffering)
                      ├─ /api/, /webhooks/, /health ─▶ relay-api 127.0.0.1:3201
                      └─ everything else ─▶ relay-web 127.0.0.1:3200 (Next.js)
-relay-worker (sending, broadcasts, media) ─ health on 127.0.0.1:3202
+relay-worker (sending, broadcasts, media, Embedded Signup follow-ups) ─ health on 127.0.0.1:3202
 Redis 127.0.0.1:6379 (queues) · Postgres + files on Neon
 ```
 
@@ -91,6 +91,24 @@ server {
 ```
 
 **7. Meta.** Webhook callback URL: `https://app.relay.operium.pro/webhooks/meta`, same verify token as `META_VERIFY_TOKEN`.
+In the app's Webhooks settings (WhatsApp Business Account object) subscribe to: `messages`, `account_update`,
+`message_template_status_update`, `message_template_quality_update`, `phone_number_quality_update`,
+`phone_number_name_update`, `business_capability_update`, `business_username_updates`, `history`,
+`smb_app_state_sync`, `smb_message_echoes`. (Relay also sends this list to each business's account when it connects.)
+
+**8. Embedded Signup (businesses connect their own WhatsApp).** In the Meta app dashboard:
+- Facebook Login for Business → Configurations → create one with login variation **WhatsApp Embedded Signup**
+  (products: Cloud API; permissions `whatsapp_business_management`, `whatsapp_business_messaging`). If the token
+  expiry can be chosen, pick "never". Copy its **Configuration ID** into `.env` as `META_CONFIG_ID`.
+- Facebook Login for Business → Settings → Client OAuth settings: Client OAuth login, Web OAuth login, Enforce HTTPS,
+  Embedded Browser OAuth Login, Strict Mode, **Login with the JavaScript SDK**: all Yes.
+  Allowed domains for the JavaScript SDK and Valid OAuth redirect URIs: `https://app.relay.operium.pro/`.
+- `.env` needs `META_APP_ID`, `META_APP_SECRET`, `META_CONFIG_ID`, `CHANNEL_SECRET_KEY`. No web rebuild is needed:
+  the browser reads them from `GET /api/channels/whatsapp/signup-config`.
+- Until Meta grants Advanced Access (App Review), only people with a role on the Meta app can finish the signup.
+  Test with a second business portfolio: a number created in the developer app can't be onboarded.
+- Numbers that stay on the WhatsApp Business app (coexistence) get their contacts and up to 6 months of chats copied
+  within 24 hours of connecting; imported chats start closed and never count as unread.
 
 ## Updating
 
@@ -98,6 +116,7 @@ server {
 cd /var/www/relay && git pull && pnpm install --frozen-lockfile && pnpm --filter @relay/web build && pm2 reload ecosystem.config.cjs
 ```
 When a commit adds a migration: `DATABASE_URL="$(grep ^DATABASE_URL= .env | cut -d= -f2-)" pnpm --filter @relay/db migrate` before the reload.
+(0019, Embedded Signup, is already applied to the shared Neon database.)
 
 ## Rules
 

@@ -190,5 +190,9 @@ describe("WhatsApp coexistence webhooks", () => {
     assert.equal(smbSyncFailure(g(2593109, "declined")), "declined");
     assert.equal(smbSyncFailure(g(100, "Request is outside of allowed time window")), "expired");
     assert.equal(smbSyncFailure(new GraphError("busy", "retryable", 500, 1, undefined)), "retry");
+    assert.equal(
+      smbSyncFailure(new GraphError("Invalid OAuth access token data.", "authFailed", 401, 190, undefined)),
+      "failed",
+    );
   });
 });

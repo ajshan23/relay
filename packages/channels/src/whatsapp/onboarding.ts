@@ -189,13 +189,16 @@ export const onboardingErrors = {
 } as const;
 
 /** Classifies a coexistence sync failure (from FlowFlex's tested handling). */
-export function smbSyncFailure(err: unknown): "declined" | "expired" | "already_requested" | "retry" {
+export function smbSyncFailure(
+  err: unknown,
+): "declined" | "expired" | "already_requested" | "failed" | "retry" {
   if (!(err instanceof GraphError)) return "retry";
   const text = err.message.toLowerCase();
   if (err.code === onboardingErrors.historyDeclined) return "declined";
   if (text.includes("outside of allowed time window") || text.includes("within 24 hours")) return "expired";
   if (text.includes("already") && text.includes("request")) return "already_requested";
-  return err.kind === "permanent" || err.kind === "authFailed" ? "expired" : "retry";
+  // A rejected token or request is a failure to show, not the 24-hour window closing.
+  return err.kind === "permanent" || err.kind === "authFailed" ? "failed" : "retry";
 }
 
 /**

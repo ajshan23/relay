@@ -595,7 +595,8 @@ app.post("/:version/:phoneId/smb_app_data", async (c) => {
       const msg = (id: string, from: string, ts: number, body: string, status = "read", to?: string) => ({
         id,
         from,
-        ...(to ? { to } : { from_user_id: "IN.FAKE0101" }),
+        // The customer's BSUID: IN.FAKE + the last 4 digits of their number (as in the contact sync).
+        ...(to ? { to } : { from_user_id: `IN.FAKE${from.slice(-4)}` }),
         timestamp: String(ts),
         type: "text",
         text: { body },
