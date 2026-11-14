@@ -158,12 +158,15 @@ export function channelRoutes(ctx: AppContext) {
   // Embedded Signup: what the browser needs to open Meta's window (nothing secret).
   app.get("/whatsapp/signup-config", (c) => {
     const cfg = ctx.config;
-    const enabled = !!(
-      cfg.META_APP_ID &&
-      cfg.META_CONFIG_ID &&
-      cfg.META_APP_SECRET &&
-      cfg.CHANNEL_SECRET_KEY
-    );
+    // Meta ids are numbers; anything else (a placeholder left in .env) would open a broken Meta window.
+    const numeric = (v?: string) => !!v && /^\d+$/.test(v);
+    const enabled =
+      numeric(cfg.META_APP_ID) &&
+      numeric(cfg.META_CONFIG_ID) &&
+      !!cfg.META_APP_SECRET &&
+      !!cfg.CHANNEL_SECRET_KEY;
+    if (cfg.META_CONFIG_ID && !numeric(cfg.META_CONFIG_ID))
+      console.warn("META_CONFIG_ID is not a number; Embedded Signup stays off until it is fixed");
     return c.json({
       enabled,
       appId: enabled ? cfg.META_APP_ID : null,
