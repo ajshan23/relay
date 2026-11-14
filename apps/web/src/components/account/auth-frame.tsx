@@ -2,6 +2,7 @@ import { Icon } from "@relay/ui/components/icon";
 import { cn } from "@relay/ui/lib/utils";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { siteUrl } from "@/lib/site-url";
 import { CardBody } from "./card-body";
 import { ProductPanel } from "./product-panel";
 
@@ -70,10 +71,10 @@ export function AuthFrame({
             aria-label="Legal"
             className="absolute bottom-5 flex items-center gap-5 text-xs text-muted-foreground"
           >
-            <Link href="/terms" className="hover:text-foreground">
+            <Link href={`${siteUrl}/terms`} className="hover:text-foreground">
               Terms
             </Link>
-            <Link href="/privacy" className="hover:text-foreground">
+            <Link href={`${siteUrl}/privacy`} className="hover:text-foreground">
               Privacy
             </Link>
             <a href="mailto:support@relay.test" className="hover:text-foreground">

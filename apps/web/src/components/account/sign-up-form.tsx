@@ -9,6 +9,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { z } from "zod";
 import { signUp } from "@/lib/auth-client";
+import { siteUrl } from "@/lib/site-url";
 import {
   AuthError,
   AuthHeading,
@@ -127,8 +128,8 @@ export function SignUpForm({ next }: { next: string | null }) {
                 )}
               </Button>
               <FieldDescription className="text-center text-[12px] leading-[18px] text-balance">
-                By continuing you agree to the <AuthLink href="/terms">Terms</AuthLink> and{" "}
-                <AuthLink href="/privacy">Privacy Policy</AuthLink>.
+                By continuing you agree to the <AuthLink href={`${siteUrl}/terms`}>Terms</AuthLink> and{" "}
+                <AuthLink href={`${siteUrl}/privacy`}>Privacy Policy</AuthLink>.
               </FieldDescription>
             </Field>
           </FieldGroup>

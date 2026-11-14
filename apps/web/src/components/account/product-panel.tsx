@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@relay/ui/lib/utils";
-import { BrandBackdrop } from "@/components/site/brand-backdrop";
+import { BrandBackdrop } from "./brand-backdrop";
 import { FloatingCard } from "./showcase/parts";
 import { fade, useRotation } from "./showcase/rotation";
 import { slides } from "./showcase/slides";
