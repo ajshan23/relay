@@ -25,6 +25,12 @@ export const queues = {
   broadcasts: "broadcasts",
   /** Small previews of stored images and videos. The job id is preview_<stored file id>. */
   previews: "previews",
+  /**
+   * After a number is connected through Embedded Signup: "coexistence-sync" asks Meta for the phone
+   * app's contacts, then its chat history (job id coexistence_<channel id>); "coexistence-expire"
+   * closes the 24-hour window.
+   */
+  onboarding: "onboarding",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];

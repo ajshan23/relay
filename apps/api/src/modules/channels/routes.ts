@@ -1,4 +1,3 @@
-import { encryptSecret, newId } from "@relay/core";
 import { and, asc, eq, inArray, isNull, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -7,11 +6,14 @@ import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
+import { requireBranch } from "../contacts/shared";
+import { finishSetup, runEmbeddedSignup, signupBody } from "./embedded-signup";
+import { saveWhatsAppChannel } from "./save";
 
 /*
- * Connected channels of the active business. Plumbing for now: WhatsApp numbers are connected by
- * pasting their ids and a token (Embedded Signup comes in step 5). Tokens are checked with Meta,
- * stored encrypted and never returned.
+ * Connected channels of the active business. WhatsApp numbers are connected by the business itself
+ * through Meta's Embedded Signup (embedded-signup.ts), or by pasting ids and a token (support use).
+ * Tokens are checked with Meta, stored encrypted and never returned.
  */
 
 const connectBody = z.object({
@@ -104,20 +106,6 @@ export function channelRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const body = parsed.data;
 
-    const [taken] = await ctx.db
-      .select({ organizationId: schema.channelAccount.organizationId, status: schema.channelAccount.status })
-      .from(schema.channelAccount)
-      .where(
-        and(
-          eq(schema.channelAccount.type, "whatsapp"),
-          eq(schema.channelAccount.externalId, body.phoneNumberId),
-        ),
-      )
-      .limit(1);
-    if (taken && (taken.organizationId !== access.orgId || taken.status !== "disconnected")) {
-      return fail(c, 409, "already_connected", "This WhatsApp number is already connected to Relay.");
-    }
-
     // Branches: the given ones (must belong to this business), or every active branch.
     const branches = await ctx.db
       .select({ id: schema.branch.id })
@@ -144,60 +132,104 @@ export function channelRoutes(ctx: AppContext) {
       throw err;
     }
 
-    const values = {
-      organizationId: access.orgId,
-      type: "whatsapp" as const,
-      provider: "meta",
-      externalId: body.phoneNumberId,
+    const saved = await saveWhatsAppChannel(ctx, key, {
+      orgId: access.orgId,
+      phoneNumberId: body.phoneNumberId,
+      credentials: { accessToken: body.accessToken },
       displayName: body.displayName ?? connected.displayName,
       displayPhone: connected.displayPhone,
-      status: "active" as const,
-      statusReason: null,
-      credentials: encryptSecret({ accessToken: body.accessToken }, key),
-      providerMeta: connected.providerMeta,
-      defaultBranchId: branchIds[0] ?? null,
-      updatedAt: new Date(),
-    };
-
-    const id = await ctx.db.transaction(async (tx) => {
-      let channelId: string;
-      if (taken) {
-        // Reconnecting a number this business disconnected before: keep its history.
-        const [row] = await tx
-          .update(schema.channelAccount)
-          .set(values)
-          .where(
-            and(
-              eq(schema.channelAccount.type, "whatsapp"),
-              eq(schema.channelAccount.externalId, body.phoneNumberId),
-            ),
-          )
-          .returning({ id: schema.channelAccount.id });
-        channelId = row?.id ?? "";
-        await tx
-          .delete(schema.channelAccountBranch)
-          .where(eq(schema.channelAccountBranch.channelAccountId, channelId));
-      } else {
-        channelId = newId("channelAccount");
-        await tx.insert(schema.channelAccount).values({ id: channelId, ...values });
-      }
-      if (branchIds.length) {
-        await tx.insert(schema.channelAccountBranch).values(
-          branchIds.map((branchId) => ({
-            channelAccountId: channelId,
-            branchId,
-            organizationId: access.orgId,
-          })),
-        );
-      }
-      return channelId;
+      providerMeta: {
+        ...connected.providerMeta,
+        onboarding: { method: "manual", coexistence: false, onboardedAt: new Date().toISOString() },
+      },
+      status: "active",
+      branchIds,
+      allowActive: false,
     });
-
+    if (!saved.ok)
+      return fail(c, saved.status, saved.code === "taken" ? "already_connected" : saved.code, saved.message);
     const [channel] = await ctx.db
       .select(publicColumns)
       .from(schema.channelAccount)
-      .where(eq(schema.channelAccount.id, id));
-    return c.json({ channel: { ...channel, branchIds } }, taken ? 200 : 201);
+      .where(eq(schema.channelAccount.id, saved.id));
+    return c.json({ channel: { ...channel, branchIds } }, saved.reconnected ? 200 : 201);
+  });
+
+  // Embedded Signup: what the browser needs to open Meta's window (nothing secret).
+  app.get("/whatsapp/signup-config", (c) => {
+    const cfg = ctx.config;
+    const enabled = !!(
+      cfg.META_APP_ID &&
+      cfg.META_CONFIG_ID &&
+      cfg.META_APP_SECRET &&
+      cfg.CHANNEL_SECRET_KEY
+    );
+    return c.json({
+      enabled,
+      appId: enabled ? cfg.META_APP_ID : null,
+      configId: enabled ? cfg.META_CONFIG_ID : null,
+      graphVersion: cfg.META_GRAPH_VERSION,
+    });
+  });
+
+  // Embedded Signup: the popup finished. Connects the number to the current branch (?branch=).
+  app.post("/whatsapp/embedded-signup", requireBranch(ctx), async (c) => {
+    const access = c.var.access;
+    if (!isOrgAdmin(access.orgRole))
+      return fail(c, 403, "forbidden", "Only owners and admins can connect channels.");
+    const parsed = await parseBody(c, signupBody);
+    if ("error" in parsed) return parsed.error;
+    const result = await runEmbeddedSignup(
+      ctx,
+      { orgId: access.orgId, branchId: c.var.branchId, userId: access.userId },
+      parsed.data,
+    );
+    if (!result.ok) return fail(c, result.status, result.code, result.message);
+    const [channel] = await ctx.db
+      .select(publicColumns)
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, result.channelId));
+    return c.json({ channel, setupError: result.setupError ?? null }, result.reconnected ? 200 : 201);
+  });
+
+  // Embedded Signup: "did it finish?" after a dropped answer (the popup's code can't be used twice).
+  app.get("/whatsapp/embedded-signup/:attemptId", async (c) => {
+    const oa = schema.onboardingAttempt;
+    const [row] = await ctx.db
+      .select({
+        status: oa.status,
+        step: oa.step,
+        errorCode: oa.errorCode,
+        errorMessage: oa.errorMessage,
+        channelAccountId: oa.channelAccountId,
+      })
+      .from(oa)
+      .where(and(eq(oa.id, c.req.param("attemptId")), eq(oa.organizationId, c.var.access.orgId)));
+    if (!row) return fail(c, 404, "not_found");
+    return c.json({ attempt: row });
+  });
+
+  // Retries the steps after saving (webhooks, registration) with the stored token.
+  app.post("/:id/finish-setup", async (c) => {
+    const access = c.var.access;
+    if (!isOrgAdmin(access.orgRole))
+      return fail(c, 403, "forbidden", "Only owners and admins can change channels.");
+    const [ch] = await ctx.db
+      .select({ id: schema.channelAccount.id })
+      .from(schema.channelAccount)
+      .where(
+        and(
+          eq(schema.channelAccount.id, c.req.param("id")),
+          eq(schema.channelAccount.organizationId, access.orgId),
+        ),
+      );
+    if (!ch) return fail(c, 404, "not_found");
+    const done = await finishSetup(ctx, ch.id);
+    const [channel] = await ctx.db
+      .select(publicColumns)
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, ch.id));
+    return c.json({ channel, setupError: done.error ?? null }, done.ok ? 200 : 502);
   });
 
   // Disconnect: stops sending and receiving, keeps every conversation and message.

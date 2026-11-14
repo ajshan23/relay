@@ -2,6 +2,8 @@ import {
   type AccountRef,
   type ChannelRegistry,
   createChannelRegistry,
+  createGraphClient,
+  type GraphClient,
   GraphError,
   GraphUncertainError,
 } from "@relay/channels";
@@ -29,6 +31,22 @@ export function channels(): ChannelRegistry {
     });
   }
   return registry;
+}
+
+let graph: GraphClient | undefined;
+
+/** A raw Graph client for onboarding calls that sit outside the adapters (Embedded Signup). */
+export function metaGraph(): GraphClient {
+  if (!graph) {
+    const config = env();
+    graph = createGraphClient({
+      baseUrl: config.META_GRAPH_URL,
+      version: config.META_GRAPH_VERSION,
+      timeoutMs: 20_000,
+      appId: config.META_APP_ID,
+    });
+  }
+  return graph;
 }
 
 /** A stored channel account with its secrets decrypted, as adapters take it. */
