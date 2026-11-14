@@ -10,6 +10,7 @@ const tabs = [
   { href: "/settings/channels", label: "Channels" },
   { href: "/settings/templates", label: "Templates" },
   { href: "/settings/quick-replies", label: "Quick replies" },
+  { href: "/settings/broadcasts", label: "Broadcasts" },
 ] as const;
 
 /**

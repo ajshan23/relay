@@ -1,6 +1,7 @@
 import type { BroadcastErrorAction } from "@relay/channels";
 import { newId } from "@relay/core";
-import { fillVariables, type TemplateContent, templateVariables } from "@relay/core/templates";
+import { templateMessage, valuesFor } from "@relay/core/broadcasts";
+import type { TemplateContent } from "@relay/core/templates";
 import {
   activeFields,
   and,
@@ -12,12 +13,12 @@ import {
   schema,
   sql,
 } from "@relay/db";
-import type { BroadcastContent } from "@relay/db/schema";
+import { type BroadcastRules, type BroadcastValues, defaultBroadcastRules } from "@relay/db/schema";
 import type { Queue } from "bullmq";
 import type { Redis } from "ioredis";
 import type { OutboxJob } from "../channels/outbox";
 import { accountRef, channels } from "../channels/registry";
-import { sendingDaysUntil, startOfLocalDay, windowState } from "./schedule";
+import { nextSendTime, perDayFor, retryOf, startOfLocalDay, windowState } from "./schedule";
 
 /*
  * The broadcast engine. One tick every few seconds; everything it knows is in Postgres, so a restart,
@@ -44,8 +45,6 @@ type Account = typeof schema.channelAccount.$inferSelect;
 
 const TICK_SECONDS = 10;
 const PREPARE_CHUNK = 5000;
-/** Default share of the daily limit a broadcast uses when no per-day number is set. */
-const DEFAULT_SHARE = 0.75;
 /** Daily limit assumed until the channel reports one (the lowest tier). */
 const UNKNOWN_LIMIT = 250;
 const MAX_ATTEMPTS = 2;
@@ -201,11 +200,27 @@ export function createBroadcastEngine({
         on conflict (broadcast_id, address) do nothing`);
       if (ids.length < PREPARE_CHUNK) break;
     }
+    await assignVariants(bc);
     await rollup(bc.id);
     await db
       .update(b)
       .set({ status: "sending", startedAt: bc.startedAt ?? new Date(), updatedAt: new Date() })
       .where(and(eq(b.id, bc.id), eq(b.status, "preparing")));
+  }
+
+  /** A/B: a random share of people get A, the same share B, the rest wait for the winner. */
+  async function assignVariants(bc: Broadcast) {
+    if (!bc.test || bc.content.kind !== "template" || !bc.content.variantB) return;
+    const share = Math.min(0.5, Math.max(0.01, bc.test.share / 100));
+    await db.execute(sql`
+      with p as (
+        select id, row_number() over (order by random()) as rn, count(*) over () as n
+        from broadcast_recipient where broadcast_id = ${bc.id} and status = 'pending' and variant is null)
+      update broadcast_recipient r set variant = case
+          when p.rn <= ceil(p.n * ${share}::float) then 'A'
+          when p.rn <= 2 * ceil(p.n * ${share}::float) then 'B'
+          else 'rest' end
+      from p where r.id = p.id`);
   }
 
   async function accountById(id: string) {
@@ -217,26 +232,43 @@ export function createBroadcastEngine({
     return a ?? null;
   }
 
-  async function templateOf(bc: Broadcast) {
-    if (bc.content.kind !== "template") return null;
+  async function templateById(id: string) {
     const [t] = await db
       .select()
       .from(schema.messageTemplate)
-      .where(eq(schema.messageTemplate.id, bc.content.templateId))
+      .where(eq(schema.messageTemplate.id, id))
       .limit(1);
     return t ?? null;
   }
 
+  async function templateOf(bc: Broadcast) {
+    return bc.content.kind === "template" ? templateById(bc.content.templateId) : null;
+  }
+
+  /** Marketing when any template it may send is marketing (A/B can mix). */
   async function isMarketing(bc: Broadcast) {
     const t = await templateOf(bc);
-    return t ? t.purpose === "marketing" : true;
+    const tb =
+      bc.content.kind === "template" && bc.content.variantB
+        ? await templateById(bc.content.variantB.templateId)
+        : null;
+    return t ? t.purpose === "marketing" || tb?.purpose === "marketing" : true;
+  }
+
+  async function rulesOf(organizationId: string): Promise<BroadcastRules> {
+    const [row] = await db
+      .select({ broadcast: schema.organizationSettings.broadcast })
+      .from(schema.organizationSettings)
+      .where(eq(schema.organizationSettings.organizationId, organizationId))
+      .limit(1);
+    return { ...defaultBroadcastRules, ...(row?.broadcast ?? {}) };
   }
 
   /* ------------------------------------------------------------------ health */
 
   /** Pauses (or stops) when something makes sending unsafe. Returns false when it did. */
   async function healthy(bc: Broadcast, account: Account | null): Promise<boolean> {
-    if (!account || account.status !== "active") {
+    if (account?.status !== "active") {
       await pause(bc.id, "auth", "The channel isn't connected; reconnect it, then resume.");
       return false;
     }
@@ -249,13 +281,17 @@ export function createBroadcastEngine({
       );
       return false;
     }
-    if (bc.content.kind === "template") {
+    const templateIds =
+      bc.content.kind === "template"
+        ? [bc.content.templateId, ...(bc.content.variantB ? [bc.content.variantB.templateId] : [])]
+        : [];
+    for (const templateId of templateIds) {
       const [copy] = await db
         .select({ status: schema.templateChannel.status, quality: schema.templateChannel.quality })
         .from(schema.templateChannel)
         .where(
           and(
-            eq(schema.templateChannel.templateId, bc.content.templateId),
+            eq(schema.templateChannel.templateId, templateId),
             eq(schema.templateChannel.channelAccountId, account.id),
           ),
         )
@@ -364,15 +400,15 @@ export function createBroadcastEngine({
     const meta = account.providerMeta as { messagingLimit?: number | null };
     const dailyLimit = caps.dailyLimit === "portfolio" ? (meta.messagingLimit ?? UNKNOWN_LIMIT) : -1;
     // Per day: fixed, or spread to finish by a date, or a share of the daily limit.
-    let perDay: number;
-    if (bc.schedule.perDay) perDay = bc.schedule.perDay;
-    else if (bc.schedule.endBy) {
-      const [left] = await db
+    let left = 0;
+    if (!bc.schedule.perDay && bc.schedule.endBy) {
+      const [row] = await db
         .select({ n: sql<number>`count(*)::int` })
         .from(r)
         .where(and(eq(r.broadcastId, bc.id), inArray(r.status, ["pending", "queued"])));
-      perDay = Math.ceil((left?.n ?? 0) / sendingDaysUntil(bc.schedule, now, new Date(bc.schedule.endBy)));
-    } else perDay = dailyLimit === -1 ? Number.POSITIVE_INFINITY : Math.floor(dailyLimit * DEFAULT_SHARE);
+      left = row?.n ?? 0;
+    }
+    const perDay = perDayFor(bc.schedule, left, dailyLimit, now);
 
     const dayStart = startOfLocalDay(now, bc.schedule.timezone);
     // Claimed today (queued ones included: sent_at is set when claimed).
@@ -401,44 +437,6 @@ export function createBroadcastEngine({
     const slow = await redis.get(`bc:slow:${account.id}`);
     const speed = caps.perSecond * TICK_SECONDS * (slow ? 0.25 : 1);
     return Math.max(0, Math.floor(Math.min(paced, room, speed, perDay - usedToday)));
-  }
-
-  /** The value of each template detail for one contact; null when a required one is missing. */
-  function valuesFor(
-    content: Extract<BroadcastContent, { kind: "template" }>,
-    tc: TemplateContent,
-    contact: typeof schema.contact.$inferSelect,
-  ) {
-    const out: Record<string, string> = {};
-    for (const name of templateVariables(tc)) {
-      const spec = content.values[name];
-      let v: string | null | undefined = null;
-      if (spec?.source === "static") v = spec.text;
-      else if (spec?.source === "field") {
-        const key = spec.key;
-        v =
-          key === "name"
-            ? contact.name
-            : key === "first_name"
-              ? (contact.name?.trim().split(/\s+/)[0] ?? null)
-              : key === "phone"
-                ? contact.phone
-                : key === "email"
-                  ? contact.email
-                  : (() => {
-                      const raw = (contact.attributes as Record<string, unknown>)[key];
-                      return raw === undefined || raw === null
-                        ? null
-                        : Array.isArray(raw)
-                          ? raw.join(", ")
-                          : String(raw);
-                    })();
-        if (!v?.toString().trim()) v = spec.fallback ?? null;
-      }
-      if (!v?.toString().trim()) return null;
-      out[name] = String(v).trim().slice(0, 1000);
-    }
-    return out;
   }
 
   /** The customer's identity and chat on this channel, made if they never wrote (quiet: closed). */
@@ -511,19 +509,55 @@ export function createBroadcastEngine({
   async function dispatch(bc: Broadcast, account: Account) {
     const n = await allowance(bc, account);
     if (n <= 0) return 0;
-    const claimed = await db.execute<{ id: string; contact_id: string | null; address: string }>(sql`
+    // A/B: until a winner is picked only the two test groups go out.
+    const waitForWinner = bc.test && !bc.winner ? sql`and (variant is null or variant <> 'rest')` : sql``;
+    const claimed = await db.execute<{
+      id: string;
+      contact_id: string | null;
+      address: string;
+      variant: string | null;
+    }>(sql`
       update broadcast_recipient set status = 'queued', sent_at = ${utcNow}, updated_at = ${utcNow},
         attempts = attempts + 1
       where id in (
         select id from broadcast_recipient
         where broadcast_id = ${bc.id} and status = 'pending' and (retry_at is null or retry_at <= ${utcNow})
+          ${waitForWinner}
         order by id limit ${n} for update skip locked)
-      returning id, contact_id, address`);
+      returning id, contact_id, address, variant`);
     if (!claimed.length) return 0;
+    if (bc.content.kind !== "template") {
+      for (const rec of claimed)
+        await db
+          .update(r)
+          .set({ status: "skipped", skipReason: "unsupported", updatedAt: new Date() })
+          .where(eq(r.id, rec.id));
+      return 0;
+    }
 
-    const template = await templateOf(bc);
-    const tc = template?.content as unknown as TemplateContent | undefined;
+    // What each variant sends.
     const content = bc.content;
+    const variants = new Map<
+      string,
+      { template: typeof schema.messageTemplate.$inferSelect; tc: TemplateContent; values: BroadcastValues }
+    >();
+    const a = await templateById(content.templateId);
+    if (a)
+      variants.set("A", { template: a, tc: a.content as unknown as TemplateContent, values: content.values });
+    if (content.variantB) {
+      const tb = await templateById(content.variantB.templateId);
+      if (tb)
+        variants.set("B", {
+          template: tb,
+          tc: tb.content as unknown as TemplateContent,
+          values: content.variantB.values,
+        });
+    }
+    const variantOf = (v: string | null) => {
+      const key = v === "B" ? "B" : v === "rest" ? (bc.winner?.key ?? "A") : "A";
+      return { key, spec: variants.get(key) };
+    };
+
     const contactIds = claimed.map((x) => x.contact_id).filter((x): x is string => !!x);
     const contacts = new Map(
       contactIds.length
@@ -533,9 +567,10 @@ export function createBroadcastEngine({
           ])
         : [],
     );
+    const anyMarketing = [...variants.values()].some((v) => v.template.purpose === "marketing");
     // Opted out since the broadcast started (marketing only).
     const optedOut = new Set(
-      template?.purpose === "marketing" && contactIds.length
+      anyMarketing && contactIds.length
         ? (
             await db
               .select({ id: schema.contactOptOut.contactId })
@@ -549,6 +584,38 @@ export function createBroadcastEngine({
           ).map((x) => x.id)
         : [],
     );
+    // The business's rules: a weekly cap on marketing per person, and leave live chats alone.
+    const rules = await rulesOf(bc.organizationId);
+    const capped = new Set<string>();
+    if (anyMarketing && rules.frequencyCap && contactIds.length) {
+      const rows = await db.execute<{ contact_id: string }>(sql`
+        select c.contact_id from message m
+        join conversation c on c.id = m.conversation_id
+        join message_template t on t.id = m.content ->> 'templateId'
+        where c.contact_id in (${sql.join(
+          contactIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})
+          and m.direction = 'outbound' and m.type = 'template' and m.status <> 'failed'
+          and t.purpose = 'marketing' and coalesce((m.content ->> 'test')::boolean, false) = false
+          and m.sent_at > ${utcNow} - interval '7 days'
+        group by c.contact_id having count(*) >= ${rules.frequencyCap}`);
+      for (const x of rows) capped.add(x.contact_id);
+    }
+    const live = new Set<string>();
+    if (rules.skipLiveChats && contactIds.length) {
+      const rows = await db
+        .selectDistinct({ id: schema.conversation.contactId })
+        .from(schema.conversation)
+        .where(
+          and(
+            inArray(schema.conversation.contactId, contactIds),
+            eq(schema.conversation.status, "open"),
+            sql`${schema.conversation.assignedUserId} is not null`,
+          ),
+        );
+      for (const x of rows) if (x.id) live.add(x.id);
+    }
     const skip = (id: string, reason: string) =>
       db.update(r).set({ status: "skipped", skipReason: reason, updatedAt: new Date() }).where(eq(r.id, id));
 
@@ -559,15 +626,25 @@ export function createBroadcastEngine({
         await skip(rec.id, "contact_deleted");
         continue;
       }
-      if (optedOut.has(contact.id)) {
-        await skip(rec.id, "opted_out");
-        continue;
-      }
-      if (content.kind !== "template" || !template || !tc) {
+      const { key, spec } = variantOf(rec.variant);
+      if (!spec) {
         await skip(rec.id, "unsupported");
         continue;
       }
-      const values = valuesFor(content, tc, contact);
+      const marketing = spec.template.purpose === "marketing";
+      if (marketing && optedOut.has(contact.id)) {
+        await skip(rec.id, "opted_out");
+        continue;
+      }
+      if (marketing && capped.has(contact.id)) {
+        await skip(rec.id, "frequency_cap");
+        continue;
+      }
+      if (live.has(contact.id)) {
+        await skip(rec.id, "in_live_chat");
+        continue;
+      }
+      const values = valuesFor(spec.values, spec.tc, contact);
       if (!values) {
         await skip(rec.id, "missing_value");
         continue;
@@ -578,23 +655,10 @@ export function createBroadcastEngine({
         continue;
       }
       const messageId = newId("message");
-      const messageContent = {
-        type: "template",
-        templateId: template.id,
-        templateName: template.name,
-        name: template.slug,
-        language: template.language,
-        values,
-        header:
-          tc.header?.kind === "text"
-            ? { kind: "text", text: fillVariables(tc.header.text, values) }
-            : (tc.header ?? null),
-        body: fillVariables(tc.body, values),
-        footer: tc.footer,
-        buttons: tc.buttons,
-        auth: !!tc.auth,
+      const messageContent = templateMessage(spec.template, spec.tc, values, {
         broadcastName: bc.name,
-      };
+        ...(variants.size > 1 ? { variant: key } : {}),
+      });
       // The message and the recipient's link to it are saved together; the job is queued after.
       await db.transaction(async (tx) => {
         await tx.insert(schema.message).values({
@@ -626,6 +690,147 @@ export function createBroadcastEngine({
     return queue.length;
   }
 
+  /* ------------------------------------------------------------------ A/B winner */
+
+  /** The read (or reply) rate of each test group. */
+  async function testRates(bc: Broadcast) {
+    const rows = await db.execute<{
+      variant: string;
+      sent: number;
+      read: number;
+      replied: number;
+      waiting: number;
+      last: string | null;
+    }>(sql`
+      select variant,
+        count(*) filter (where status in ('sent', 'delivered', 'read'))::int as sent,
+        count(*) filter (where status = 'read')::int as read,
+        count(*) filter (where replied_at is not null)::int as replied,
+        count(*) filter (where status in ('pending', 'queued'))::int as waiting,
+        max(sent_at)::text as last
+      from broadcast_recipient where broadcast_id = ${bc.id} and variant in ('A', 'B')
+      group by variant`);
+    const metric = bc.test?.metric ?? "read";
+    const rate = (k: string) => {
+      const x = rows.find((y) => y.variant === k);
+      return x?.sent ? (metric === "read" ? x.read : x.replied) / x.sent : 0;
+    };
+    const waiting = rows.reduce((n, x) => n + x.waiting, 0);
+    const last =
+      rows
+        .map((x) => x.last)
+        .filter(Boolean)
+        .sort()
+        .pop() ?? null;
+    return { A: rate("A"), B: rate("B"), waiting, last };
+  }
+
+  /** Once both groups are out and the test time has passed, the better one goes to everyone else. */
+  async function decideWinner(bc: Broadcast) {
+    if (!bc.test || bc.winner) return;
+    const t = await testRates(bc);
+    if (t.waiting || !t.last) return;
+    // Stored as UTC without a zone.
+    const lastAt = new Date(`${t.last.replace(" ", "T")}Z`);
+    if (Date.now() < lastAt.getTime() + bc.test.decideAfterHours * 3_600_000) return;
+    if (bc.test.metric === "replied") await rollup(bc.id, true);
+    const fresh = bc.test.metric === "replied" ? await testRates(bc) : t;
+    const winner = {
+      key: fresh.B > fresh.A ? ("B" as const) : ("A" as const),
+      rates: { A: fresh.A, B: fresh.B },
+      decidedAt: new Date().toISOString(),
+      by: "auto" as const,
+    };
+    await db
+      .update(b)
+      .set({ winner, updatedAt: new Date() })
+      .where(and(eq(b.id, bc.id), sql`${b.winner} is null`));
+    console.log(
+      `broadcast ${bc.id}: ${winner.key} won (A ${winner.rates.A.toFixed(2)}, B ${winner.rates.B.toFixed(2)})`,
+    );
+  }
+
+  /* ------------------------------------------------------------------ follow-ups */
+
+  /**
+   * A finished broadcast with a follow-up: once its last message is old enough, a child broadcast
+   * goes to the people who didn't respond (same channel, hours and retry), minus anyone who opted out.
+   */
+  async function startFollowUps() {
+    const due = await db.execute<{ id: string }>(sql`
+      select p.id from broadcast p
+      where p.status = 'completed' and p.follow_up is not null and p.kind = 'main'
+        and not exists (select 1 from broadcast c where c.parent_id = p.id)
+        and (select max(sent_at) from broadcast_recipient where broadcast_id = p.id)
+          < ${utcNow} - make_interval(hours => (p.follow_up ->> 'hours')::int)
+      limit 20`);
+    for (const { id } of due) {
+      try {
+        await startFollowUp(id);
+      } catch (err) {
+        console.error(`broadcast ${id} follow-up failed`, err);
+      }
+    }
+  }
+
+  async function startFollowUp(parentId: string) {
+    const parent = await one(parentId);
+    const fu = parent?.followUp;
+    if (!parent || !fu || !parent.channelAccountId) return;
+    const template = await templateById(fu.templateId);
+    if (!template) return;
+    // Replies up to date before choosing who didn't reply.
+    await rollup(parentId, true);
+    const who =
+      fu.who === "not_delivered"
+        ? sql`r.status = 'sent'`
+        : fu.who === "not_read"
+          ? sql`r.status in ('sent', 'delivered')`
+          : sql`r.status in ('sent', 'delivered', 'read') and r.replied_at is null`;
+    const optedOut =
+      template.purpose === "marketing"
+        ? sql`exists (select 1 from contact_opt_out o where o.contact_id = r.contact_id
+            and (o.channel_account_id is null or o.channel_account_id = ${parent.channelAccountId}))`
+        : sql`false`;
+    const childId = newId("broadcast");
+    const made = await db.transaction(async (tx) => {
+      // One child per parent, even with two workers ticking.
+      const [lock] = await tx.execute<{ ok: boolean }>(
+        sql`select pg_try_advisory_xact_lock(hashtext(${parentId})) as ok`,
+      );
+      if (!lock?.ok) return false;
+      const [exists] = await tx.select({ id: b.id }).from(b).where(eq(b.parentId, parentId)).limit(1);
+      if (exists) return false;
+      await tx.insert(b).values({
+        id: childId,
+        organizationId: parent.organizationId,
+        branchId: parent.branchId,
+        name: `${parent.name} · follow-up`,
+        channelType: parent.channelType,
+        channelAccountId: parent.channelAccountId,
+        content: { kind: "template", templateId: fu.templateId, values: fu.values },
+        audience: parent.audience,
+        schedule: { ...parent.schedule, startAt: null, endBy: null },
+        status: "sending",
+        kind: "follow_up",
+        parentId,
+        createdByUserId: parent.createdByUserId,
+        startedAt: new Date(),
+      });
+      await tx.execute(sql`
+        insert into broadcast_recipient (id, broadcast_id, contact_id, address, status, skip_reason)
+        select 'bcr_' || replace(gen_random_uuid()::text, '-', ''), ${childId}, r.contact_id, r.address,
+          (case when r.contact_id is null or ${optedOut} then 'skipped' else 'pending' end)::broadcast_recipient_status,
+          case when r.contact_id is null then 'contact_deleted' when ${optedOut} then 'opted_out' end
+        from broadcast_recipient r where r.broadcast_id = ${parentId} and ${who}
+        on conflict (broadcast_id, address) do nothing`);
+      return true;
+    });
+    if (!made) return;
+    await rollup(childId);
+    console.log(`broadcast ${parentId}: follow-up ${childId} started`);
+  }
+
   /* ------------------------------------------------------------------ sync */
 
   const rank: Record<string, number> = {
@@ -635,6 +840,7 @@ export function createBroadcastEngine({
     delivered: 3,
     read: 4,
     failed: 5,
+    held_back: 5,
     skipped: 5,
   };
 
@@ -644,12 +850,13 @@ export function createBroadcastEngine({
       id: string;
       contact_id: string | null;
       attempts: number;
+      holds: number;
       message_id: string;
       m_status: string;
       m_error: Record<string, unknown> | null;
       r_status: string;
     }>(sql`
-      select r.id, r.contact_id, r.attempts, r.message_id, r.status as r_status, m.status as m_status, m.error as m_error
+      select r.id, r.contact_id, r.attempts, r.holds, r.message_id, r.status as r_status, m.status as m_status, m.error as m_error
       from broadcast_recipient r join message m on m.id = r.message_id
       where r.broadcast_id = ${bc.id} and r.status in ('queued', 'sent', 'delivered')
         and m.status in ('accepted', 'sent', 'delivered', 'read', 'failed')`);
@@ -679,21 +886,22 @@ export function createBroadcastEngine({
   async function onFailure(
     bc: Broadcast,
     account: Account | null,
-    row: { id: string; contact_id: string | null; attempts: number; message_id: string },
+    row: { id: string; contact_id: string | null; attempts: number; holds: number; message_id: string },
     action: BroadcastErrorAction,
     code: number | string | null,
   ) {
     const codeText = code === null ? null : String(code);
     // Try this person again later (the failed message is removed, so their chat stays clean).
-    const again = async (afterMs: number) => {
+    const again = async (afterMs: number, at?: Date, held = false) => {
       await db.transaction(async (tx) => {
         await tx
           .update(r)
           .set({
             status: "pending",
             messageId: null,
-            retryAt: new Date(Date.now() + afterMs),
+            retryAt: at ?? new Date(Date.now() + afterMs),
             errorCode: codeText,
+            ...(held ? { holds: sql`${r.holds} + 1` } : {}),
             updatedAt: new Date(),
           })
           .where(eq(r.id, row.id));
@@ -708,9 +916,29 @@ export function createBroadcastEngine({
 
     switch (action.action) {
       case "retry":
-        if (row.attempts < MAX_ATTEMPTS) await again(action.afterMs);
+        // Held-back retries don't use up the tries for temporary problems.
+        if (row.attempts - row.holds < MAX_ATTEMPTS) await again(action.afterMs);
         else await final(action.reason);
         return;
+      case "held_back": {
+        // Only when the business chose to retry: on the first sending moment after the wait.
+        const retry = retryOf(bc.schedule);
+        if (retry.enabled && row.holds < retry.attempts) {
+          await again(0, nextSendTime(bc.schedule, new Date(Date.now() + action.afterMs)), true);
+          return;
+        }
+        await db
+          .update(r)
+          .set({
+            status: "held_back",
+            errorCode: codeText,
+            error: action.reason,
+            holds: sql`${r.holds} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(r.id, row.id));
+        return;
+      }
       case "slow":
         if (account) await redis.set(`bc:slow:${account.id}`, "1", "PX", action.afterMs);
         await again(action.afterMs);
@@ -764,6 +992,7 @@ export function createBroadcastEngine({
         count(*) filter (where status = 'read')::int as read,
         count(*) filter (where replied_at is not null)::int as replied,
         count(*) filter (where status = 'failed')::int as failed,
+        count(*) filter (where status = 'held_back')::int as held_back,
         count(*) filter (where status = 'skipped')::int as skipped
       from broadcast_recipient where broadcast_id = ${id}`);
     if (!t) return;
@@ -778,10 +1007,11 @@ export function createBroadcastEngine({
         replied: t.replied ?? 0,
         failed: t.failed ?? 0,
         skipped: t.skipped ?? 0,
+        heldBack: t.held_back ?? 0,
         updatedAt: new Date(),
       })
       .where(eq(b.id, id));
-    // Nobody left to send to: done.
+    // Nobody left (people waiting for a retry are still pending, so it keeps going until then) to send to: done.
     if (!t.pending)
       await db
         .update(b)
@@ -837,7 +1067,11 @@ export function createBroadcastEngine({
         if (bc.status === "sending") {
           // Fresh from the provider once an hour.
           if (account && ticks % 360 === 1) account = await refreshHealth(account);
-          const [now] = await db.select().from(b).where(eq(b.id, bc.id)).limit(1);
+          let [now] = await db.select().from(b).where(eq(b.id, bc.id)).limit(1);
+          if (now?.test && !now.winner) {
+            await decideWinner(now);
+            [now] = await db.select().from(b).where(eq(b.id, bc.id)).limit(1);
+          }
           if (now?.status === "sending" && (await healthy(now, account)) && account)
             sent += await dispatch(now, account);
         }
@@ -846,6 +1080,7 @@ export function createBroadcastEngine({
         console.error(`broadcast ${bc.id} tick failed`, err);
       }
     }
+    if (ticks % 6 === 0) await startFollowUps();
     // Totals keep moving (delivered, read, replies) for a few days after the last message.
     if (ticks % 6 === 0) {
       const recent = await db
@@ -897,5 +1132,5 @@ export function createBroadcastEngine({
     return { requeuedClaims: lost.length, requeuedJobs: waiting.length };
   }
 
-  return { tick, reconcile, prepare, dispatch, sync, rollup };
+  return { tick, reconcile, prepare, dispatch, sync, rollup, startFollowUp, decideWinner };
 }

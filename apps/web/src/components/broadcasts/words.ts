@@ -67,6 +67,14 @@ export const skipText: Record<string, string> = {
   contact_deleted: "Contact deleted",
   stopped: "Broadcast stopped",
   unsupported: "Can't be sent on this channel",
+  frequency_cap: "Already got enough marketing this week",
+  in_live_chat: "In a live chat with your team",
+};
+
+export const followUpWho: Record<string, string> = {
+  not_read: "didn't read it",
+  not_replied: "didn't reply",
+  not_delivered: "didn't get it (not delivered)",
 };
 
 export const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

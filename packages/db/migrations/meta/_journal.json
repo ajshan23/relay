@@ -127,6 +127,13 @@
       "when": 1794609834814,
       "tag": "0017_template_quality",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794613765097,
+      "tag": "0018_smarter_broadcasts",
+      "breakpoints": true
     }
   ]
 }

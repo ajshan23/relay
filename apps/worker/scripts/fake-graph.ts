@@ -18,7 +18,9 @@
  * Broadcast drills (Meta's behaviour at scale, without a real number):
  *   - after each accepted message, signed status webhooks: sent, delivered (+0.5 s), read (+1 s)
  *     (FAKE_STATUS_WEBHOOKS=0 turns them off)
- *   POST /_faults   [{ code, every?, ratio?, async?, message? }]  every Nth (or a share of) messages
+ *   POST /_faults   [{ code, every?, ratio?, to?, async?, message? }]  every Nth (or a share of, or
+ *                   these numbers') messages
+ *   POST /_reads    { "<template name>": 0.3 }  share of that template's messages that get "read"
  *                   fail with that Meta error: at once (HTTP error) or later (a failed status webhook)
  *   POST /_limit    { tier: "TIER_2K" | "TIER_UNLIMITED" | ..., quality?: "GREEN" | "RED" }
  *   POST /_webhook  { wabaId, field, value }  sends any signed webhook (template paused, quality, …)
@@ -88,8 +90,16 @@ async function deliver(payload: unknown) {
 
 /* ------------------------------------------------------------------ broadcast drills */
 
-type Fault = { code: number; every?: number; ratio?: number; async?: boolean; message?: string };
+type Fault = {
+  code: number;
+  every?: number;
+  ratio?: number;
+  to?: string[];
+  async?: boolean;
+  message?: string;
+};
 let faults: Fault[] = [];
+let readRates: Record<string, number> = {};
 let tier = process.env.FAKE_TIER ?? "TIER_UNLIMITED";
 let quality = "GREEN";
 const stats = { accepted: 0, failedSync: 0, failedAsync: 0, perSecond: new Map<string, number>(), peak: 0 };
@@ -98,6 +108,10 @@ const STATUS_WEBHOOKS = process.env.FAKE_STATUS_WEBHOOKS !== "0";
 app.post("/_faults", async (c) => {
   faults = (await c.req.json()) as Fault[];
   return c.json({ faults });
+});
+app.post("/_reads", async (c) => {
+  readRates = (await c.req.json()) as Record<string, number>;
+  return c.json({ readRates });
 });
 app.post("/_limit", async (c) => {
   const b = (await c.req.json()) as { tier?: string; quality?: string };
@@ -125,18 +139,28 @@ app.get("/_stats", (c) =>
 );
 app.post("/_reset", (c) => {
   faults = [];
+  readRates = {};
   stats.accepted = stats.failedSync = stats.failedAsync = stats.peak = 0;
   stats.perSecond.clear();
   return c.json({ ok: true });
 });
 
 /** The fault (if any) this message hits. */
-function faultFor(n: number) {
-  return faults.find((f) => (f.every ? n % f.every === 0 : f.ratio ? Math.random() < f.ratio : false));
+function faultFor(n: number, to: string) {
+  return faults.find((f) =>
+    f.to ? f.to.includes(to) : f.every ? n % f.every === 0 : f.ratio ? Math.random() < f.ratio : false,
+  );
 }
 
 /** Sent, delivered, read, or failed: like Meta's status webhooks for one message. */
-function statusWebhooks(phoneId: string, wamid: string, to: string, ours: string | undefined, fail?: Fault) {
+function statusWebhooks(
+  phoneId: string,
+  wamid: string,
+  to: string,
+  ours: string | undefined,
+  fail?: Fault,
+  readRate = 1,
+) {
   if (!STATUS_WEBHOOKS) return;
   const send = (status: string, delay: number, errors?: unknown[]) =>
     setTimeout(
@@ -182,7 +206,7 @@ function statusWebhooks(phoneId: string, wamid: string, to: string, ours: string
   }
   send("sent", 200);
   send("delivered", 600);
-  send("read", 1200);
+  if (Math.random() < readRate) send("read", 1200);
 }
 
 /** Plays Meta's reviewer: decides after a short wait and tells Relay with a signed webhook. */
@@ -360,7 +384,7 @@ app.post("/:version/:phoneId/messages", async (c) => {
     if (hits === 1) return graphError(130429, "Rate limit hit");
   }
   counter++;
-  const fault = faultFor(counter);
+  const fault = faultFor(counter, body.to ?? "");
   if (fault && !fault.async) {
     stats.failedSync++;
     return graphError(fault.code, fault.message ?? `Error ${fault.code}`);
@@ -375,7 +399,14 @@ app.post("/:version/:phoneId/messages", async (c) => {
   const wamid = `wamid.fake.${Date.now()}.${counter}`;
   if (fault?.async) stats.failedAsync++;
   if (body.type === "template" || !body.text?.body?.includes("#"))
-    statusWebhooks(phoneId, wamid, body.to ?? "", body.biz_opaque_callback_data, fault);
+    statusWebhooks(
+      phoneId,
+      wamid,
+      body.to ?? "",
+      body.biz_opaque_callback_data,
+      fault,
+      readRates[(body as { template?: { name?: string } }).template?.name ?? ""] ?? 1,
+    );
   return c.json({
     messaging_product: "whatsapp",
     contacts: [{ input: body.to ?? body.recipient, wa_id: body.to ?? "" }],

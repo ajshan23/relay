@@ -9,7 +9,8 @@
     "./template-library": "./src/template-library.ts",
     "./contacts": "./src/contacts.ts",
     "./quick-replies": "./src/quick-replies.ts",
-    "./sheets": "./src/sheets.ts"
+    "./sheets": "./src/sheets.ts",
+    "./broadcasts": "./src/broadcasts.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

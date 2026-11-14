@@ -16,6 +16,7 @@ import { groupRoutes } from "./modules/groups/routes";
 import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
 import { quickReplyRoutes } from "./modules/quick-replies/routes";
+import { settingsRoutes } from "./modules/settings/routes";
 import { templateRoutes } from "./modules/templates/routes";
 import { metaWebhookRoutes } from "./modules/webhooks/meta";
 
@@ -43,6 +44,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/templates", templateRoutes(ctx));
   app.route("/api/quick-replies", quickReplyRoutes(ctx));
   app.route("/api/broadcasts", broadcastRoutes(ctx));
+  app.route("/api/settings", settingsRoutes(ctx));
   // Sub-paths first, so "/api/contacts/:id" doesn't swallow them.
   app.route("/api/contacts/fields", contactFieldRoutes(ctx));
   app.route("/api/contacts/views", contactViewRoutes(ctx));

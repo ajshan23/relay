@@ -19,7 +19,16 @@ import { inBranch } from "@/components/contacts/queries";
 import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
 import { type Recipient, useBroadcast, useBroadcastActions, useRecipients } from "./queries";
-import { channelNames, pauseText, skipText, statusLabel, statusTone, weekdays, when } from "./words";
+import {
+  channelNames,
+  followUpWho,
+  pauseText,
+  skipText,
+  statusLabel,
+  statusTone,
+  weekdays,
+  when,
+} from "./words";
 
 const col = createDataTableColumns<Recipient>();
 const pct = (n: number, of: number) => (of ? `${Math.round((n / of) * 100)}%` : "—");
@@ -49,7 +58,9 @@ export function BroadcastDetail({ id }: { id: string }) {
       }),
       col.accessor("status", {
         header: "Status",
-        cell: ({ row }) => <Tag size="sm">{row.original.status}</Tag>,
+        cell: ({ row }) => (
+          <Tag size="sm">{row.original.status === "held_back" ? "held back" : row.original.status}</Tag>
+        ),
       }),
       col.display({
         id: "why",
@@ -77,7 +88,17 @@ export function BroadcastDetail({ id }: { id: string }) {
         <Skeleton className="h-40 w-full" />
       </div>
     );
-  const { broadcast: b, reasons, template, canManage } = data.data;
+  const {
+    broadcast: b,
+    reasons,
+    template,
+    canManage,
+    retrying,
+    variants,
+    followUps,
+    parent,
+    templateNames,
+  } = data.data;
   const done = b.total - b.pending;
   const act = (action: "pause" | "resume" | "stop", ok: string) =>
     actions.act.mutate(
@@ -202,7 +223,7 @@ export function BroadcastDetail({ id }: { id: string }) {
           ) : null}
           <p className="text-xs text-muted-foreground">
             {b.schedule.window
-              ? `Sends ${b.schedule.window.days.map((d) => weekdays[d - 1]).join(", ")}, ${b.schedule.window.from}–${b.schedule.window.to}`
+              ? `Sends ${b.schedule.window.days.length === 7 ? "every day" : b.schedule.window.days.map((d) => weekdays[d - 1]).join(", ")}, ${b.schedule.window.from}–${b.schedule.window.to}`
               : "Sends at any time"}
             {b.schedule.timezone ? ` (${b.schedule.timezone})` : ""}
             {b.schedule.perDay
@@ -210,14 +231,133 @@ export function BroadcastDetail({ id }: { id: string }) {
               : b.schedule.endBy
                 ? ` · finishing by ${new Date(b.schedule.endBy).toLocaleDateString()}`
                 : " · up to 75% of the daily limit"}
+            {b.schedule.retry?.enabled === false
+              ? " · people Meta holds back aren't retried"
+              : ` · people Meta holds back are retried up to ${b.schedule.retry?.attempts ?? 1}×`}
           </p>
+          {retrying.count ? (
+            <p className="text-sm text-muted-foreground">
+              {retrying.count.toLocaleString()} held back by Meta will be tried again
+              {retrying.next ? ` (next: ${when(retrying.next)})` : ""}.
+            </p>
+          ) : null}
+          {parent ? (
+            <p className="text-sm text-muted-foreground">
+              Follow-up of{" "}
+              <Link className="underline underline-offset-2" href={`/broadcasts/${parent.id}`}>
+                {parent.name}
+              </Link>
+            </p>
+          ) : null}
         </Panel>
+
+        {b.test ? (
+          <Section title="A/B test">
+            <Panel padding="lg" className="flex flex-col gap-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {(["A", "B"] as const).map((k) => {
+                  const v = variants.find((x) => x.variant === k);
+                  const good = b.test?.metric === "replied" ? (v?.replied ?? 0) : (v?.read ?? 0);
+                  const name =
+                    k === "A"
+                      ? template?.name
+                      : b.content.kind === "template" && b.content.variantB
+                        ? templateNames[b.content.variantB.templateId]
+                        : undefined;
+                  return (
+                    <div key={k} className="flex flex-col gap-1 rounded-lg border p-3">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">
+                          {k}: {name ?? "—"}
+                        </span>
+                        {b.winner?.key === k ? <Tag tone="good">Winner</Tag> : null}
+                      </span>
+                      <span className="text-2xl font-semibold tabular-nums">{pct(good, v?.sent ?? 0)}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {b.test?.metric === "replied" ? "replied" : "read"} · {good.toLocaleString()} of{" "}
+                        {(v?.sent ?? 0).toLocaleString()} sent ({(v?.total ?? 0).toLocaleString()} in the
+                        group)
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {b.winner
+                  ? `${b.winner.key} ${b.winner.by === "manual" ? "was picked by your team" : "won"} ${when(b.winner.decidedAt)}; the other ${(variants.find((x) => x.variant === "rest")?.total ?? 0).toLocaleString()} get ${b.winner.key}.`
+                  : `The winner is picked ${b.test.decideAfterHours} h after both test groups are sent; then everyone else (${(variants.find((x) => x.variant === "rest")?.total ?? 0).toLocaleString()}) gets it.`}
+              </p>
+              {canManage && !b.winner && ["sending", "paused"].includes(b.status) ? (
+                <div className="flex gap-2">
+                  {(["A", "B"] as const).map((k) => (
+                    <Button
+                      key={k}
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        actions.winner.mutate(
+                          { id: b.id, key: k },
+                          {
+                            onSuccess: () => notify.success(`${k} goes to everyone else`),
+                            onError: (err) =>
+                              notify.error("That didn't work", {
+                                description: err instanceof ApiError ? err.message : undefined,
+                              }),
+                          },
+                        )
+                      }
+                    >
+                      Pick {k} now
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+            </Panel>
+          </Section>
+        ) : null}
+
+        {b.followUp ? (
+          <Section title="Follow-up">
+            <Panel padding="lg" className="flex flex-col gap-3">
+              <p className="text-sm">
+                {templateNames[b.followUp.templateId] ?? "A template"}, {b.followUp.hours} h after the
+                broadcast is done, to people who {followUpWho[b.followUp.who]}.
+              </p>
+              {followUps.length ? (
+                followUps.map((f) => (
+                  <Link
+                    key={f.id}
+                    href={`/broadcasts/${f.id}`}
+                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm hover:bg-muted/50"
+                  >
+                    <span className="font-medium">{f.name}</span>
+                    <span className="flex items-center gap-3 text-muted-foreground tabular-nums">
+                      {f.sent.toLocaleString()} sent · {f.read.toLocaleString()} read
+                      <Tag size="sm" tone={statusTone[f.status]}>
+                        {statusLabel[f.status]}
+                      </Tag>
+                    </span>
+                  </Link>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {b.status === "completed"
+                    ? "Starts once the wait is over."
+                    : b.status === "stopped" || b.status === "failed"
+                      ? "Not sent: the broadcast didn't finish."
+                      : "Starts after the broadcast is done."}
+                </p>
+              )}
+            </Panel>
+          </Section>
+        ) : null}
 
         <StatGroup>
           <Stat label="Sent" value={b.sent.toLocaleString()} note={pct(b.sent, b.total - b.skipped)} />
           <Stat label="Delivered" value={b.delivered.toLocaleString()} note={pct(b.delivered, b.sent)} />
           <Stat label="Read" value={b.read.toLocaleString()} note={pct(b.read, b.delivered)} />
           <Stat label="Replied" value={b.replied.toLocaleString()} note={pct(b.replied, b.delivered)} />
+          <Stat label="Held back" value={b.heldBack.toLocaleString()} note="by Meta, not retried" />
           <Stat label="Failed" value={b.failed.toLocaleString()} />
           <Stat label="Skipped" value={b.skipped.toLocaleString()} />
         </StatGroup>
@@ -259,6 +399,7 @@ export function BroadcastDetail({ id }: { id: string }) {
                   ["pending", "Waiting"],
                   ["delivered", "Delivered"],
                   ["read", "Read"],
+                  ["held_back", "Held back"],
                   ["failed", "Failed"],
                   ["skipped", "Skipped"],
                 ].map(([v, l]) => (

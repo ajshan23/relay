@@ -1,4 +1,5 @@
-import { newId } from "@relay/core";
+import { messagePreview, newId } from "@relay/core";
+import { planDays, retryOf, templateMessage, valuesFor } from "@relay/core/broadcasts";
 import { writeWorkbook } from "@relay/core/sheets";
 import { type TemplateContent, templateVariables } from "@relay/core/templates";
 import {
@@ -15,7 +16,12 @@ import {
   schema,
   sql,
 } from "@relay/db";
-import type { BroadcastAudience, BroadcastContent, BroadcastSchedule } from "@relay/db/schema";
+import {
+  type BroadcastAudience,
+  type BroadcastContent,
+  type BroadcastSchedule,
+  defaultBroadcastRules,
+} from "@relay/db/schema";
 import { Hono } from "hono";
 import { z } from "zod";
 import { accountRef, channels } from "../../channels";
@@ -40,6 +46,9 @@ import { type BranchEnv, requireBranch } from "../contacts/shared";
  *   POST   /api/broadcasts/:id/pause|resume|stop
  *   GET    /api/broadcasts/:id/recipients     page of recipients (?status=&after=)
  *   GET    /api/broadcasts/:id/export         recipients as a spreadsheet
+ *   GET    /api/broadcasts/:id/test-contacts  people with a chat on its number, for a test send (?q=)
+ *   POST   /api/broadcasts/:id/test           send it to up to 5 of them now, labelled "Test"
+ *   POST   /api/broadcasts/:id/winner         A/B: pick the winner now
  * Owners, admins and branch managers manage broadcasts; everyone in the branch can see them.
  */
 
@@ -52,7 +61,15 @@ const valueSpec = z.discriminatedUnion("source", [
   }),
 ]);
 const contentSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("template"), templateId: z.string(), values: z.record(z.string(), valueSpec) }),
+  z.object({
+    kind: z.literal("template"),
+    templateId: z.string(),
+    values: z.record(z.string(), valueSpec),
+    variantB: z
+      .object({ templateId: z.string(), values: z.record(z.string(), valueSpec) })
+      .nullable()
+      .optional(),
+  }),
   z.object({ kind: z.literal("text"), text: z.string().min(1).max(1600) }),
   z.object({ kind: z.literal("email"), subject: z.string().min(1).max(200), html: z.string().min(1) }),
 ]);
@@ -70,6 +87,24 @@ const scheduleSchema = z.object({
     .default(null),
   perDay: z.number().int().min(1).max(10_000_000).nullable().default(null),
   endBy: z.iso.datetime({ offset: true }).nullable().default(null),
+  retry: z
+    .object({ enabled: z.boolean(), attempts: z.number().int().min(1).max(3) })
+    .default({ enabled: true, attempts: 1 }),
+});
+const followUpSchema = z.object({
+  hours: z
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 14),
+  who: z.enum(["not_read", "not_replied", "not_delivered"]),
+  templateId: z.string(),
+  values: z.record(z.string(), valueSpec),
+});
+const testSchema = z.object({
+  share: z.number().int().min(5).max(40),
+  decideAfterHours: z.number().int().min(1).max(72),
+  metric: z.enum(["read", "replied"]),
 });
 const draftSchema = z.object({
   name: z.string().trim().min(1, "Give the broadcast a name").max(120),
@@ -77,6 +112,8 @@ const draftSchema = z.object({
   content: contentSchema,
   audience: audienceSchema,
   schedule: scheduleSchema,
+  followUp: followUpSchema.nullable().default(null),
+  test: testSchema.nullable().default(null),
 });
 
 export function broadcastRoutes(ctx: AppContext) {
@@ -251,7 +288,7 @@ export function broadcastRoutes(ctx: AppContext) {
         n: sql<number>`count(*)::int`,
       })
       .from(r)
-      .where(and(eq(r.broadcastId, bc.id), inArray(r.status, ["failed", "skipped"])))
+      .where(and(eq(r.broadcastId, bc.id), inArray(r.status, ["failed", "held_back", "skipped"])))
       .groupBy(r.status, sql`coalesce(${r.skipReason}, ${r.error}, ${r.errorCode}, 'unknown')`)
       .orderBy(desc(sql`count(*)`));
     const [template] =
@@ -267,10 +304,61 @@ export function broadcastRoutes(ctx: AppContext) {
             .where(eq(schema.messageTemplate.id, bc.content.templateId))
             .limit(1)
         : [];
+    // People waiting to be tried again after Meta held them back.
+    const [retrying] = await ctx.db
+      .select({ n: sql<number>`count(*)::int`, next: sql<string | null>`min(${r.retryAt})::text` })
+      .from(r)
+      .where(and(eq(r.broadcastId, bc.id), eq(r.status, "pending"), sql`${r.holds} > 0`));
+    // A/B: each group's numbers so far.
+    const variants = bc.test
+      ? await ctx.db.execute<{
+          variant: string;
+          total: number;
+          sent: number;
+          read: number;
+          replied: number;
+        }>(sql`
+          select variant, count(*)::int as total,
+            count(*) filter (where status in ('sent', 'delivered', 'read'))::int as sent,
+            count(*) filter (where status = 'read')::int as read,
+            count(*) filter (where replied_at is not null)::int as replied
+          from broadcast_recipient where broadcast_id = ${bc.id} and variant is not null group by variant`)
+      : [];
+    const templateIds = [
+      ...(bc.content.kind === "template" && bc.content.variantB ? [bc.content.variantB.templateId] : []),
+      ...(bc.followUp ? [bc.followUp.templateId] : []),
+    ];
+    const others = templateIds.length
+      ? await ctx.db
+          .select({ id: schema.messageTemplate.id, name: schema.messageTemplate.name })
+          .from(schema.messageTemplate)
+          .where(inArray(schema.messageTemplate.id, templateIds))
+      : [];
+    const related = await ctx.db
+      .select({
+        id: b.id,
+        name: b.name,
+        status: b.status,
+        kind: b.kind,
+        total: b.total,
+        sent: b.sent,
+        read: b.read,
+        replied: b.replied,
+      })
+      .from(b)
+      .where(bc.parentId ? or(eq(b.parentId, bc.id), eq(b.id, bc.parentId)) : eq(b.parentId, bc.id));
     return c.json({
       broadcast: bc,
       reasons,
       template: template ?? null,
+      templateNames: Object.fromEntries(others.map((t) => [t.id, t.name])),
+      retrying: {
+        count: retrying?.n ?? 0,
+        next: retrying?.next ? `${retrying.next.replace(" ", "T")}Z` : null,
+      },
+      variants,
+      followUps: related.filter((x) => x.kind === "follow_up" && x.id !== bc.id),
+      parent: related.find((x) => x.id === bc.parentId) ?? null,
       canManage: await canManage(access, c.var.branchId),
     });
   });
@@ -370,6 +458,8 @@ export function broadcastRoutes(ctx: AppContext) {
         content: d.content as BroadcastContent,
         audience: d.audience as BroadcastAudience,
         schedule: await withTimezone(d.schedule, c.var.branchId),
+        followUp: d.followUp,
+        test: d.content.kind === "template" && d.content.variantB ? d.test : null,
         createdByUserId: access.userId,
       })
       .returning();
@@ -399,6 +489,15 @@ export function broadcastRoutes(ctx: AppContext) {
         ...(d.content ? { content: d.content as BroadcastContent } : {}),
         ...(d.audience ? { audience: d.audience as BroadcastAudience } : {}),
         ...(d.schedule ? { schedule: await withTimezone(d.schedule, c.var.branchId) } : {}),
+        ...(d.followUp !== undefined ? { followUp: d.followUp } : {}),
+        ...(d.test !== undefined || d.content
+          ? {
+              test: (() => {
+                const content = d.content ?? bc.content;
+                return content.kind === "template" && content.variantB ? (d.test ?? bc.test) : null;
+              })(),
+            }
+          : {}),
         // A change sends a scheduled broadcast back to draft; starting it checks everything again.
         status: "draft",
         updatedAt: new Date(),
@@ -481,10 +580,37 @@ export function broadcastRoutes(ctx: AppContext) {
     const reach = counts?.distinct_addresses ?? 0;
     const meta = account.providerMeta as { messagingLimit?: number | null };
     const limit = caps.dailyLimit === "portfolio" ? (meta.messagingLimit ?? 250) : -1;
-    const perDay =
-      bc.schedule.perDay ??
-      (bc.schedule.endBy ? null : limit === -1 ? null : Math.max(1, Math.floor(limit * 0.75)));
-    const days = perDay ? Math.max(1, Math.ceil(reach / perDay)) : 1;
+    const plan = planDays(bc.schedule, reach, limit);
+    const retry = retryOf(bc.schedule);
+    // The business's rules, counted now (they're applied again when each message goes out).
+    const [settings] = await ctx.db
+      .select({ broadcast: schema.organizationSettings.broadcast })
+      .from(schema.organizationSettings)
+      .where(eq(schema.organizationSettings.organizationId, bc.organizationId))
+      .limit(1);
+    const biz = { ...defaultBroadcastRules, ...(settings?.broadcast ?? {}) };
+    const audienceIds = sql`select ${c.id} from ${c} where ${and(eq(c.organizationId, bc.organizationId), eq(c.branchId, bc.branchId), where, extra)}`;
+    const [ruleCounts] = await ctx.db.execute<{ capped: number; live: number }>(sql`
+      select
+        ${
+          marketing && biz.frequencyCap
+            ? sql`(select count(*)::int from (
+                select cv.contact_id from message m
+                join conversation cv on cv.id = m.conversation_id
+                join message_template t on t.id = m.content ->> 'templateId'
+                where cv.contact_id in (${audienceIds}) and m.direction = 'outbound' and m.type = 'template'
+                  and m.status <> 'failed' and t.purpose = 'marketing'
+                  and coalesce((m.content ->> 'test')::boolean, false) = false
+                  and m.sent_at > (now() at time zone 'utc') - interval '7 days'
+                group by cv.contact_id having count(*) >= ${biz.frequencyCap}) x)`
+            : sql`0`
+        } as capped,
+        ${
+          biz.skipLiveChats
+            ? sql`(select count(distinct cv.contact_id)::int from conversation cv
+                where cv.contact_id in (${audienceIds}) and cv.status = 'open' and cv.assigned_user_id is not null)`
+            : sql`0`
+        } as live`);
     return {
       total: counts?.total ?? 0,
       reach,
@@ -496,8 +622,17 @@ export function broadcastRoutes(ctx: AppContext) {
       // Meta doesn't deliver marketing templates to US numbers.
       usNumbers: marketing && account.type === "whatsapp" ? (counts?.us_numbers ?? 0) : 0,
       dailyLimit: limit,
-      perDay,
-      sendingDays: days,
+      perDay: plan.perDay,
+      sendingDays: plan.days.length,
+      plan: plan.days.slice(0, 14),
+      moreDays: Math.max(0, plan.days.length - 14),
+      retryDays: retry.enabled ? retry.attempts : 0,
+      rules: {
+        frequencyCap: marketing ? biz.frequencyCap : null,
+        capped: ruleCounts?.capped ?? 0,
+        skipLiveChats: biz.skipLiveChats,
+        inLiveChat: ruleCounts?.live ?? 0,
+      },
       marketing,
     };
   }
@@ -524,7 +659,7 @@ export function broadcastRoutes(ctx: AppContext) {
           .where(eq(schema.channelAccount.id, bc.channelAccountId))
           .limit(1)
       : [];
-    if (!account || account.status !== "active") problems.push("The channel isn't connected.");
+    if (account?.status !== "active") problems.push("The channel isn't connected.");
     if (account && bc.content.kind === "template") {
       const [copy] = await ctx.db
         .select({ status: schema.templateChannel.status, content: schema.messageTemplate.content })
@@ -546,6 +681,36 @@ export function broadcastRoutes(ctx: AppContext) {
         if (unset.length) problems.push(`Fill in: ${unset.join(", ")}.`);
       }
     } else if (bc.content.kind !== "template") problems.push("This channel can only send templates for now.");
+    // The A/B template and the follow-up template must be ready too, with their details filled.
+    const extraTemplates = [
+      ...(bc.content.kind === "template" && bc.content.variantB
+        ? [{ label: "template B", ...bc.content.variantB }]
+        : []),
+      ...(bc.followUp ? [{ label: "the follow-up", ...bc.followUp }] : []),
+    ];
+    for (const t of account ? extraTemplates : []) {
+      const [copy] = await ctx.db
+        .select({ status: schema.templateChannel.status, content: schema.messageTemplate.content })
+        .from(schema.templateChannel)
+        .innerJoin(schema.messageTemplate, eq(schema.messageTemplate.id, schema.templateChannel.templateId))
+        .where(
+          and(
+            eq(schema.templateChannel.templateId, t.templateId),
+            eq(schema.templateChannel.channelAccountId, account?.id ?? ""),
+          ),
+        )
+        .limit(1);
+      if (copy?.status !== "ready")
+        problems.push(`The template for ${t.label} isn't approved on this channel.`);
+      else {
+        const unset = templateVariables(copy.content as unknown as TemplateContent).filter(
+          (v) => !t.values[v],
+        );
+        if (unset.length) problems.push(`Fill in ${unset.join(", ")} for ${t.label}.`);
+      }
+    }
+    if (bc.content.kind === "template" && bc.content.variantB && !bc.test)
+      problems.push("Set how the A/B test picks a winner.");
     const s = bc.schedule;
     if (s.window && s.window.from >= s.window.to) problems.push("Sending hours must end after they start.");
     if (s.startAt && new Date(s.startAt).getTime() < Date.now() - 60_000)
@@ -658,6 +823,152 @@ export function broadcastRoutes(ctx: AppContext) {
         .where(and(eq(r.broadcastId, bc.id), eq(r.status, "pending")));
     });
     return c.json({ broadcast: await find(access.orgId, c.var.branchId, bc.id) });
+  });
+
+  /* ------------------------------------------------------------------ test send, winner */
+
+  /** People with a chat on the broadcast's number (the only ones a test can go to). */
+  app.get("/:id/test-contacts", async (c) => {
+    const access = c.var.access;
+    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!bc?.channelAccountId) return fail(c, 404, "not_found");
+    const q = (c.req.query("q") ?? "").trim();
+    const cv = schema.conversation;
+    const ct = schema.contact;
+    const rows = await ctx.db
+      .select({ id: ct.id, name: ct.name, phone: ct.phone, lastMessageAt: cv.lastMessageAt })
+      .from(cv)
+      .innerJoin(ct, eq(ct.id, cv.contactId))
+      .where(
+        and(
+          eq(cv.channelAccountId, bc.channelAccountId),
+          eq(cv.branchId, c.var.branchId),
+          eq(cv.kind, "direct"),
+          q
+            ? or(sql`${ct.name} ilike ${`%${q}%`}`, sql`${ct.phone} like ${`%${q.replace(/\D/g, "")}%`}`)
+            : undefined,
+        ),
+      )
+      .orderBy(sql`${cv.lastMessageAt} desc nulls last`)
+      .limit(10);
+    return c.json({ contacts: rows });
+  });
+
+  app.post("/:id/test", async (c) => {
+    const access = c.var.access;
+    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!bc?.channelAccountId) return fail(c, 404, "not_found");
+    const parsed = await parseBody(
+      c,
+      z.object({ contactIds: z.array(z.string()).min(1).max(5), variant: z.enum(["A", "B"]).default("A") }),
+    );
+    if ("error" in parsed) return parsed.error;
+    if (bc.content.kind !== "template") return fail(c, 422, "invalid_input", "Only templates can be tested.");
+    const spec = parsed.data.variant === "B" && bc.content.variantB ? bc.content.variantB : bc.content;
+    const [template] = await ctx.db
+      .select()
+      .from(schema.messageTemplate)
+      .innerJoin(schema.templateChannel, eq(schema.templateChannel.templateId, schema.messageTemplate.id))
+      .where(
+        and(
+          eq(schema.messageTemplate.id, spec.templateId),
+          eq(schema.templateChannel.channelAccountId, bc.channelAccountId),
+        ),
+      )
+      .limit(1);
+    if (template?.template_channel.status !== "ready")
+      return fail(c, 422, "invalid_input", "The template isn't approved on this channel.");
+    const t = template.message_template;
+    const tc = t.content as unknown as TemplateContent;
+    const cv = schema.conversation;
+    const chats = await ctx.db
+      .select({ conversation: cv, contact: schema.contact })
+      .from(cv)
+      .innerJoin(schema.contact, eq(schema.contact.id, cv.contactId))
+      .where(
+        and(
+          eq(cv.channelAccountId, bc.channelAccountId),
+          eq(cv.branchId, c.var.branchId),
+          eq(cv.kind, "direct"),
+          inArray(cv.contactId, parsed.data.contactIds),
+        ),
+      );
+    if (!chats.length) return fail(c, 422, "invalid_input", "Choose people who have a chat on this number.");
+    const sent: string[] = [];
+    const problems: string[] = [];
+    for (const { conversation, contact } of chats) {
+      const values = valuesFor(spec.values, tc, contact);
+      if (!values) {
+        problems.push(`${contact.name ?? contact.phone}: a detail is empty`);
+        continue;
+      }
+      const id = newId("message");
+      const content = templateMessage(t, tc, values, { broadcastName: bc.name, test: true });
+      const now = new Date();
+      await ctx.db.transaction(async (tx) => {
+        await tx.insert(schema.message).values({
+          id,
+          organizationId: bc.organizationId,
+          conversationId: conversation.id,
+          channelAccountId: conversation.channelAccountId,
+          direction: "outbound",
+          senderType: "user",
+          senderUserId: access.userId,
+          type: "template",
+          content,
+          status: "queued",
+          sentAt: now,
+        });
+        await tx
+          .update(cv)
+          .set({
+            lastMessageAt: now,
+            lastMessagePreview: messagePreview("template", content, "outbound", null),
+            updatedAt: now,
+          })
+          .where(eq(cv.id, conversation.id));
+      });
+      await ctx.queues.outbox.add(
+        "send",
+        { messageId: id },
+        { jobId: id, attempts: 3, backoff: { type: "exponential", delay: 3_000 }, removeOnComplete: true },
+      );
+      sent.push(contact.name ?? contact.phone ?? id);
+    }
+    return c.json({ sent, problems });
+  });
+
+  app.post("/:id/winner", async (c) => {
+    const access = c.var.access;
+    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!bc) return fail(c, 404, "not_found");
+    const parsed = await parseBody(c, z.object({ key: z.enum(["A", "B"]) }));
+    if ("error" in parsed) return parsed.error;
+    if (!bc.test || bc.winner) return fail(c, 409, "no_test", "There's no A/B test waiting for a winner.");
+    const rows = await ctx.db.execute<{ variant: string; sent: number; good: number }>(sql`
+      select variant, count(*) filter (where status in ('sent', 'delivered', 'read'))::int as sent,
+        count(*) filter (where ${bc.test.metric === "read" ? sql`status = 'read'` : sql`replied_at is not null`})::int as good
+      from broadcast_recipient where broadcast_id = ${bc.id} and variant in ('A', 'B') group by variant`);
+    const rate = (k: string) => {
+      const x = rows.find((y) => y.variant === k);
+      return x?.sent ? x.good / x.sent : 0;
+    };
+    const [row] = await ctx.db
+      .update(b)
+      .set({
+        winner: {
+          key: parsed.data.key,
+          rates: { A: rate("A"), B: rate("B") },
+          decidedAt: new Date().toISOString(),
+          by: "manual",
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(b.id, bc.id), isNull(b.winner)))
+      .returning();
+    return c.json({ broadcast: row });
   });
 
   return app;

@@ -331,6 +331,9 @@ export type BroadcastCapabilities = {
  */
 export type BroadcastErrorAction =
   | { action: "retry"; afterMs: number; reason: string }
+  /** The provider held it back for now (too many marketing messages to this person): retried later
+   * only when the broadcast's retry option is on. */
+  | { action: "held_back"; afterMs: number; reason: string }
   | { action: "final"; reason: string }
   | { action: "opt_out"; reason: string }
   | { action: "pause"; pauseReason: string; reason: string }

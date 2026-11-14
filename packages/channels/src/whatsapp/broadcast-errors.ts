@@ -15,7 +15,11 @@ export function whatsappBroadcastError(
   switch (Number(code)) {
     // This person reached Meta's limit on marketing messages for now.
     case 131049:
-      return { action: "retry", afterMs: 24 * HOUR, reason: "Meta held this marketing message back for now" };
+      return {
+        action: "held_back",
+        afterMs: 24 * HOUR,
+        reason: "Meta held this back: they already got enough marketing messages for now",
+      };
     // They turned off marketing messages from this business.
     case 131050:
       return { action: "opt_out", reason: "They stopped marketing messages" };

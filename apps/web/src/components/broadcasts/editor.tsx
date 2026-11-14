@@ -19,13 +19,14 @@ import {
   type Broadcast,
   type BroadcastInput,
   type Estimate,
+  type FollowUp,
   type Options,
   useBroadcast,
   useBroadcastActions,
   useOptions,
   type ValueSpec,
 } from "./queries";
-import { channelNames, weekdays } from "./words";
+import { channelNames, followUpWho, weekdays } from "./words";
 
 /*
  * New broadcast (and editing a draft), in five steps: Channel → Audience → Message → Schedule →
@@ -72,7 +73,38 @@ type Form = {
   pace: Pace;
   perDay: string;
   endBy: string;
+  retryOn: boolean;
+  retryAttempts: number;
+  abOn: boolean;
+  templateB: string;
+  valuesB: Record<string, ValueSpec>;
+  abShare: number;
+  abHours: number;
+  abMetric: "read" | "replied";
+  followOn: boolean;
+  followHours: number;
+  followWho: FollowUp["who"];
+  followTemplateId: string;
+  followValues: Record<string, ValueSpec>;
 };
+
+type TemplateOption = Options["templates"][number];
+
+/** Starting values for a template's details: names from the contact, the rest typed in. */
+function defaultValues(t: TemplateOption | undefined) {
+  const values: Record<string, ValueSpec> = {};
+  for (const name of t?.variables ?? [])
+    values[name] = /name/.test(name)
+      ? { source: "field", key: name.includes("first") ? "first_name" : "name", fallback: "there" }
+      : { source: "static", text: "" };
+  return values;
+}
+
+const unfilled = (t: TemplateOption | undefined, values: Record<string, ValueSpec>) =>
+  !t ||
+  t.variables.some(
+    (v) => !values[v] || (values[v]?.source === "static" && !(values[v] as { text: string }).text.trim()),
+  );
 
 /** "2026-11-18T09:00" in the browser's time for a datetime-local input, from an ISO time. */
 const localInput = (iso: string | null) => {
@@ -101,6 +133,19 @@ function fromBroadcast(b: Broadcast | undefined): Form {
     pace: s?.perDay ? "perDay" : s?.endBy ? "endBy" : "auto",
     perDay: s?.perDay ? String(s.perDay) : "",
     endBy: s?.endBy ? s.endBy.slice(0, 10) : "",
+    retryOn: s?.retry?.enabled ?? true,
+    retryAttempts: s?.retry?.attempts ?? 1,
+    abOn: b?.content.kind === "template" && !!b.content.variantB,
+    templateB: b?.content.kind === "template" ? (b.content.variantB?.templateId ?? "") : "",
+    valuesB: b?.content.kind === "template" ? (b.content.variantB?.values ?? {}) : {},
+    abShare: b?.test?.share ?? 10,
+    abHours: b?.test?.decideAfterHours ?? 4,
+    abMetric: b?.test?.metric ?? "read",
+    followOn: !!b?.followUp,
+    followHours: b?.followUp?.hours ?? 48,
+    followWho: b?.followUp?.who ?? "not_read",
+    followTemplateId: b?.followUp?.templateId ?? "",
+    followValues: b?.followUp?.values ?? {},
   };
 }
 
@@ -108,13 +153,25 @@ function toInput(f: Form): BroadcastInput {
   return {
     name: f.name.trim(),
     channelAccountId: f.channelAccountId,
-    content: { kind: "template", templateId: f.templateId, values: f.values },
+    content: {
+      kind: "template",
+      templateId: f.templateId,
+      values: f.values,
+      variantB: f.abOn && f.templateB ? { templateId: f.templateB, values: f.valuesB } : null,
+    },
     audience: { listIds: f.listIds, excludeListIds: f.excludeListIds },
+    followUp:
+      f.followOn && f.followTemplateId
+        ? { hours: f.followHours, who: f.followWho, templateId: f.followTemplateId, values: f.followValues }
+        : null,
+    test:
+      f.abOn && f.templateB ? { share: f.abShare, decideAfterHours: f.abHours, metric: f.abMetric } : null,
     schedule: {
       startAt: f.startMode === "later" && f.startAt ? new Date(f.startAt).toISOString() : null,
       window: f.windowOn ? { days: f.days, from: f.from, to: f.to } : null,
       perDay: f.pace === "perDay" && Number(f.perDay) > 0 ? Math.floor(Number(f.perDay)) : null,
       endBy: f.pace === "endBy" && f.endBy ? new Date(`${f.endBy}T23:59:00`).toISOString() : null,
+      retry: { enabled: f.retryOn, attempts: f.retryAttempts },
     },
   };
 }
@@ -140,12 +197,29 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
   const [id, setId] = useState(initialId);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [checking, setChecking] = useState(false);
+  // Opening a saved one lands on Review: check it as saved (without saving it again).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once, on open
+  useEffect(() => {
+    if (!initialId) return;
+    setChecking(true);
+    actions
+      .preview(initialId)
+      .then((r) => setEstimate(r.estimate))
+      .catch((err) =>
+        notify.error("Couldn't check the audience", {
+          description: err instanceof ApiError ? err.message : undefined,
+        }),
+      )
+      .finally(() => setChecking(false));
+  }, []);
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }));
 
   const accounts = options.channels.filter((c) => c.type === form.channelType);
   const account = accounts.find((c) => c.id === form.channelAccountId);
   const templates = options.templates.filter((t) => t.channelAccountId === form.channelAccountId);
   const template = templates.find((t) => t.id === form.templateId);
+  const templateB = templates.find((t) => t.id === form.templateB);
+  const followTemplate = templates.find((t) => t.id === form.followTemplateId);
 
   // One number on the channel: pick it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: set is a stable updater
@@ -159,15 +233,15 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
     audience: !form.listIds.length ? "Choose at least one list." : null,
     message: !template
       ? "Choose an approved template."
-      : template.variables.some(
-            (v) =>
-              !form.values[v] ||
-              (form.values[v]?.source === "static" && !(form.values[v] as { text: string }).text.trim()),
-          )
+      : unfilled(template, form.values)
         ? "Fill in every detail."
-        : !form.name.trim()
-          ? "Give the broadcast a name."
-          : null,
+        : form.abOn && unfilled(templateB, form.valuesB)
+          ? "Choose template B and fill in its details."
+          : form.followOn && unfilled(followTemplate, form.followValues)
+            ? "Choose the follow-up template and fill in its details."
+            : !form.name.trim()
+              ? "Give the broadcast a name."
+              : null,
     schedule:
       form.startMode === "later" && !form.startAt
         ? "Pick when to start."
@@ -360,54 +434,99 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
                   placeholder="November skin care offer"
                 />
               </div>
-              <div className="flex max-w-md flex-col gap-1.5">
-                <span className="text-sm font-medium">Template</span>
-                <SelectField
-                  aria-label="Template"
-                  value={form.templateId}
-                  onValueChange={(v) => {
-                    const t = templates.find((x) => x.id === v);
-                    const values: Record<string, ValueSpec> = {};
-                    for (const name of t?.variables ?? [])
-                      values[name] = /name/.test(name)
-                        ? {
-                            source: "field",
-                            key: name.includes("first") ? "first_name" : "name",
-                            fallback: "there",
-                          }
-                        : { source: "static", text: "" };
-                    set({ templateId: v, values });
-                  }}
-                  placeholder={
-                    templates.length ? "Choose a template" : "No approved templates on this number"
-                  }
-                  options={templates.map((t) => ({
-                    value: t.id,
-                    label: `${t.name} · ${t.purpose === "marketing" ? "Marketing" : t.purpose === "login" ? "Login" : "Updates"}${t.quality === "RED" ? " · low quality" : ""}`,
-                  }))}
+              <TemplateFields
+                label={form.abOn ? "Template A" : "Template"}
+                templates={templates}
+                templateId={form.templateId}
+                values={form.values}
+                fields={options.fields}
+                onChange={(templateId, values) => set({ templateId, values })}
+              />
+
+              <Section
+                title="Test two templates first"
+                text="A small share gets template A, the same share gets B. After the test time, the one more people read (or replied to) goes to everyone else."
+                on={form.abOn}
+                onToggle={(abOn) => set({ abOn })}
+              >
+                <TemplateFields
+                  label="Template B"
+                  templates={templates.filter((t) => t.id !== form.templateId)}
+                  templateId={form.templateB}
+                  values={form.valuesB}
+                  fields={options.fields}
+                  onChange={(templateB, valuesB) => set({ templateB, valuesB })}
                 />
-              </div>
-              {template ? (
-                <div className="grid gap-5 md:grid-cols-[1fr_280px]">
-                  <div className="flex flex-col gap-3">
-                    {template.variables.map((v) => (
-                      <ValueField
-                        key={v}
-                        name={v}
-                        value={form.values[v] ?? { source: "static", text: "" }}
-                        fields={options.fields}
-                        onChange={(spec) => set({ values: { ...form.values, [v]: spec } })}
-                      />
-                    ))}
-                    {!template.variables.length ? (
-                      <p className="text-sm text-muted-foreground">
-                        This template has no details to fill in.
-                      </p>
-                    ) : null}
-                  </div>
-                  <TemplatePreview template={template} values={form.values} fields={options.fields} />
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  Test on
+                  <SelectField
+                    aria-label="Test group size"
+                    value={String(form.abShare)}
+                    onValueChange={(v) => set({ abShare: Number(v) })}
+                    options={[5, 10, 15, 20, 25].map((n) => ({ value: String(n), label: `${n}% + ${n}%` }))}
+                    className="w-32"
+                  />
+                  of people, pick the winner by
+                  <SelectField
+                    aria-label="Winner by"
+                    value={form.abMetric}
+                    onValueChange={(v) => set({ abMetric: v as "read" | "replied" })}
+                    options={[
+                      { value: "read", label: "most read" },
+                      { value: "replied", label: "most replies" },
+                    ]}
+                    className="w-40"
+                  />
+                  after
+                  <SelectField
+                    aria-label="Test time"
+                    value={String(form.abHours)}
+                    onValueChange={(v) => set({ abHours: Number(v) })}
+                    options={[1, 2, 4, 8, 12, 24].map((n) => ({
+                      value: String(n),
+                      label: `${n} hour${n > 1 ? "s" : ""}`,
+                    }))}
+                    className="w-32"
+                  />
                 </div>
-              ) : null}
+              </Section>
+
+              <Section
+                title="Follow up with people who didn't respond"
+                text="When the broadcast is done, a second template goes only to the people you choose. It's a broadcast of its own, with the same number, hours and pace."
+                on={form.followOn}
+                onToggle={(followOn) => set({ followOn })}
+              >
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <SelectField
+                    aria-label="Follow up after"
+                    value={String(form.followHours)}
+                    onValueChange={(v) => set({ followHours: Number(v) })}
+                    options={[6, 12, 24, 48, 72, 168].map((n) => ({
+                      value: String(n),
+                      label:
+                        n === 168 ? "1 week" : n >= 24 ? `${n / 24} day${n > 24 ? "s" : ""}` : `${n} hours`,
+                    }))}
+                    className="w-32"
+                  />
+                  later, send to people who
+                  <SelectField
+                    aria-label="Who gets the follow-up"
+                    value={form.followWho}
+                    onValueChange={(v) => set({ followWho: v as FollowUp["who"] })}
+                    options={Object.entries(followUpWho).map(([value, label]) => ({ value, label }))}
+                    className="w-60"
+                  />
+                </div>
+                <TemplateFields
+                  label="Follow-up template"
+                  templates={templates}
+                  templateId={form.followTemplateId}
+                  values={form.followValues}
+                  fields={options.fields}
+                  onChange={(followTemplateId, followValues) => set({ followTemplateId, followValues })}
+                />
+              </Section>
             </div>
           ) : null}
 
@@ -484,24 +603,26 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
                         );
                       })}
                     </div>
-                    <span className="flex items-center gap-2 text-sm">
-                      from
-                      <TextInput
-                        type="time"
-                        aria-label="From"
-                        value={form.from}
-                        onChange={(e) => set({ from: e.target.value })}
-                        className="w-28"
-                      />
-                      to
-                      <TextInput
-                        type="time"
-                        aria-label="To"
-                        value={form.to}
-                        onChange={(e) => set({ to: e.target.value })}
-                        className="w-28"
-                      />
-                    </span>
+                    {form.pace !== "perDay" ? (
+                      <span className="flex items-center gap-2 text-sm">
+                        from
+                        <TextInput
+                          type="time"
+                          aria-label="From"
+                          value={form.from}
+                          onChange={(e) => set({ from: e.target.value })}
+                          className="w-28"
+                        />
+                        to
+                        <TextInput
+                          type="time"
+                          aria-label="To"
+                          value={form.to}
+                          onChange={(e) => set({ to: e.target.value })}
+                          className="w-28"
+                        />
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -511,24 +632,44 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
                 <SelectField
                   aria-label="How fast"
                   value={form.pace}
-                  onValueChange={(v) => set({ pace: v as Pace })}
+                  onValueChange={(v) =>
+                    set(v === "perDay" ? { pace: "perDay", windowOn: true } : { pace: v as Pace })
+                  }
                   options={[
                     { value: "auto", label: "Recommended: up to 75% of the daily limit per day" },
-                    { value: "perDay", label: "A set number per day" },
+                    { value: "perDay", label: "A set number per day, at set hours" },
                     { value: "endBy", label: "Spread it to finish by a date" },
                   ]}
                   className="max-w-md"
                 />
                 {form.pace === "perDay" ? (
-                  <TextInput
-                    type="number"
-                    min={1}
-                    aria-label="Per day"
-                    value={form.perDay}
-                    onChange={(e) => set({ perDay: e.target.value })}
-                    className="w-40"
-                    placeholder="1000"
-                  />
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <TextInput
+                      type="number"
+                      min={1}
+                      aria-label="Per day"
+                      value={form.perDay}
+                      onChange={(e) => set({ perDay: e.target.value })}
+                      className="w-28"
+                      placeholder="50"
+                    />
+                    per day, between
+                    <TextInput
+                      type="time"
+                      aria-label="Between"
+                      value={form.from}
+                      onChange={(e) => set({ from: e.target.value, windowOn: true })}
+                      className="w-28"
+                    />
+                    and
+                    <TextInput
+                      type="time"
+                      aria-label="And"
+                      value={form.to}
+                      onChange={(e) => set({ to: e.target.value, windowOn: true })}
+                      className="w-28"
+                    />
+                  </div>
                 ) : null}
                 {form.pace === "endBy" ? (
                   <TextInput
@@ -548,15 +689,50 @@ function Editor({ initial, id: initialId, options }: { initial: Form; id?: strin
                   it. Messages are spread evenly over the sending hours.
                 </p>
               </div>
+
+              <div className="flex flex-col gap-3">
+                <label className="flex items-center justify-between gap-4">
+                  <span>
+                    <span className="block text-sm font-medium">Retry people Meta holds back</span>
+                    <span className="block max-w-xl text-xs text-muted-foreground">
+                      Meta limits how many marketing messages one person gets a day. We try them again the
+                      next day, in your sending hours. Off: they're marked "held back" and not tried again.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={form.retryOn}
+                    onCheckedChange={(v) => set({ retryOn: v })}
+                    aria-label="Retry people Meta holds back"
+                  />
+                </label>
+                {form.retryOn ? (
+                  <div className="flex items-center gap-2 text-sm">
+                    Try again up to
+                    <SelectField
+                      aria-label="Retries"
+                      value={String(form.retryAttempts)}
+                      onValueChange={(v) => set({ retryAttempts: Number(v) })}
+                      options={[1, 2, 3].map((n) => ({
+                        value: String(n),
+                        label: `${n} time${n > 1 ? "s" : ""}`,
+                      }))}
+                      className="w-28"
+                    />
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : null}
 
           {step === "review" ? (
             <ReviewStep
+              id={id}
               form={form}
               estimate={estimate}
               checking={checking}
               template={template}
+              templateB={templateB}
+              followTemplate={followTemplate}
               account={account}
             />
           ) : null}
@@ -616,6 +792,87 @@ function Heading({ title, text }: { title: string; text: string }) {
       <h2 className="text-base font-semibold">{title}</h2>
       <p className="text-sm text-muted-foreground">{text}</p>
     </div>
+  );
+}
+
+function Section({
+  title,
+  text,
+  on,
+  onToggle,
+  children,
+}: {
+  title: string;
+  text: string;
+  on: boolean;
+  onToggle: (on: boolean) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border p-4">
+      <label className="flex items-center justify-between gap-4">
+        <span>
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="block max-w-xl text-xs text-muted-foreground">{text}</span>
+        </span>
+        <Switch checked={on} onCheckedChange={onToggle} aria-label={title} />
+      </label>
+      {on ? children : null}
+    </div>
+  );
+}
+
+function TemplateFields({
+  label,
+  templates,
+  templateId,
+  values,
+  fields,
+  onChange,
+}: {
+  label: string;
+  templates: TemplateOption[];
+  templateId: string;
+  values: Record<string, ValueSpec>;
+  fields: Options["fields"];
+  onChange: (templateId: string, values: Record<string, ValueSpec>) => void;
+}) {
+  const template = templates.find((t) => t.id === templateId);
+  return (
+    <>
+      <div className="flex max-w-md flex-col gap-1.5">
+        <span className="text-sm font-medium">{label}</span>
+        <SelectField
+          aria-label={label}
+          value={templateId}
+          onValueChange={(v) => onChange(v, defaultValues(templates.find((x) => x.id === v)))}
+          placeholder={templates.length ? "Choose a template" : "No approved templates on this number"}
+          options={templates.map((t) => ({
+            value: t.id,
+            label: `${t.name} · ${t.purpose === "marketing" ? "Marketing" : t.purpose === "login" ? "Login" : "Updates"}${t.quality === "RED" ? " · low quality" : ""}`,
+          }))}
+        />
+      </div>
+      {template ? (
+        <div className="grid gap-5 xl:grid-cols-[1fr_280px]">
+          <div className="flex flex-col gap-3">
+            {template.variables.map((v) => (
+              <ValueField
+                key={v}
+                name={v}
+                value={values[v] ?? { source: "static", text: "" }}
+                fields={fields}
+                onChange={(spec) => onChange(templateId, { ...values, [v]: spec })}
+              />
+            ))}
+            {!template.variables.length ? (
+              <p className="text-sm text-muted-foreground">This template has no details to fill in.</p>
+            ) : null}
+          </div>
+          <TemplatePreview template={template} values={values} fields={fields} />
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -766,21 +1023,29 @@ function TemplatePreview({
 }
 
 function ReviewStep({
+  id,
   form,
   estimate,
   checking,
   template,
+  templateB,
+  followTemplate,
   account,
 }: {
+  id?: string;
   form: Form;
   estimate: Estimate | null;
   checking: boolean;
-  template: Options["templates"][number] | undefined;
+  template: TemplateOption | undefined;
+  templateB: TemplateOption | undefined;
+  followTemplate: TemplateOption | undefined;
   account: Options["channels"][number] | undefined;
 }) {
   const finish = useMemo(() => {
     if (!estimate) return null;
     if (form.pace === "endBy" && form.endBy) return new Date(form.endBy).toLocaleDateString();
+    const last = estimate.plan.length && !estimate.moreDays ? estimate.plan[estimate.plan.length - 1] : null;
+    if (last) return planDate(last.date);
     return estimate.sendingDays <= 1 ? "the same day" : `about ${estimate.sendingDays} sending days`;
   }, [estimate, form.pace, form.endBy]);
   if (checking || !estimate)
@@ -799,7 +1064,7 @@ function ReviewStep({
         <Fact label="Skipped" value={skipped.toLocaleString()} />
         <Fact label="Finishes" value={finish ?? "—"} />
       </dl>
-      {skipped ? (
+      {skipped || estimate.rules.capped || estimate.rules.inLiveChat ? (
         <ul className="list-disc pl-5 text-sm text-muted-foreground">
           {estimate.skipped.optedOut ? (
             <li>{estimate.skipped.optedOut} opted out of marketing on this number</li>
@@ -807,6 +1072,17 @@ function ReviewStep({
           {estimate.skipped.noAddress ? <li>{estimate.skipped.noAddress} have no phone number</li> : null}
           {estimate.skipped.duplicates ? (
             <li>{estimate.skipped.duplicates} share a number with someone else in the lists (sent once)</li>
+          ) : null}
+          {estimate.rules.capped ? (
+            <li>
+              About {estimate.rules.capped} already got {estimate.rules.frequencyCap} marketing messages this
+              week and will be skipped (Settings → Broadcasts)
+            </li>
+          ) : null}
+          {estimate.rules.inLiveChat ? (
+            <li>
+              {estimate.rules.inLiveChat} are in a live chat with your team right now and will be skipped
+            </li>
           ) : null}
         </ul>
       ) : null}
@@ -820,7 +1096,16 @@ function ReviewStep({
         <Row label="From">
           {account ? `${account.name}${account.phone ? ` · ${account.phone}` : ""}` : "—"}
         </Row>
-        <Row label="Template">{template?.name ?? "—"}</Row>
+        <Row label="Template">
+          {form.abOn ? `A: ${template?.name ?? "—"} · B: ${templateB?.name ?? "—"}` : (template?.name ?? "—")}
+        </Row>
+        {form.abOn ? (
+          <Row label="A/B test">
+            {`${form.abShare}% get A, ${form.abShare}% get B; after ${form.abHours} h the one with ${
+              form.abMetric === "read" ? "more reads" : "more replies"
+            } goes to the other ${100 - 2 * form.abShare}%`}
+          </Row>
+        ) : null}
         <Row label="Starts">
           {form.startMode === "later" && form.startAt
             ? new Date(form.startAt).toLocaleString()
@@ -828,7 +1113,7 @@ function ReviewStep({
         </Row>
         <Row label="Sending hours">
           {form.windowOn
-            ? `${form.days.map((d) => weekdays[d - 1]).join(", ")}, ${form.from}–${form.to}`
+            ? `${form.days.length === 7 ? "Every day" : form.days.map((d) => weekdays[d - 1]).join(", ")}, ${form.from}–${form.to}`
             : "Any time"}
         </Row>
         <Row label="Per day">
@@ -838,11 +1123,152 @@ function ReviewStep({
               ? "Spread to finish on time"
               : "No limit"}
         </Row>
+        <Row label="Held back by Meta">
+          {form.retryOn
+            ? `Tried again the next sending day, up to ${form.retryAttempts} time${form.retryAttempts > 1 ? "s" : ""}`
+            : "Not tried again"}
+        </Row>
+        {form.followOn ? (
+          <Row label="Follow-up">
+            {`${followTemplate?.name ?? "—"}, ${form.followHours} h after it's done, to people who ${followUpWho[form.followWho]}`}
+          </Row>
+        ) : null}
       </div>
+
+      {estimate.plan.length > 1 || estimate.moreDays ? (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">Day by day</span>
+          <div className="overflow-hidden rounded-lg border">
+            <table className="w-full text-sm">
+              <tbody>
+                {estimate.plan.map((d) => (
+                  <tr key={d.date} className="border-b last:border-0">
+                    <td className="px-3 py-1.5">{planDate(d.date)}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">
+                      {d.from === "00:00" && d.to === "24:00" ? "Through the day" : `${d.from}–${d.to}`}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{d.count.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {estimate.moreDays ? `+${estimate.moreDays} more days. ` : ""}
+            {estimate.retryDays
+              ? `People Meta holds back are tried again on the following sending day${estimate.retryDays > 1 ? "s" : ""}, so it can run up to ${estimate.retryDays} more day${estimate.retryDays > 1 ? "s" : ""}.`
+              : ""}
+          </p>
+        </div>
+      ) : null}
+
+      {id ? <TestSend id={id} abOn={form.abOn} /> : null}
+
       <p className="text-xs text-muted-foreground">
         It pauses by itself if Meta pauses the template, the number's quality drops, or many messages start
         failing. You can pause or stop it at any time.
       </p>
+    </div>
+  );
+}
+
+/** "Tue 18 Nov" from "2026-11-18". */
+const planDate = (date: string) =>
+  new Date(`${date}T12:00:00`).toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+
+/** Send the real message to a few people (who have a chat on the number) before starting. */
+function TestSend({ id, abOn }: { id: string; abOn: boolean }) {
+  const actions = useBroadcastActions();
+  const [q, setQ] = useState("");
+  const [people, setPeople] = useState<{ id: string; name: string | null; phone: string | null }[]>([]);
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: testContacts is a plain function, new each render
+  useEffect(() => {
+    const t = setTimeout(() => {
+      actions.testContacts(id, q).then(
+        (r) => setPeople(r.contacts),
+        () => setPeople([]),
+      );
+    }, 250);
+    return () => clearTimeout(t);
+  }, [id, q]);
+
+  async function send(variant: "A" | "B") {
+    setSending(true);
+    try {
+      const r = await actions.test(id, chosen, variant);
+      if (r.sent.length) notify.success(`Test sent to ${r.sent.join(", ")}`);
+      if (r.problems.length) notify.error("Some weren't sent", { description: r.problems.join("; ") });
+    } catch (err) {
+      notify.error("Couldn't send the test", {
+        description: err instanceof ApiError ? err.message : undefined,
+      });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border p-4">
+      <div>
+        <span className="block text-sm font-medium">Send a test first</span>
+        <span className="block text-xs text-muted-foreground">
+          The real message, with real details, to up to 5 people who already have a chat on this number. It's
+          marked as a test and isn't counted in the broadcast.
+        </span>
+      </div>
+      <TextInput
+        aria-label="Find someone"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search by name or number"
+        className="max-w-sm"
+      />
+      <div className="flex flex-wrap gap-2">
+        {people.map((p) => {
+          const on = chosen.includes(p.id);
+          return (
+            <Button
+              key={p.id}
+              size="sm"
+              variant={on ? "default" : "outline"}
+              aria-pressed={on}
+              disabled={!on && chosen.length >= 5}
+              onClick={() => setChosen(on ? chosen.filter((x) => x !== p.id) : [...chosen, p.id])}
+            >
+              {p.name ?? p.phone}
+            </Button>
+          );
+        })}
+        {!people.length ? <span className="text-sm text-muted-foreground">Nobody found.</span> : null}
+      </div>
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!chosen.length || sending}
+          onClick={() => void send("A")}
+        >
+          <Icon name="send" />
+          {abOn ? "Send test of A" : "Send test"}
+        </Button>
+        {abOn ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!chosen.length || sending}
+            onClick={() => void send("B")}
+          >
+            <Icon name="send" />
+            Send test of B
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

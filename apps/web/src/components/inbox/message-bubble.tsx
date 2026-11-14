@@ -342,6 +342,13 @@ function Body({
       return (
         <TemplateBubble
           {...common}
+          label={
+            c.test
+              ? `Test${str(c.broadcastName) ? ` · ${str(c.broadcastName)}` : ""}`
+              : str(c.broadcastName)
+                ? `Broadcast · ${str(c.broadcastName)}`
+                : undefined
+          }
           header={
             !h
               ? undefined

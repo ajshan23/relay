@@ -22,7 +22,12 @@ export type ValueSpec =
   | { source: "field"; key: string; fallback?: string };
 
 export type BroadcastContent =
-  | { kind: "template"; templateId: string; values: Record<string, ValueSpec> }
+  | {
+      kind: "template";
+      templateId: string;
+      values: Record<string, ValueSpec>;
+      variantB?: { templateId: string; values: Record<string, ValueSpec> } | null;
+    }
   | { kind: "text"; text: string }
   | { kind: "email"; subject: string; html: string };
 
@@ -32,7 +37,17 @@ export type BroadcastSchedule = {
   window: { days: number[]; from: string; to: string } | null;
   perDay: number | null;
   endBy: string | null;
+  retry: { enabled: boolean; attempts: number };
 };
+
+export type FollowUp = {
+  hours: number;
+  who: "not_read" | "not_replied" | "not_delivered";
+  templateId: string;
+  values: Record<string, ValueSpec>;
+};
+
+export type AbTest = { share: number; decideAfterHours: number; metric: "read" | "replied" };
 
 export type Broadcast = {
   id: string;
@@ -53,6 +68,17 @@ export type Broadcast = {
   replied: number;
   failed: number;
   skipped: number;
+  heldBack: number;
+  kind: "main" | "follow_up";
+  parentId: string | null;
+  followUp: FollowUp | null;
+  test: AbTest | null;
+  winner: {
+    key: "A" | "B";
+    rates: { A: number; B: number };
+    decidedAt: string;
+    by: "auto" | "manual";
+  } | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -64,6 +90,8 @@ export type BroadcastInput = {
   content: BroadcastContent;
   audience: { listIds: string[]; excludeListIds: string[] };
   schedule: BroadcastSchedule;
+  followUp: FollowUp | null;
+  test: AbTest | null;
 };
 
 export type Options = {
@@ -101,7 +129,22 @@ export type Estimate = {
   dailyLimit: number;
   perDay: number | null;
   sendingDays: number;
+  plan: { date: string; weekday: number; from: string; to: string; count: number }[];
+  moreDays: number;
+  retryDays: number;
+  rules: { frequencyCap: number | null; capped: number; skipLiveChats: boolean; inLiveChat: number };
   marketing: boolean;
+};
+
+export type RelatedBroadcast = {
+  id: string;
+  name: string;
+  status: BroadcastStatus;
+  kind: string;
+  total: number;
+  sent: number;
+  read: number;
+  replied: number;
 };
 
 export type Recipient = {
@@ -158,6 +201,11 @@ export function useBroadcast(id: string) {
           purpose: string;
           content: Options["templates"][number]["content"];
         } | null;
+        templateNames: Record<string, string>;
+        retrying: { count: number; next: string | null };
+        variants: { variant: string; total: number; sent: number; read: number; replied: number }[];
+        followUps: RelatedBroadcast[];
+        parent: RelatedBroadcast | null;
         canManage: boolean;
       }>(inBranch(`/broadcasts/${id}`, branch)),
     enabled: !!branch && !!id,
@@ -206,9 +254,46 @@ export function useBroadcastActions() {
         api<{ broadcast: Broadcast }>(p(`/broadcasts/${id}/${action}`), { method: "POST" }),
       onSettled: refresh,
     }),
+    winner: useMutation({
+      mutationFn: ({ id, key }: { id: string; key: "A" | "B" }) =>
+        api<{ broadcast: Broadcast }>(p(`/broadcasts/${id}/winner`), { method: "POST", json: { key } }),
+      onSettled: refresh,
+    }),
+    testContacts: (id: string, q: string) =>
+      api<{ contacts: { id: string; name: string | null; phone: string | null }[] }>(
+        p(`/broadcasts/${id}/test-contacts?q=${encodeURIComponent(q)}`),
+      ),
+    test: (id: string, contactIds: string[], variant: "A" | "B" = "A") =>
+      api<{ sent: string[]; problems: string[] }>(p(`/broadcasts/${id}/test`), {
+        method: "POST",
+        json: { contactIds, variant },
+      }),
     remove: useMutation({
       mutationFn: (id: string) => api(p(`/broadcasts/${id}`), { method: "DELETE" }),
       onSettled: refresh,
     }),
   };
+}
+
+/* Business-wide broadcast rules (Settings → Broadcasts). */
+
+export type BroadcastRules = { frequencyCap: number | null; skipLiveChats: boolean };
+
+export function useBroadcastRules() {
+  return useQuery({
+    queryKey: ["settings", "broadcasts"],
+    queryFn: () => api<{ rules: BroadcastRules; canEdit: boolean }>("/settings/broadcasts"),
+  });
+}
+
+export function useSaveBroadcastRules() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rules: BroadcastRules) =>
+      api<{ rules: BroadcastRules; canEdit: boolean }>("/settings/broadcasts", {
+        method: "PUT",
+        json: rules,
+      }),
+    onSuccess: (data) => qc.setQueryData(["settings", "broadcasts"], data),
+  });
 }

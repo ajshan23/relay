@@ -54,6 +54,8 @@ export interface TemplateBubbleProps
   status?: MessageStatus;
   /** Bubble tail on the last message of a group (templates without buttons) */
   showTail?: boolean;
+  /** A small line above the message for the team, e.g. "Test · November offer" (never sent). */
+  label?: string;
   /** Override the default `<a>` element for URL/phone buttons (e.g. Next.js Link) */
   renderAction?: (props: { href: string; children: React.ReactNode; className: string; target?: string; rel?: string }) => React.ReactElement;
 }
@@ -253,7 +255,7 @@ function TemplateButtonRow({ button, renderAction }: { button: TemplateButton; r
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const TemplateBubble = React.forwardRef<HTMLDivElement, TemplateBubbleProps>(
-  ({ className, variant = "incoming", header, body, footer, buttons = [], timestamp, status, showTail = false, renderAction, ...props }, ref) => {
+  ({ className, variant = "incoming", header, body, footer, buttons = [], timestamp, status, showTail = false, label, renderAction, ...props }, ref) => {
     const hasButtons = buttons.length > 0;
     const isOutgoing = variant === "outgoing";
     // Buttons hang below the body, so a tail would point at nothing there.
@@ -283,6 +285,9 @@ const TemplateBubble = React.forwardRef<HTMLDivElement, TemplateBubbleProps>(
 
           {/* Body */}
           <div className="px-[9px] pb-[7px] pt-[6px]">
+            {label && (
+              <p className="mb-1 text-[11px] font-medium leading-[14px] text-wa-text-secondary">{label}</p>
+            )}
             {header?.type === "text" && header.text && (
               <p className="mb-1 text-[14.2px] font-bold leading-[19px] text-wa-text-primary">
                 <BodyText text={header.text} />
