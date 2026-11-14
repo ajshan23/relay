@@ -103,15 +103,13 @@ export async function saveWhatsAppChannel(
         await tx
           .delete(schema.channelAccountBranch)
           .where(eq(schema.channelAccountBranch.channelAccountId, existing.id));
-        await tx
-          .insert(schema.channelAccountBranch)
-          .values(
-            input.branchIds.map((branchId) => ({
-              channelAccountId: existing.id,
-              branchId,
-              organizationId: input.orgId,
-            })),
-          );
+        await tx.insert(schema.channelAccountBranch).values(
+          input.branchIds.map((branchId) => ({
+            channelAccountId: existing.id,
+            branchId,
+            organizationId: input.orgId,
+          })),
+        );
         await tx.update(ca).set({ defaultBranchId: input.branchIds[0] }).where(eq(ca.id, existing.id));
       }
       return existing.id;
@@ -119,15 +117,13 @@ export async function saveWhatsAppChannel(
     const channelId = newId("channelAccount");
     await tx.insert(ca).values({ id: channelId, ...values, defaultBranchId: input.branchIds[0] ?? null });
     if (input.branchIds.length)
-      await tx
-        .insert(schema.channelAccountBranch)
-        .values(
-          input.branchIds.map((branchId) => ({
-            channelAccountId: channelId,
-            branchId,
-            organizationId: input.orgId,
-          })),
-        );
+      await tx.insert(schema.channelAccountBranch).values(
+        input.branchIds.map((branchId) => ({
+          channelAccountId: channelId,
+          branchId,
+          organizationId: input.orgId,
+        })),
+      );
     return channelId;
   });
   return { ok: true, id, reconnected: !!existing };

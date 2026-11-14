@@ -151,6 +151,8 @@ export type ContactChangedEvent = Routed & {
 /** Account-level news we store but do not act on yet (quality, template status, account alerts, errors). */
 export type AccountEvent = Routed & {
   kind: "account.update";
+  /** The business account the news is about (WhatsApp: WABA / messaging account id). */
+  scope: string;
   field: string;
   data: Record<string, unknown>;
   errors: ProviderError[];
@@ -241,7 +243,47 @@ export type AccountHealthEvent = {
   at: Date;
 };
 
+/**
+ * A message from the business's own phone app (WhatsApp coexistence): its old chats, imported once
+ * after connecting ("history"), or a reply someone just sent from the phone ("echo").
+ */
+export type PhoneAppMessageEvent = Routed & {
+  kind: "message.phone_app";
+  source: "history" | "echo";
+  externalId: string;
+  sentAt: Date;
+  /** inbound: the customer wrote it; outbound: the business wrote it on the phone. */
+  direction: "inbound" | "outbound";
+  /** The customer of the chat (the other side in both directions). */
+  customer: ChannelIdentity;
+  content: MessageContent;
+  /** History only: how far the message got (read, delivered, ...). */
+  status: string | null;
+};
+
+/** The phone app's contact list, shared once after connecting a coexistence number. */
+export type ContactsSyncedEvent = Routed & {
+  kind: "contacts.synced";
+  scope: string;
+  contacts: { action: "add" | "remove"; identity: ChannelIdentity; fullName: string | null }[];
+};
+
+/** Progress of a coexistence history import (one per chunk), or why it was refused. */
+export type HistoryProgressEvent = Routed & {
+  kind: "history.progress";
+  scope: string;
+  phase: number | null;
+  chunkOrder: number | null;
+  /** 0-100; 100 means Meta sent everything. */
+  progress: number | null;
+  messages: number;
+  errors: ProviderError[];
+};
+
 export type NormalizedEvent =
+  | PhoneAppMessageEvent
+  | ContactsSyncedEvent
+  | HistoryProgressEvent
   | TemplateQualityEvent
   | AccountHealthEvent
   | MessageReceived

@@ -6,6 +6,7 @@ import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createBroadcastEngine } from "./broadcasts/engine";
 import { createMediaProcessor } from "./channels/media";
+import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
 import { createSignalProcessor } from "./channels/signals";
 import { createTemplateProcessor, type TemplateJob } from "./channels/templates";
@@ -55,6 +56,17 @@ const signals = new Worker<SignalJob>(queues.signals, createSignalProcessor({ db
 });
 signals.on("failed", (job, err) =>
   console.warn(`signal ${job?.data.kind} ${job?.data.messageId}: ${err.message}`),
+);
+
+/* After Embedded Signup: coexistence contact and history sync requests (see channels/onboarding.ts). */
+const onboarding = new Worker<OnboardingJob>(queues.onboarding, createOnboardingProcessor({ db }), {
+  connection,
+  concurrency: 5,
+});
+onboarding.on("failed", (job, err) =>
+  console.warn(
+    `onboarding ${job?.name} ${job?.data.channelAccountId} (attempt ${job?.attemptsMade}): ${err.message}`,
+  ),
 );
 
 /* Housekeeping on a timer. One scheduler entry per job, so several workers never double up. */
@@ -243,6 +255,7 @@ async function shutdown() {
     contactImports.close(),
     contactFiles.close(),
     signals.close(),
+    onboarding.close(),
     maintenance.close(),
     previews.close(),
     broadcasts.close(),

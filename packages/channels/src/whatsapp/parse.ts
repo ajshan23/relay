@@ -298,6 +298,144 @@ function groupEvents(
   return out;
 }
 
+/* ------------------------------------------------------------------ coexistence (phone app) */
+
+type Base = { channel: "whatsapp"; accountExternalId: string };
+const digits = (v: string | null) => (v ? v.replace(/\D/g, "") || null : null);
+
+/** A customer as the coexistence webhooks describe them: BSUID when present, else the phone. */
+function customerOf(
+  scope: string,
+  userId: string | null,
+  phone: string | null,
+  username: string | null,
+  name: string | null,
+) {
+  const externalId = userId ?? phone;
+  return externalId ? { externalId, scope, phone, username, profileName: name } : null;
+}
+
+/** smb_app_state_sync: the phone app's contacts (add, or remove). */
+function contactSync(base: Base, value: Json, scope: string): NormalizedEvent {
+  const contacts: {
+    action: "add" | "remove";
+    identity: NonNullable<ReturnType<typeof customerOf>>;
+    fullName: string | null;
+  }[] = [];
+  for (const item of asArray(value.state_sync)) {
+    if (str(item.type) !== "contact") continue;
+    const c = asObject(item.contact);
+    const identity = customerOf(
+      scope,
+      str(c.user_id),
+      digits(str(c.phone_number)),
+      str(c.username),
+      str(c.full_name) ?? str(c.first_name),
+    );
+    if (!identity) continue;
+    contacts.push({
+      action: str(item.action) === "remove" ? "remove" : "add",
+      identity,
+      fullName: str(c.full_name) ?? str(c.first_name),
+    });
+  }
+  return { ...base, kind: "contacts.synced", scope, contacts };
+}
+
+/** Message content for phone-app messages; media in history arrives as a placeholder. */
+function phoneAppContent(msg: Json): MessageContent {
+  if (str(msg.type) === "media_placeholder")
+    return {
+      type: "unsupported",
+      reason: "A photo or file from the phone app, from before Relay was connected",
+    };
+  return content(msg);
+}
+
+/** history: chunks of the phone app's old chats, in any order, with progress (100 = all sent). */
+function historyEvents(base: Base, value: Json, scope: string): NormalizedEvent[] {
+  const out: NormalizedEvent[] = [];
+  const business = digits(str(asObject(value.metadata).display_phone_number));
+  for (const chunk of asArray(value.history)) {
+    const meta = asObject(chunk.metadata);
+    let count = 0;
+    for (const thread of asArray(chunk.threads)) {
+      const ctx = asObject(thread.context);
+      const msgs = asArray(thread.messages);
+      const userId =
+        str(ctx.user_id) ?? msgs.map((m) => str(m.from_user_id)).find((v): v is string => !!v) ?? null;
+      const customer = customerOf(
+        scope,
+        userId,
+        digits(str(ctx.wa_id) ?? str(thread.id)),
+        str(ctx.username),
+        null,
+      );
+      if (!customer) continue;
+      for (const msg of msgs) {
+        const from = digits(str(msg.from));
+        const outbound = !!str(msg.to) || (business !== null && from === business);
+        out.push({
+          ...base,
+          kind: "message.phone_app",
+          source: "history",
+          externalId: str(msg.id) ?? "",
+          sentAt: seconds(msg.timestamp),
+          direction: outbound ? "outbound" : "inbound",
+          customer,
+          content: phoneAppContent(msg),
+          status: str(asObject(msg.history_context).status),
+        });
+        count++;
+      }
+    }
+    out.push({
+      ...base,
+      kind: "history.progress",
+      scope,
+      phase: num(meta.phase),
+      chunkOrder: num(meta.chunk_order),
+      progress: num(meta.progress),
+      messages: count,
+      errors: errorsOf(chunk.errors),
+    });
+  }
+  return out;
+}
+
+/** smb_message_echoes: replies the business just sent from the phone app. */
+function echoEvents(base: Base, value: Json, scope: string): NormalizedEvent[] {
+  const contacts = asArray(value.contacts);
+  const out: NormalizedEvent[] = [];
+  for (const msg of asArray(value.message_echoes)) {
+    const toUserId = str(msg.to_user_id);
+    const to = digits(str(msg.to));
+    const known = contacts.find(
+      (c) => (toUserId && str(c.user_id) === toUserId) || (to && str(c.wa_id) === to),
+    );
+    const customer = customerOf(
+      scope,
+      toUserId ?? str(known?.user_id),
+      to ?? digits(str(known?.wa_id)),
+      str(asObject(known?.profile).username),
+      str(asObject(known?.profile).name),
+    );
+    if (!customer) continue;
+    out.push({
+      ...base,
+      kind: "message.phone_app",
+      source: "echo",
+      externalId: str(msg.id) ?? "",
+      sentAt: seconds(msg.timestamp),
+      direction: "outbound",
+      customer,
+      content: phoneAppContent(msg),
+      status: null,
+    });
+  }
+  return out;
+}
+
 export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
   const body = asObject(payload);
   if (body.object !== "whatsapp_business_account") return [];
@@ -374,8 +512,27 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
         events.push(...groupEvents(base, value, scope));
         continue;
       }
+      if (field === "smb_app_state_sync") {
+        events.push(contactSync(base, value, scope));
+        continue;
+      }
+      if (field === "history") {
+        events.push(...historyEvents(base, value, scope));
+        continue;
+      }
+      if (field === "smb_message_echoes") {
+        events.push(...echoEvents(base, value, scope));
+        continue;
+      }
       if (field !== "messages") {
-        events.push({ ...base, kind: "account.update", field, data: value, errors: errorsOf(value.errors) });
+        events.push({
+          ...base,
+          kind: "account.update",
+          scope,
+          field,
+          data: value,
+          errors: errorsOf(value.errors),
+        });
         continue;
       }
 
@@ -470,6 +627,7 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
         events.push({
           ...base,
           kind: "account.update",
+          scope,
           field: "errors",
           data: value,
           errors: errorsOf(value.errors),

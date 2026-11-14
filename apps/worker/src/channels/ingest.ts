@@ -1,12 +1,16 @@
 import {
+  type AccountEvent,
   type AccountHealthEvent,
   type ChannelIdentity,
   type ChannelRegistry,
   type ContactChangedEvent,
+  type ContactsSyncedEvent,
   type GroupEvent,
+  type HistoryProgressEvent,
   type MessageReceived,
   type MessageStatusEvent,
   type NormalizedEvent,
+  type PhoneAppMessageEvent,
   type ReactionEvent,
   type StoredStatus,
   shouldApplyStatus,
@@ -803,6 +807,258 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
     }
   }
 
+  /*
+   * WhatsApp coexistence: the business keeps the WhatsApp Business app on its phone. Its old chats
+   * arrive once as "history", its contacts as "contacts.synced", and every reply typed on the phone as
+   * an "echo". Imported messages are marked (content.via) so they never count as unread, reopen a
+   * conversation, or send notifications.
+   */
+  const historyStatus: Record<string, StoredStatus> = {
+    read: "read",
+    played: "read",
+    delivered: "delivered",
+    sent: "sent",
+    pending: "sent",
+    error: "failed",
+  };
+
+  async function phoneAppMessage(account: Account, event: PhoneAppMessageEvent): Promise<string[]> {
+    if (!event.externalId) return [];
+    const identity = await upsertIdentity(account, event.customer);
+    const conversation = await upsertDirectConversation(account, identity);
+    const history = event.source === "history";
+    const via = history ? "phone_app_history" : "phone_app";
+    const content = { ...event.content, via } as Record<string, unknown>;
+    const media = "media" in event.content && event.content.media.providerMediaId ? event.content : null;
+    const outbound = event.direction === "outbound";
+    const hours = windowHours(account, "direct");
+    const window = !outbound && hours !== null ? windowExpiresAt(event.sentAt, hours) : null;
+
+    return db.transaction(async (tx) => {
+      const id = newId("message");
+      const inserted = await tx
+        .insert(schema.message)
+        .values({
+          id,
+          organizationId: account.organizationId,
+          conversationId: conversation.id,
+          channelAccountId: account.id,
+          direction: event.direction,
+          senderType: outbound ? "user" : "contact",
+          senderIdentityId: outbound ? null : identity.id,
+          type: event.content.type,
+          content,
+          externalId: event.externalId,
+          status: outbound ? (historyStatus[event.status ?? ""] ?? "sent") : "received",
+          sentAt: event.sentAt,
+        })
+        .onConflictDoNothing()
+        .returning({ id: schema.message.id });
+      if (!inserted.length) return []; // Already imported (history can repeat; echoes of our own sends too).
+      touched(conversation);
+      await tx
+        .update(schema.contact)
+        .set({ lastMessageAt: latest(schema.contact.lastMessageAt, event.sentAt) })
+        .where(eq(schema.contact.id, identity.contactId));
+      await tx
+        .update(schema.conversation)
+        .set({
+          lastMessageAt: latest(schema.conversation.lastMessageAt, event.sentAt),
+          ...(!outbound ? { lastInboundAt: latest(schema.conversation.lastInboundAt, event.sentAt) } : {}),
+          ...(window ? { windowExpiresAt: latest(schema.conversation.windowExpiresAt, window) } : {}),
+          lastMessagePreview: sql`case when ${schema.conversation.lastMessageAt} is null or ${schema.conversation.lastMessageAt} <= ${event.sentAt.toISOString()}::timestamp then ${messagePreview(event.content.type, content, event.direction, null)} else ${schema.conversation.lastMessagePreview} end`,
+          updatedAt: new Date(),
+        } as never)
+        .where(eq(schema.conversation.id, conversation.id));
+      if (!media || !("media" in media)) return [];
+      const attachmentId = newId("attachment");
+      await tx.insert(schema.attachment).values({
+        id: attachmentId,
+        organizationId: account.organizationId,
+        messageId: id,
+        kind: media.type,
+        mimeType: media.media.mimeType,
+        fileName: media.media.fileName,
+        sha256: media.media.sha256,
+        providerMediaId: media.media.providerMediaId,
+      });
+      return [attachmentId];
+    });
+  }
+
+  /** Adds the phone app's contacts to the number's branch (removals are ignored: we never delete people). */
+  async function contactsSynced(account: Account, event: ContactsSyncedEvent) {
+    let added = 0;
+    for (const c of event.contacts) {
+      if (c.action !== "add") continue;
+      const identity = await upsertIdentity(account, {
+        ...c.identity,
+        profileName: c.fullName ?? c.identity.profileName,
+      });
+      if (c.fullName)
+        await db
+          .update(schema.contact)
+          .set({ name: c.fullName, updatedAt: new Date() })
+          .where(
+            and(eq(schema.contact.id, identity.contactId), sql`coalesce(${schema.contact.name}, '') = ''`),
+          );
+      added++;
+    }
+    await setCoexistence(account.id, "contacts", { status: "done", imported: added });
+  }
+
+  /** History import progress: importing → done at 100, or declined when the business said no. */
+  async function historyProgress(account: Account, event: HistoryProgressEvent) {
+    if (event.errors.some((e) => e.code === 2593109)) {
+      await setCoexistence(account.id, "history", {
+        status: "declined",
+        error: "The business turned off chat history sharing.",
+      });
+      return;
+    }
+    const ca = schema.channelAccount;
+    const path = sql`'{coexistence,history}'`;
+    const progress = event.progress ?? 0;
+    await db
+      .update(ca)
+      .set({
+        providerMeta: sql`jsonb_set(${ca.providerMeta}, ${path}, coalesce(${ca.providerMeta} #> ${path}, '{}'::jsonb) || jsonb_build_object(
+          'status', case when ${progress} >= 100 then 'done' else 'importing' end,
+          'progress', greatest(coalesce((${ca.providerMeta} #>> '{coexistence,history,progress}')::int, 0), ${progress}::int),
+          'imported', coalesce((${ca.providerMeta} #>> '{coexistence,history,imported}')::int, 0) + ${event.messages}::int,
+          'updatedAt', ${new Date().toISOString()}::text
+        ), true)`,
+        updatedAt: new Date(),
+      } as never)
+      .where(and(eq(ca.id, account.id), sql`${ca.providerMeta} ? 'coexistence'`));
+  }
+
+  async function setCoexistence(
+    channelId: string,
+    key: "contacts" | "history",
+    patch: Record<string, unknown>,
+  ) {
+    const ca = schema.channelAccount;
+    const path = sql.raw(`'{coexistence,${key}}'`);
+    await db
+      .update(ca)
+      .set({
+        providerMeta: sql`jsonb_set(${ca.providerMeta}, ${path}, coalesce(${ca.providerMeta} #> ${path}, '{}'::jsonb) || ${JSON.stringify({ ...patch, updatedAt: new Date().toISOString() })}::jsonb, true)`,
+        updatedAt: new Date(),
+      } as never)
+      .where(and(eq(ca.id, channelId), sql`${ca.providerMeta} ? 'coexistence'`));
+  }
+
+  /**
+   * Account news from Meta, matched to channels by business account (and number when given):
+   * the business removed Relay or left the platform → disconnected and its broadcasts paused;
+   * restrictions → a warning on the channel; display name and username decisions → kept.
+   */
+  async function accountUpdate(event: AccountEvent) {
+    const ca = schema.channelAccount;
+    const rows = await db
+      .select({ id: ca.id, displayPhone: ca.displayPhone, externalId: ca.externalId, status: ca.status })
+      .from(ca)
+      .where(and(eq(ca.type, event.channel), sql`${ca.providerMeta} ->> 'wabaId' = ${event.scope}`));
+    const data = event.data;
+    const phoneOf = (v: unknown) => (typeof v === "string" ? v.replace(/\D/g, "") : "");
+    const forPhone = (digits: string) =>
+      rows.filter((r) => !digits || (r.displayPhone ?? "").replace(/\D/g, "") === digits);
+    const at = new Date().toISOString();
+    const patchMeta = (id: string, patch: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      db
+        .update(ca)
+        .set({
+          providerMeta: sql`${ca.providerMeta} || ${JSON.stringify(patch)}::jsonb`,
+          updatedAt: new Date(),
+          ...extra,
+        } as never)
+        .where(eq(ca.id, id));
+
+    if (event.field === "account_update") {
+      const what = typeof data.event === "string" ? data.event.toUpperCase() : "";
+      const accountEvent = {
+        event: what,
+        at,
+        detail: JSON.stringify(data.disconnection_info ?? data.restriction_info ?? data.violation_info ?? ""),
+      };
+      const gone = ["PARTNER_REMOVED", "ACCOUNT_OFFBOARDED", "ACCOUNT_DELETED", "PARTNER_APP_UNINSTALLED"];
+      const warn: Record<string, string> = {
+        ACCOUNT_RESTRICTION: "Meta restricted this WhatsApp account. Check WhatsApp Manager.",
+        ACCOUNT_VIOLATION:
+          "Meta reported a policy violation on this WhatsApp account. Check WhatsApp Manager.",
+        DISABLED_UPDATE: "Meta disabled this WhatsApp account. Check WhatsApp Manager.",
+        ACCOUNT_RECONNECTED:
+          "The number was reconnected in the WhatsApp Business app. Reconnect it in Relay to keep messaging.",
+      };
+      for (const r of rows) {
+        if (gone.includes(what)) {
+          if (r.status === "disconnected") continue;
+          await patchMeta(
+            r.id,
+            { accountEvent },
+            {
+              status: "disconnected",
+              statusReason:
+                what === "ACCOUNT_OFFBOARDED"
+                  ? "The business disconnected this number in the WhatsApp Business app."
+                  : "The business removed Relay's access to this WhatsApp account in Meta.",
+            },
+          );
+          await db
+            .update(schema.broadcast)
+            .set({
+              status: "paused",
+              pauseReason: "The WhatsApp number was disconnected",
+              updatedAt: new Date(),
+            } as never)
+            .where(
+              and(
+                eq(schema.broadcast.channelAccountId, r.id),
+                inArray(schema.broadcast.status, ["sending", "scheduled", "preparing"]),
+              ),
+            );
+        } else if (warn[what]) {
+          await patchMeta(
+            r.id,
+            { accountEvent },
+            {
+              statusReason: warn[what],
+              ...(what === "ACCOUNT_RECONNECTED" || what === "DISABLED_UPDATE" ? { status: "error" } : {}),
+            },
+          );
+        } else if (what) {
+          await patchMeta(r.id, { accountEvent });
+        }
+        accounts.delete(`${event.channel}:${r.externalId}`);
+      }
+      return;
+    }
+    if (event.field === "phone_number_name_update") {
+      const decision = typeof data.decision === "string" ? data.decision.toUpperCase() : null;
+      for (const r of forPhone(phoneOf(data.display_phone_number))) {
+        await patchMeta(
+          r.id,
+          {
+            nameStatus: decision,
+            ...(decision === "APPROVED" && typeof data.requested_verified_name === "string"
+              ? { verifiedName: data.requested_verified_name }
+              : {}),
+          },
+          decision === "APPROVED" && typeof data.requested_verified_name === "string"
+            ? { displayName: data.requested_verified_name }
+            : {},
+        );
+      }
+      return;
+    }
+    if (event.field === "business_username_updates") {
+      const username = typeof data.username === "string" ? data.username : null;
+      for (const r of forPhone(phoneOf(data.display_phone_number))) await patchMeta(r.id, { username });
+    }
+    // Anything else stays in webhook_event only.
+  }
+
   /** Applies every event in one stored webhook. */
   async function ingest(events: NormalizedEvent[]): Promise<IngestResult> {
     changed = [];
@@ -824,6 +1080,11 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         await accountHealth(event);
         continue;
       }
+      // Account news is about the business account; some carry no phone number id.
+      if (event.kind === "account.update" && (!event.accountExternalId || event.field !== "errors")) {
+        await accountUpdate(event);
+        continue;
+      }
       const account = await findAccount(event);
       if (!account) {
         result.unrouted++;
@@ -833,8 +1094,12 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         result.media.push(...(await received(account, event)));
       else if (event.kind === "message.status") await status(account, event);
       else if (event.kind === "contact.changed") await contactChanged(account, event);
+      else if (event.kind === "message.phone_app")
+        result.media.push(...(await phoneAppMessage(account, event)));
+      else if (event.kind === "contacts.synced") await contactsSynced(account, event);
+      else if (event.kind === "history.progress") await historyProgress(account, event);
       else if (event.kind.startsWith("group.")) await groupEvent(account, event as GroupEvent);
-      // account.update: kept in webhook_event only, for now.
+      // account.update with errors only: kept in webhook_event.
     }
     return result;
   }

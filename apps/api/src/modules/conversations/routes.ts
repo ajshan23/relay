@@ -111,11 +111,12 @@ export function conversationRoutes(ctx: AppContext) {
     }
   }
 
-  /** Inbound messages newer than the caller last looked. Reactions do not count. */
+  /** Inbound messages newer than the caller last looked. Reactions and imported phone-app history do not count. */
   const unreadCount = sql<number>`(
     select count(*)::int from ${schema.message} m
     where m.conversation_id = ${schema.conversation.id}
       and m.direction = 'inbound' and m.type <> 'reaction'
+      and coalesce(m.content ->> 'via', '') <> 'phone_app_history'
       and m.sent_at > coalesce(${schema.conversationRead.lastReadAt}, '-infinity'::timestamp)
   )`;
 

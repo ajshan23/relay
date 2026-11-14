@@ -189,8 +189,8 @@ describe("WhatsApp webhook parser", () => {
   });
 
   it("reports other webhook fields and top-level errors as account updates", () => {
-    const q = one(envelope({ event: "FLAGGED", current_limit: "TIER_1K" }, "phone_number_quality_update"));
-    assert.deepEqual([q.kind, q.field], ["account.update", "phone_number_quality_update"]);
+    const q = one(envelope({ entity_type: "WABA", alert_type: "OBA_APPROVED" }, "account_alerts"));
+    assert.deepEqual([q.kind, q.field], ["account.update", "account_alerts"]);
     const err = one(envelope({ errors: [{ code: 131000, title: "Something went wrong" }] }));
     assert.deepEqual([err.field, err.errors[0].code], ["errors", 131000]);
   });
