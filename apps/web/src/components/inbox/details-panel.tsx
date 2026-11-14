@@ -50,7 +50,11 @@ export function DetailsPanel({ detail: d, open, onOpenChange }: Props) {
           {!isGroup
             ? d.contact?.identities.map((i) => (
                 <Row key={i.id} label={i.channelType === "whatsapp" ? "WhatsApp" : i.channelType}>
-                  {i.phone ? `+${i.phone.replace(/^\+/, "")}` : (i.username ?? i.profileName ?? "Hidden")}
+                  {i.phone
+                    ? `+${i.phone.replace(/^\+/, "")}`
+                    : i.username
+                      ? `@${i.username}`
+                      : (i.profileName ?? "Phone hidden")}
                 </Row>
               ))
             : null}

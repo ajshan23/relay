@@ -207,7 +207,11 @@ export function conversationRoutes(ctx: AppContext) {
         title:
           r.kind === "group"
             ? (r.groupSubject ?? "Group chat")
-            : (r.contactName ?? r.profileName ?? r.phone ?? r.username ?? "Unknown"),
+            : (r.contactName ??
+              r.profileName ??
+              r.phone ??
+              (r.username ? `@${r.username}` : null) ??
+              "WhatsApp user"),
         activityAt: iso(activityAt),
         assignee: assignedUserId ? { id: assignedUserId, name: assigneeName, image: assigneeImage } : null,
         windowOpen: !!r.windowExpiresAt && r.windowExpiresAt > now,
@@ -307,7 +311,8 @@ export function conversationRoutes(ctx: AppContext) {
             : (contact?.name ??
               contact?.identities[0]?.profileName ??
               contact?.identities[0]?.phone ??
-              "Unknown"),
+              (contact?.identities[0]?.username ? `@${contact.identities[0].username}` : null) ??
+              "WhatsApp user"),
       },
       channel: {
         id: account.id,

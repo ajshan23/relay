@@ -421,13 +421,21 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         const detail = {
           reason: err.kind,
           code: err.code ?? null,
-          message: err.message,
+          // 131062: login-code templates need a phone number, and this person shares only a WhatsApp username.
+          message:
+            err.code === 131062
+              ? "This person uses a WhatsApp username and hasn't shared their phone number, so a login-code template can't be sent to them."
+              : err.message,
           details: err.details ?? null,
         };
         if (err.kind === "authFailed") {
           await db
             .update(schema.channelAccount)
-            .set({ status: "error", statusReason: err.message, updatedAt: new Date() })
+            .set({
+              status: "error",
+              statusReason: `Meta stopped accepting Relay's access to this number (${err.message}). Reconnect it in Settings → Channels.`,
+              updatedAt: new Date(),
+            })
             .where(eq(schema.channelAccount.id, account.id));
         }
         if (err.kind === "retryable" || err.kind === "rateLimited") {

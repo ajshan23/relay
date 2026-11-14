@@ -1,4 +1,4 @@
-import type { BroadcastErrorAction } from "@relay/channels";
+import { type BroadcastErrorAction, identityScope } from "@relay/channels";
 import { newId } from "@relay/core";
 import { templateMessage, valuesFor } from "@relay/core/broadcasts";
 import type { TemplateContent } from "@relay/core/templates";
@@ -448,7 +448,10 @@ export function createBroadcastEngine({
       .where(and(eq(ci.contactId, contactId), eq(ci.channelType, account.type), eq(ci.branchId, bc.branchId)))
       .limit(1);
     if (!identity) {
-      const scope = String((account.providerMeta as { wabaId?: string }).wabaId ?? account.externalId);
+      const scope = identityScope(
+        account.providerMeta,
+        String((account.providerMeta as { wabaId?: string }).wabaId ?? account.externalId),
+      );
       await db
         .insert(ci)
         .values({

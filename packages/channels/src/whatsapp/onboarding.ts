@@ -197,3 +197,16 @@ export function smbSyncFailure(err: unknown): "declined" | "expired" | "already_
   if (text.includes("already") && text.includes("request")) return "already_requested";
   return err.kind === "permanent" || err.kind === "authFailed" ? "expired" : "retry";
 }
+
+/**
+ * Where a WhatsApp user id (BSUID) is valid: the business portfolio. Numbers connected through
+ * Embedded Signup know it (businessId); older ones fall back to the business account id, which the
+ * webhooks carry. Lookups accept both, so identities move to the portfolio scope as people write in.
+ */
+export function identityScope(
+  providerMeta: Record<string, unknown> | null | undefined,
+  fallback: string,
+): string {
+  const businessId = providerMeta?.businessId;
+  return typeof businessId === "string" && businessId ? businessId : fallback;
+}

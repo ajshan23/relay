@@ -7,6 +7,7 @@ import {
   type ContactsSyncedEvent,
   type GroupEvent,
   type HistoryProgressEvent,
+  identityScope,
   type MessageReceived,
   type MessageStatusEvent,
   type NormalizedEvent,
@@ -113,12 +114,15 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
    */
   async function upsertIdentity(account: Account, from: ChannelIdentity): Promise<Identity> {
     const branchId = await branchFor(account);
+    // WhatsApp user ids are per business portfolio; identities made before we knew it used the account id.
+    const scope = identityScope(account.providerMeta, from.scope);
+    const scopes = scope === from.scope ? [scope] : [scope, from.scope];
     const where = (externalId: string) =>
       and(
         eq(schema.contactIdentity.organizationId, account.organizationId),
         eq(schema.contactIdentity.branchId, branchId),
         eq(schema.contactIdentity.channelType, account.type),
-        eq(schema.contactIdentity.scope, from.scope),
+        inArray(schema.contactIdentity.scope, scopes),
         eq(schema.contactIdentity.externalId, externalId),
       );
 
@@ -130,6 +134,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
 
     if (identity) {
       const changes = {
+        scope,
         externalId: from.externalId,
         phone: from.phone ?? identity.phone,
         username: from.username ?? identity.username,
@@ -179,7 +184,7 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
             contactId,
             branchId,
             channelType: account.type,
-            scope: from.scope,
+            scope,
             externalId: from.externalId,
             phone: from.phone,
             username: from.username,
@@ -553,7 +558,9 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
         and(
           eq(schema.contactIdentity.organizationId, account.organizationId),
           eq(schema.contactIdentity.channelType, account.type),
-          eq(schema.contactIdentity.scope, event.scope),
+          inArray(schema.contactIdentity.scope, [
+            ...new Set([identityScope(account.providerMeta, event.scope), event.scope]),
+          ]),
           eq(schema.contactIdentity.externalId, event.previousExternalId),
         ),
       );
