@@ -1,14 +1,22 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, Suspense, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * The inside of the auth card. When the screen changes (sign in ↔ sign up, or a step inside one),
  * the card's height glides to the new size and the new content rises in, instead of snapping.
  */
-export function CardBody({ logo, children }: { logo: ReactNode; children: ReactNode }) {
+function RiseOnPathChange({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  return (
+    <div key={pathname} className="flex animate-rise-in flex-col gap-6 motion-reduce:animate-none">
+      {children}
+    </div>
+  );
+}
+
+export function CardBody({ logo, children }: { logo: ReactNode; children: ReactNode }) {
   const inner = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | null>(null);
 
@@ -27,9 +35,11 @@ export function CardBody({ logo, children }: { logo: ReactNode; children: ReactN
     >
       <div ref={inner} className="flex flex-col gap-6 px-6 pt-8 pb-7 sm:px-9">
         {logo}
-        <div key={pathname} className="flex animate-rise-in flex-col gap-6 motion-reduce:animate-none">
-          {children}
-        </div>
+        {/* The path is only known at request time on routes like /accept-invitation/[id], so it is
+            read inside Suspense; until then the content shows without the rise-in. */}
+        <Suspense fallback={<div className="flex flex-col gap-6">{children}</div>}>
+          <RiseOnPathChange>{children}</RiseOnPathChange>
+        </Suspense>
       </div>
     </div>
   );
