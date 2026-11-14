@@ -27,9 +27,12 @@ app.onError((err, c) => {
   return c.json({ error: "internal_error" }, 500);
 });
 
-const server = serve({ fetch: app.fetch, port: ctx.config.REALTIME_PORT }, (info) => {
-  console.log(`realtime listening on http://localhost:${info.port}`);
-});
+const server = serve(
+  { fetch: app.fetch, port: ctx.config.REALTIME_PORT, hostname: ctx.config.HOST },
+  (info) => {
+    console.log(`realtime listening on http://${ctx.config.HOST}:${info.port}`);
+  },
+);
 
 async function shutdown() {
   // Open streams end here; browsers reconnect on their own (EventSource retries) to another process.

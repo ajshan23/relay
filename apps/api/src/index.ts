@@ -5,8 +5,8 @@ import { createContext } from "./context";
 const ctx = createContext();
 const app = createApp(ctx);
 
-const server = serve({ fetch: app.fetch, port: ctx.config.API_PORT }, (info) => {
-  console.log(`api listening on http://localhost:${info.port}`);
+const server = serve({ fetch: app.fetch, port: ctx.config.API_PORT, hostname: ctx.config.HOST }, (info) => {
+  console.log(`api listening on http://${ctx.config.HOST}:${info.port}`);
 });
 
 async function shutdown() {

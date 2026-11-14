@@ -7,6 +7,8 @@ const schema = z.object({
   API_PORT: z.coerce.number().default(3201),
   /** Live updates (/api/events) run in their own process: apps/api/src/realtime.ts. */
   REALTIME_PORT: z.coerce.number().default(3203),
+  /** Address the API, realtime and worker health servers listen on. On a server, 127.0.0.1 so only nginx reaches them. */
+  HOST: z.string().default("0.0.0.0"),
   WEB_URL: z.string().url().default("http://localhost:3200"),
   BETTER_AUTH_SECRET: z.string().min(32, "must be at least 32 characters"),
   // Google sign-in is offered only when both are set (empty counts as unset).

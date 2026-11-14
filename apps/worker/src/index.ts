@@ -230,7 +230,7 @@ const health = createServer((_req, res) => {
     }),
   );
 });
-health.listen(port, () => console.log(`worker health on :${port}`));
+health.listen(port, config.HOST, () => console.log(`worker health on ${config.HOST}:${port}`));
 
 async function shutdown() {
   health.close();
