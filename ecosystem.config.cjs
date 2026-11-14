@@ -26,7 +26,7 @@ module.exports = {
       interpreter,
       node_args: ts,
       env,
-      max_memory_restart: "400M",
+      max_memory_restart: "500M",
       kill_timeout: 10000,
     },
     {
@@ -36,7 +36,7 @@ module.exports = {
       interpreter,
       node_args: ts,
       env,
-      max_memory_restart: "200M",
+      max_memory_restart: "400M",
     },
     {
       name: "relay-worker",
@@ -45,7 +45,7 @@ module.exports = {
       interpreter,
       node_args: ts,
       env,
-      max_memory_restart: "450M",
+      max_memory_restart: "550M",
       // Let in-flight sends finish before a restart.
       kill_timeout: 30000,
     },
