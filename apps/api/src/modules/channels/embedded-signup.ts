@@ -160,12 +160,23 @@ export async function runEmbeddedSignup(
     await step(ctx, body.attemptId, "grants");
     const grants = await inspectToken(graph, app, token);
     const needed = ["whatsapp_business_management", "whatsapp_business_messaging"];
-    if (!grants.valid || needed.some((s) => !grants.scopes.includes(s)))
-      return fail(
-        403,
-        "missing_permission",
-        "Relay wasn't allowed to manage and send with this WhatsApp account. Run the setup again and leave every permission on.",
-      );
+    if (!grants.valid || needed.some((s) => !grants.scopes.includes(s))) {
+      // Finished with a business but no WhatsApp account at all: Meta ran a plain business login,
+      // so the Login for Business configuration isn't a WhatsApp Embedded Signup one.
+      const noWhatsApp =
+        !grants.wabaIds.length && !(session.messagingAccountIds ?? []).length && !session.phoneNumberId;
+      return noWhatsApp
+        ? fail(
+            403,
+            "not_whatsapp_signup",
+            "Meta's window didn't include WhatsApp, so no number was shared. Relay's Meta app needs a “WhatsApp Embedded Signup” login configuration and Tech Provider onboarding.",
+          )
+        : fail(
+            403,
+            "missing_permission",
+            "Relay wasn't allowed to manage and send with this WhatsApp account. Run the setup again and leave every permission on.",
+          );
+    }
 
     // 3. The business account: the one the popup named, if Meta confirms the token reaches it.
     let wabaId: string | undefined;
