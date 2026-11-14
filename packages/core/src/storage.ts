@@ -84,11 +84,18 @@ function disposition(inline: boolean, fileName?: string | null) {
   return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
-export function s3FileStorage(opts: { bucket: string; region: string }): FileStorage {
+export function s3FileStorage(opts: { bucket: string; region: string; endpoint?: string }): FileStorage {
   // Credentials come from the standard AWS chain: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY locally,
   // the instance or task role on servers.
-  const client = new S3Client({ region: opts.region });
+  // With an endpoint (an S3-compatible service such as Neon storage), addresses are path style
+  // (host/bucket/key), which those services expect.
+  const client = new S3Client({
+    region: opts.region,
+    ...(opts.endpoint ? { endpoint: opts.endpoint, forcePathStyle: true } : {}),
+  });
   const Bucket = opts.bucket;
+  // AWS's own at-rest encryption header; S3-compatible services encrypt in their own way and may reject it.
+  const encryption = opts.endpoint ? {} : { ServerSideEncryption: "AES256" as const };
   return {
     driver: "s3",
     async put(key, bytes, o) {
@@ -98,7 +105,7 @@ export function s3FileStorage(opts: { bucket: string; region: string }): FileSto
           Key: key,
           Body: bytes,
           ContentType: o?.contentType ?? undefined,
-          ServerSideEncryption: "AES256",
+          ...encryption,
           // S3 checks the bytes it received against this.
           ChecksumSHA256: createHash("sha256").update(bytes).digest("base64"),
         }),
@@ -148,7 +155,11 @@ export function fileStorage(): FileStorage {
     if (useS3 && !config.S3_BUCKET) throw new Error("STORAGE_DRIVER=s3 needs S3_BUCKET");
     shared =
       useS3 && config.S3_BUCKET
-        ? s3FileStorage({ bucket: config.S3_BUCKET, region: config.S3_REGION })
+        ? s3FileStorage({
+            bucket: config.S3_BUCKET,
+            region: config.S3_REGION ?? config.AWS_REGION ?? "ap-south-1",
+            endpoint: config.S3_ENDPOINT ?? config.AWS_ENDPOINT_URL_S3,
+          })
         : localFileStorage(config.MEDIA_DIR);
   }
   return shared;

@@ -34,7 +34,15 @@ const schema = z.object({
   /** Files go to S3 when a bucket is set (see storage.ts); "local" forces the disk. */
   STORAGE_DRIVER: z.preprocess((v) => (v === "" ? undefined : v), z.enum(["s3", "local"]).optional()),
   S3_BUCKET: z.string().optional(),
-  S3_REGION: z.string().default("ap-south-1"),
+  // Falls back to AWS_REGION, then ap-south-1.
+  S3_REGION: z.string().optional(),
+  AWS_REGION: z.string().optional(),
+  /**
+   * An S3-compatible service instead of AWS itself (Neon storage, Cloudflare R2, MinIO), e.g.
+   * "https://<project>.storage.neon.tech". AWS_ENDPOINT_URL_S3 is read too, as the AWS tools do.
+   */
+  S3_ENDPOINT: z.string().url().optional(),
+  AWS_ENDPOINT_URL_S3: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof schema>;
