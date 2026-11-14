@@ -18,6 +18,7 @@ export * from "./status";
 export * from "./types";
 export { whatsappCapabilities } from "./whatsapp/capabilities";
 export { fetchWhatsAppMedia } from "./whatsapp/media";
+export * from "./whatsapp/onboarding";
 export { parseWhatsAppWebhook } from "./whatsapp/parse";
 export {
   buildWhatsAppSendBody,

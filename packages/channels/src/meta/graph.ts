@@ -50,7 +50,8 @@ export function createGraphClient(config: GraphConfig) {
       {
         method,
         headers: {
-          authorization: `Bearer ${token}`,
+          // An empty token sends no Authorization header (the OAuth code exchange carries app credentials).
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
           // FormData (file uploads) sets its own multipart content type.
           ...(body === undefined || body instanceof FormData ? {} : { "content-type": "application/json" }),
         },
