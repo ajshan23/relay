@@ -169,6 +169,8 @@ export type ChannelSummary = {
   status: string;
   /** The branch this channel's conversations and contacts belong to. */
   defaultBranchId: string | null;
+  /** Branches this channel serves. */
+  branchIds?: string[];
   statusReason?: string | null;
   /** Choices made per channel. readReceipts: missing means on. */
   settings?: { readReceipts?: boolean };

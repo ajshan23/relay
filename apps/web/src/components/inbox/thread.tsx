@@ -322,7 +322,7 @@ function Messages({
   if (!list.length)
     return (
       <p className="py-10 text-center text-sm text-muted-foreground">
-        No messages yet. When the customer writes, it shows up here.
+        No messages yet. Send the first one below; their replies show up here.
       </p>
     );
 

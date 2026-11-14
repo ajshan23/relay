@@ -8,6 +8,7 @@ import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
+import { requireBranch } from "../contacts/shared";
 import {
   assignableUsers,
   type Conversation,
@@ -16,6 +17,7 @@ import {
   reachableBranches,
   visibleTo,
 } from "./access";
+import { startBody, startConversation } from "./start";
 
 export { reachableBranches } from "./access";
 
@@ -251,6 +253,18 @@ export function conversationRoutes(ctx: AppContext) {
   });
 
   // Everything the conversation header and details panel show.
+  // Start a chat from Relay (?branch=): finds or creates the contact, their WhatsApp identity and the chat.
+  app.post("/start", requireBranch(ctx), async (c) => {
+    const parsed = await parseBody(c, startBody);
+    if ("error" in parsed) return parsed.error;
+    const result = await startConversation(ctx, c.var.access, c.var.branchId, parsed.data);
+    if (!result.ok) return fail(c, result.status, result.code, result.message);
+    return c.json(
+      { conversationId: result.conversationId, created: result.created },
+      result.created ? 201 : 200,
+    );
+  });
+
   app.get("/:id", async (c) => {
     const access = c.var.access;
     const conversation = await findConversation(ctx, access, c.req.param("id"));

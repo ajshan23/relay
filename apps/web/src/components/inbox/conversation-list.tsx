@@ -3,6 +3,7 @@
 import { Icon, type IconName } from "@relay/ui/components/icon";
 import { Person } from "@relay/ui/components/person";
 import { SearchInput } from "@relay/ui/components/text-input";
+import { Button } from "@relay/ui/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { listTime, members, previewLine } from "./format";
 import { type ListFilter, useChannels, useConversations, useCounts } from "./queries";
+import { NewConversationDialog, useBranchNumbers } from "./start-conversation";
 import type { ConversationRow, InboxView } from "./types";
 
 export const viewLabels: Record<InboxView, string> = {
@@ -52,6 +54,8 @@ export function ConversationList({ filter, selectedId, onSelect, onViewChange, o
   const counts = useCounts(filter.branch);
   const channels = useChannels();
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const { numbers } = useBranchNumbers();
   const rows = useMemo(() => list.data?.pages.flatMap((p) => p.conversations) ?? [], [list.data]);
   const shown = unreadOnly ? rows.filter((r) => r.unreadCount > 0 || r.id === selectedId) : rows;
   const channelName = channels.data?.find((c) => c.id === filter.channel)?.displayName;
@@ -98,6 +102,17 @@ export function ConversationList({ filter, selectedId, onSelect, onViewChange, o
               Unread
             </Label>
             <Switch id="unread-only" checked={unreadOnly} onCheckedChange={setUnreadOnly} />
+            {numbers.length ? (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="New conversation"
+                title="New conversation"
+                onClick={() => setComposing(true)}
+              >
+                <Icon name="compose" />
+              </Button>
+            ) : null}
           </span>
         </div>
         <SearchInput
@@ -169,6 +184,7 @@ export function ConversationList({ filter, selectedId, onSelect, onViewChange, o
         <div ref={end} className="h-px" />
         {isFetchingNextPage ? <ListSkeleton rows={2} /> : null}
       </div>
+      <NewConversationDialog open={composing} onOpenChange={setComposing} />
     </section>
   );
 }

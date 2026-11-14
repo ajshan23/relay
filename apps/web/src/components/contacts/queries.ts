@@ -140,7 +140,13 @@ export type ContactDetail = {
     authorUserId: string | null;
   }[];
   lists: { id: string; name: string }[];
-  conversations: { id: string; status: string; lastMessageAt: string | null; channelName: string }[];
+  conversations: {
+    id: string;
+    status: string;
+    lastMessageAt: string | null;
+    channelAccountId: string;
+    channelName: string;
+  }[];
   optOuts: { channelAccountId: string | null; source: "reply" | "manual" | "import"; createdAt: string }[];
 };
 

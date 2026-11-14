@@ -532,6 +532,7 @@ export function contactRoutes(ctx: AppContext) {
           id: schema.conversation.id,
           status: schema.conversation.status,
           lastMessageAt: schema.conversation.lastMessageAt,
+          channelAccountId: schema.conversation.channelAccountId,
           channelName: schema.channelAccount.displayName,
         })
         .from(schema.conversation)

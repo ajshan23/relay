@@ -13,6 +13,7 @@ import Link from "next/link";
 import { type ReactNode, useState } from "react";
 import { channelIcon } from "@/components/inbox/conversation-list";
 import { listTime } from "@/components/inbox/format";
+import { useBranchNumbers, useStartConversation } from "@/components/inbox/start-conversation";
 import { ApiError } from "@/lib/api";
 import { EditableCell, FieldEditor, FieldValue, TagChips } from "./cells";
 import { MarketingEditor } from "./marketing";
@@ -334,9 +335,47 @@ export function ContactProfile({
             ) : (
               <p className="text-muted-foreground">No conversations yet.</p>
             )}
+            <MessageOn contactId={d.contact.id} hasPhone={!!d.contact.phone} existing={d.conversations} />
           </Block>
         </div>
       )}
     </SidePanel>
+  );
+}
+
+/**
+ * "Message on WhatsApp": starts (or opens) a chat with this contact on each of the branch's numbers
+ * they haven't talked on yet. The first message is a template when WhatsApp's 24-hour window is closed.
+ */
+function MessageOn({
+  contactId,
+  hasPhone,
+  existing,
+}: {
+  contactId: string;
+  hasPhone: boolean;
+  existing: { channelAccountId: string }[];
+}) {
+  const { numbers } = useBranchNumbers();
+  const { start, busy } = useStartConversation();
+  const fresh = numbers.filter((n) => !existing.some((e) => e.channelAccountId === n.id));
+  if (!fresh.length) return null;
+  if (!hasPhone && !existing.length)
+    return <p className="text-xs text-muted-foreground">Add a phone number to message them on WhatsApp.</p>;
+  return (
+    <div className="flex flex-wrap gap-2 pt-1">
+      {fresh.map((n) => (
+        <Button
+          key={n.id}
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => void start({ channelAccountId: n.id, contactId })}
+        >
+          <Icon name="whatsapp" />
+          {numbers.length > 1 ? `Message on ${n.displayName}` : "Message on WhatsApp"}
+        </Button>
+      ))}
+    </div>
   );
 }
