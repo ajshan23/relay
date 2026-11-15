@@ -42,6 +42,8 @@ export function LiveUpdates() {
       for (const id of changed) {
         void qc.invalidateQueries({ queryKey: keys.messages(id) });
         void qc.invalidateQueries({ queryKey: keys.detail(id) });
+        // The "automation is running" bar over the chat (an automation can start or end any time).
+        void qc.invalidateQueries({ queryKey: ["automations", branchId, "chat", id] });
       }
       changed.clear();
     };

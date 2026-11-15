@@ -656,9 +656,12 @@ export function createAutomations({
       kind: m.media.kind,
       mimeType: file.mimeType,
       fileName: m.media.name ?? null,
+      sizeBytes: file.sizeBytes,
       sha256: file.sha256,
       fileId: file.id,
       storageKey: file.storageKey,
+      // Already in our storage: the chat shows it straight away (nothing to download from Meta).
+      status: "stored",
     });
     return queueSend(
       input,
