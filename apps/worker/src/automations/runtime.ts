@@ -186,15 +186,16 @@ export function createAutomations({
         results[r.a.id] = skip;
         continue;
       }
-      results[r.a.id] = await startRun({
-        def,
-        versionId: r.v.id,
-        automationId: r.a.id,
-        conversation: conv,
-        contactId: t.contactId,
-        idempotencyKey: `tag:${t.contactId}:${t.tagId}:${t.eventId}:${r.a.id}`,
-        trigger: { kind: "tag", tagId: t.tagId },
-      });
+      results[r.a.id] =
+        (await startRun({
+          def,
+          versionId: r.v.id,
+          automationId: r.a.id,
+          conversation: conv,
+          contactId: t.contactId,
+          idempotencyKey: `tag:${t.contactId}:${t.tagId}:${t.eventId}:${r.a.id}`,
+          trigger: { kind: "tag", tagId: t.tagId },
+        })) ?? "chat_in_automation";
     }
     return { action: "tag", results };
   }
@@ -266,6 +267,7 @@ export function createAutomations({
       idempotencyKey: `msg:${ev.messageId}`,
       trigger: { kind: "message", messageId: ev.messageId, text: ev.text, adId: ev.adId },
     });
+    if (!runId) return { action: "ignored", reason: "chat_in_automation" };
     return { action: "started", automationId: pick.id, runId };
   }
 
@@ -312,6 +314,7 @@ export function createAutomations({
       trigger: { kind: "button", messageId: ev.messageId, text: ev.text },
       startAt: target ?? undefined,
     });
+    if (!runId) return { action: "ignored", reason: "chat_in_automation" };
     return { action: target ? "resumed_at_choice" : "restarted", automationId: row.a.id, runId };
   }
 
@@ -364,7 +367,7 @@ export function createAutomations({
     trigger: AutomationRunInput["trigger"];
     startAt?: AutomationRunInput["startAt"];
     test?: boolean;
-  }): Promise<string> {
+  }): Promise<string | null> {
     const c = o.conversation;
     const input: AutomationRunInput = {
       automationId: o.automationId,
@@ -389,6 +392,13 @@ export function createAutomations({
       ...(o.test ? { test: true } : {}),
     };
     const runId = await db.transaction(async (tx) => {
+      // Lock the chat: a run started from the inbox at the same moment can't also take charge.
+      const [locked] = await tx
+        .select({ automationRunId: schema.conversation.automationRunId })
+        .from(schema.conversation)
+        .where(eq(schema.conversation.id, c.id))
+        .for("update");
+      if (locked?.automationRunId && isLive((await kairos.getRun(locked.automationRunId))?.run)) return null;
       const { runId } = await kairos.start(run, input, {
         tenantId: c.organizationId,
         serialKey: c.id,
@@ -402,6 +412,7 @@ export function createAutomations({
         .where(eq(schema.conversation.id, c.id));
       return runId;
     });
+    if (!runId) return null; // another run took the chat first
     kairos.nudge();
     await announce(c);
     return runId;
@@ -602,6 +613,8 @@ export function createAutomations({
       key: automationEvents.messageReceived,
       scope: input.conversationId,
       timeoutMs: cfg.timeoutMinutes * 60_000,
+      // A reply typed while the bot was "typing" this message counts too.
+      lookbackFrom: input.typing ? `${name}:typing` : undefined,
     });
     if (reply.timedOut) return "no_reply";
     const p = reply.event.payload;
@@ -642,6 +655,8 @@ export function createAutomations({
         key: automationEvents.messageReceived,
         scope: input.conversationId,
         timeoutMs: Math.max(1_000, deadline - Date.now()),
+        // An answer typed while the bot was "typing" the question (or the re-ask) counts too.
+        lookbackFrom: input.typing ? (attempt ? `${name}:re${attempt}:typing` : `${name}:typing`) : undefined,
       });
       if (reply.timedOut) return "no_reply";
       const answer = readAnswer(q, reply.event.payload, (id) => optionFromReply(stepKey, id));

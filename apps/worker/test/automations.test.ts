@@ -555,6 +555,7 @@ describe("automations on Kairos", () => {
       trigger: { kind: "manual", startedByUserId: "usr_test" },
       test: true,
     });
+    if (!testRun) throw new Error("the test run didn't start");
     await until(
       "the test run",
       async () => (await automations.kairos.getRun(testRun))?.run.status === "completed",
@@ -764,6 +765,85 @@ describe("automations on Kairos", () => {
       return runs.length === 3 && runs[0]?.status === "waiting";
     });
     await menuButton(chat.conversationId, "Book", 1);
+  });
+
+  it("takes an answer typed while the bot is still typing the question", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["eager"],
+      match: "exact",
+    });
+    def.nodes = [
+      {
+        id: "q",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "Shall we call you back?",
+          answer: {
+            type: "buttons",
+            options: [
+              { id: "a1", title: "Yes" },
+              { id: "a2", title: "No" },
+            ],
+          },
+          saveAs: "callback",
+          retries: 1,
+          retryText: "Pick one",
+          timeoutMinutes: 60,
+        },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "q" },
+      { id: "2", source: "q", sourceHandle: "opt:a1", target: "bye" },
+      { id: "3", source: "q", sourceHandle: "opt:a2", target: "bye" },
+      { id: "4", source: "q", sourceHandle: "invalid", target: "bye" },
+      { id: "5", source: "q", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("eager", def);
+    const chat = await newChat();
+    await customerSays(chat, "eager", null, undefined, `wamid.eager${T}`);
+    // While "typing…" shows (the pause before the question), they already type "yes".
+    await until("the pause before the question", async () => {
+      const r = await runOf(chat.conversationId);
+      const steps = r ? (await automations.kairos.getRun(r.id))?.steps : [];
+      return steps?.some((s) => s.name === "ask_question:q#1:pause" && s.status === "waiting");
+    });
+    await customerSays(chat, "yes");
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    const out = run.output as { path: string[]; answers: Record<string, string> };
+    assert.deepEqual(out.path, ["q:opt:a1", "bye:end"]);
+    assert.equal(out.answers.callback, "Yes");
+  });
+
+  it("never lets a second run take a chat that a run is in charge of", async () => {
+    const def = bookOrTalk("busy");
+    await liveAutomation("busy", def);
+    const chat = await newChat();
+    await customerSays(chat, "busy");
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    const [conv] = await db
+      .select()
+      .from(schema.conversation)
+      .where(sql`${schema.conversation.id} = ${chat.conversationId}`);
+    if (!conv) throw new Error("no chat");
+    const second = await automations.startRun({
+      def,
+      versionId: `${ids.version}_busy`,
+      automationId: `${ids.automation}_busy`,
+      conversation: { ...conv, automationRunId: null }, // as if read before the first run took it
+      contactId: chat.contactId,
+      idempotencyKey: `second:${chat.conversationId}`,
+      trigger: { kind: "manual", startedByUserId: "usr_test" },
+    });
+    assert.equal(second, null);
+    assert.equal((await runsOf(chat.conversationId)).length, 1);
   });
 
   it("sends a template whose quick-reply buttons each lead their own way", async () => {

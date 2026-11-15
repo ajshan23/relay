@@ -251,10 +251,16 @@ export function AutomationEditor({ id }: { id: string }) {
       message?: string;
       version?: { number: number };
       unchanged?: boolean;
+      status?: string;
+      error?: string;
     };
     if (res.ok) {
       setPublishing(null);
-      if (body.unchanged)
+      if (body.status === "paused")
+        notify.success(`Version ${body.version?.number ?? ""} saved`, {
+          description: "It's paused, so nothing runs yet. Resume it to go live with this version.",
+        });
+      else if (body.unchanged)
         notify.success(`Version ${body.version?.number ?? ""} is live`, {
           description: "Nothing changed since it was published.",
         });
@@ -265,7 +271,8 @@ export function AutomationEditor({ id }: { id: string }) {
       qc.invalidateQueries({ queryKey: ["automations", branch.id] });
       return;
     }
-    if (res.status === 409 || res.status === 422)
+    if (body.error === "archived") notify.error("Not published", { description: body.message });
+    else if (res.status === 409 || res.status === 422)
       setPublishing({ issues: body.issues ?? [], blocked: res.status === 422 });
     else notify.error("Not published", { description: body.message });
   }

@@ -483,3 +483,57 @@ describe("run history", () => {
     );
   });
 });
+
+describe("history of a stopped run", () => {
+  it("says what it was waiting for, not that it still waits", () => {
+    const def = emptyDefinition({ type: "message_received", mode: "any" });
+    def.nodes = [
+      {
+        id: "menu",
+        type: "ask_question",
+        version: 1,
+        config: { text: "How can we help?", answer: { type: "text", format: "any" }, saveAs: "need" },
+      },
+    ];
+    def.edges = [{ id: "1", source: "trigger", sourceHandle: "next", target: "menu" }];
+    const at = new Date("2026-11-15T16:00:00Z").toISOString();
+    const history = describeRun({
+      def,
+      input: {
+        automationId: "a",
+        versionId: "v",
+        organizationId: "o",
+        branchId: "b",
+        channelAccountId: "c",
+        conversationId: "cv",
+        contactId: "ct",
+        trigger: { kind: "message", text: "Hi" },
+      },
+      steps: [
+        {
+          name: "ask_question:menu#1:answer0",
+          kind: "wait",
+          status: "waiting",
+          result: null,
+          error: null,
+          startedAt: at,
+          completedAt: null,
+          wakeAt: "2026-11-16T16:00:00Z",
+        },
+      ],
+      messages: {},
+      status: "cancelled",
+      error: null,
+      createdAt: at,
+      finishedAt: at,
+    });
+    assert.deepEqual(
+      history.map((h) => h.text),
+      [
+        "Started: Message “Hi”",
+        "Was waiting for a reply to “How can we help?” when it was stopped",
+        "Stopped",
+      ],
+    );
+  });
+});

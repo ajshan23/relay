@@ -109,6 +109,11 @@ export function describeRun(o: {
 }): HistoryEntry[] {
   const { def, input, steps, messages } = o;
   const next = new Map(def.edges.map((e) => [`${e.source}:${e.sourceHandle}`, e.target]));
+  /** What a step says, for "waiting for a reply to “…”": the question or message text. */
+  const stepTitleText = (nodeId: string) => {
+    const c = config(nodeId);
+    return String(c.text ?? "") || stepTitle(def, nodeId);
+  };
   const config = (nodeId: string) => {
     const node = def.nodes.find((n) => n.id === nodeId);
     const spec = node ? nodeSpec(node.type) : null;
@@ -116,6 +121,8 @@ export function describeRun(o: {
     return (parsed?.success ? parsed.data : {}) as Record<string, unknown>;
   };
   const out: HistoryEntry[] = [];
+  // A run that has ended can still have a last step recorded as waiting (stopped while it waited).
+  const ended = ["completed", "failed", "cancelled"].includes(o.status);
 
   // How it started.
   const begun = startedBy(input.trigger, o.names);
@@ -194,9 +201,11 @@ export function describeRun(o: {
         out.push({
           at: iso(s.startedAt),
           tone: "muted",
-          text: "Waiting for a reply",
+          text: ended
+            ? `Was waiting for a reply to ${quote(stepTitleText(node), 40)} when it ${o.status === "cancelled" ? "was stopped" : "ended"}`
+            : "Waiting for a reply",
           nodeId: node,
-          ...(open ? { until: iso(s.wakeAt) ?? undefined } : {}),
+          ...(open && !ended ? { until: iso(s.wakeAt) ?? undefined } : {}),
         });
         return;
       }
@@ -233,7 +242,12 @@ export function describeRun(o: {
       out.push({
         at: s.status === "waiting" ? iso(s.startedAt) : at,
         tone: "muted",
-        text: s.status === "waiting" ? "Waiting" : "Waited",
+        text:
+          s.status !== "waiting"
+            ? "Waited"
+            : ended
+              ? `Was waiting when it ${o.status === "cancelled" ? "was stopped" : "ended"}, meant to carry on`
+              : "Waiting",
         nodeId: node,
         ...(s.wakeAt ? { until: iso(s.wakeAt) ?? undefined } : {}),
       });

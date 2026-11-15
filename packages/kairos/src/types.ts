@@ -37,6 +37,12 @@ export type WaitOptions = {
   filter?: Record<string, Json>;
   /** Give up after this long and return `{ timedOut: true }`. Without it the run waits until cancelled. */
   timeoutMs?: number;
+  /**
+   * Look back for events from when this earlier step of the run began (its name), instead of from the
+   * previous step: e.g. from a pause before a question, so a reply typed during the pause counts.
+   * Events this run already used never count twice.
+   */
+  lookbackFrom?: string;
 };
 
 export type WaitResult<P = Json> =

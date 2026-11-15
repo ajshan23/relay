@@ -1,3 +1,4 @@
+import { publishInboxEvent } from "@relay/core";
 import {
   type AutomationDefinition,
   type AutomationRunInput,
@@ -87,6 +88,15 @@ export async function startRunInChat(
   };
   const wf = runWorkflow(ctx);
   const runId = await ctx.db.transaction(async (tx) => {
+    // Two clicks (or a click and an incoming message) at once: the chat row is locked, so the second
+    // sees the first run in charge and starts nothing.
+    const [locked] = await tx
+      .select({ automationRunId: schema.conversation.automationRunId })
+      .from(schema.conversation)
+      .where(eq(schema.conversation.id, conv.id))
+      .for("update");
+    if (locked?.automationRunId && isLiveRun((await ctx.kairos.getRun(locked.automationRunId))?.run))
+      return null;
     const { runId } = await ctx.kairos.start(wf, input, {
       tenantId: conv.organizationId,
       serialKey: conv.id,
@@ -99,17 +109,47 @@ export async function startRunInChat(
       .where(eq(schema.conversation.id, conv.id));
     return runId;
   });
+  if (!runId)
+    return {
+      ok: false,
+      status: 409,
+      code: "chat_in_automation",
+      message: "Another automation is running in this chat. Stop it first.",
+    };
+  await announceChat(ctx, conv);
   return { ok: true, runId };
+}
+
+/** Tells everyone looking at this chat that it changed (the automation bar), best effort. */
+async function announceChat(
+  ctx: AppContext,
+  conv: { id: string; organizationId: string; branchId: string | null },
+) {
+  try {
+    await publishInboxEvent(ctx.redis, conv.organizationId, {
+      type: "conversation.updated",
+      conversationId: conv.id,
+      branchId: conv.branchId,
+    });
+  } catch {
+    // Redis away: their screens catch up on the next refresh.
+  }
 }
 
 /** Stops a run and gives the chat back. */
 export async function stopRun(ctx: AppContext, runId: string, conversationId: string | null) {
   await ctx.kairos.cancel(runId);
-  if (conversationId)
-    await ctx.db
-      .update(schema.conversation)
-      .set({ automationRunId: null, updatedAt: new Date() })
-      .where(and(eq(schema.conversation.id, conversationId), eq(schema.conversation.automationRunId, runId)));
+  if (!conversationId) return;
+  const [freed] = await ctx.db
+    .update(schema.conversation)
+    .set({ automationRunId: null, updatedAt: new Date() })
+    .where(and(eq(schema.conversation.id, conversationId), eq(schema.conversation.automationRunId, runId)))
+    .returning({
+      id: schema.conversation.id,
+      organizationId: schema.conversation.organizationId,
+      branchId: schema.conversation.branchId,
+    });
+  if (freed) await announceChat(ctx, freed);
 }
 
 /**

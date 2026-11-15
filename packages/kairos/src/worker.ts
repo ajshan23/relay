@@ -790,7 +790,11 @@ class Execution implements WorkflowContext {
       return row.result as WaitResult<P>;
     }
     const { S } = this;
-    const since = this.lastStartedAt ?? this.runCreatedAt;
+    let from: StepRow | undefined;
+    if (o.lookbackFrom)
+      for (const s of this.steps.values())
+        if (s.name === o.lookbackFrom && (!from || s.seq > from.seq)) from = s;
+    const since = (from ? new Date(from.started_at) : null) ?? this.lastStartedAt ?? this.runCreatedAt;
     const result = await this.write(
       async (ex): Promise<WaitResult<P> | null> => {
         // publish() takes the same lock, so an event is either seen here or matches the wait we register.

@@ -424,6 +424,8 @@ export function automationRoutes(ctx: AppContext) {
     const ack = !!(await c.req.json().catch(() => ({})))?.acknowledgeWarnings;
     const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found");
+    if (row.status === "archived")
+      return fail(c, 409, "archived", "This automation is archived, so it can't be published.");
     const def = migrateDefinition(row.draft);
     const opts = await options(access.orgId, c.var.branchId, row.channelAccountId);
     const issues = await check(row, def, opts);
@@ -443,12 +445,11 @@ export function automationRoutes(ctx: AppContext) {
         .from(a)
         .leftJoin(v, eq(v.id, a.liveVersionId))
         .where(eq(a.id, row.id));
-      // Nothing changed since the live version: keep it (and make sure it's live) instead of a copy.
-      if (current?.live && current.live.checksum === sum) {
-        if (current.status !== "live")
-          await tx.update(a).set({ status: "live", updatedAt: new Date() }).where(eq(a.id, row.id));
-        return { ver: current.live, unchanged: true };
-      }
+      // A paused automation stays paused: publishing saves the version it runs on when resumed.
+      const status = current?.status === "paused" ? "paused" : "live";
+      // Nothing changed since the live version: keep it instead of a copy.
+      if (current?.live && current.live.checksum === sum)
+        return { ver: current.live, unchanged: true, status };
       const [last] = await tx
         .select({ n: sql<number>`coalesce(max(${v.number}), 0)::int` })
         .from(v)
@@ -469,7 +470,7 @@ export function automationRoutes(ctx: AppContext) {
       await tx
         .update(a)
         .set({
-          status: "live",
+          status,
           liveVersionId: ver.id,
           triggerType: def.trigger.type,
           priority: triggerPriority(def.trigger),
@@ -477,11 +478,12 @@ export function automationRoutes(ctx: AppContext) {
           updatedAt: new Date(),
         })
         .where(eq(a.id, row.id));
-      return { ver, unchanged: false };
+      return { ver, unchanged: false, status };
     });
     return c.json({
       version: { id: result.ver.id, number: result.ver.number },
       unchanged: result.unchanged,
+      status: result.status,
       issues,
     });
   });
@@ -494,6 +496,8 @@ export function automationRoutes(ctx: AppContext) {
       if (!row) return fail(c, 404, "not_found");
       if (action === "resume" && !row.liveVersionId)
         return fail(c, 409, "never_published", "Publish it first.");
+      if (action !== "archive" && row.status === "archived")
+        return fail(c, 409, "archived", "This automation is archived.");
       if (action === "resume") {
         // The number may have changed while it was paused: check the live version against it again.
         const [live] = await ctx.db
@@ -519,7 +523,23 @@ export function automationRoutes(ctx: AppContext) {
         .set({ status, updatedAt: new Date() })
         .where(eq(a.id, row.id))
         .returning();
-      return c.json({ automation: saved ? view(saved) : null });
+      // Archiving ends it: runs still waiting for a reply or a timer stop now, and their chats are free.
+      // (A run in the middle of a step stops at its next one, so it can still show as going for a moment.)
+      let stopped = 0;
+      if (action === "archive") {
+        const going = await ctx.kairos.listRuns({
+          tenantId: access.orgId,
+          workflow: automationWorkflows.run.name,
+          labels: { automationId: row.id },
+          status: LIVE,
+          limit: 500,
+        });
+        for (const r of going) {
+          await stopRun(ctx, r.id, (r.labels as Partial<AutomationRunLabels>).conversationId ?? null);
+          stopped++;
+        }
+      }
+      return c.json({ automation: saved ? view(saved) : null, stoppedRuns: stopped });
     });
 
   app.delete("/:id", async (c) => {
