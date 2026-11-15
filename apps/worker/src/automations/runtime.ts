@@ -201,7 +201,10 @@ export function createAutomations({
       }
       return { action: "ignored", reason: "opt_out" };
     }
-    if (live) return { action: matched.length ? "answered" : "ignored", reason: "chat_in_automation" };
+    // A reply that a waiting run took is that run's answer, even if the run has finished by now (the
+    // router runs after it): it must never also start an automation, e.g. "menu" typed as an answer.
+    if (matched.length) return { action: "answered", runIds: matched };
+    if (live) return { action: "ignored", reason: "chat_in_automation" };
 
     // Which live automation this message starts: candidates on this number, most specific wins.
     const rows = await db
@@ -265,9 +268,11 @@ export function createAutomations({
       if (theirs.length) return "in_another_run";
     }
     if (rules.reentry !== "every_time") {
+      // Test runs from the editor don't count: testing on yourself must not use up "Only once".
       const [last] = await kairos.listRuns({
         workflow: automationWorkflows.run.name,
         labels: { automationId, contactId },
+        withoutLabels: ["test"],
         limit: 1,
       });
       if (last && rules.reentry === "once") return "already_entered";
@@ -326,6 +331,7 @@ export function createAutomations({
         .where(eq(schema.conversation.id, c.id));
       return runId;
     });
+    kairos.nudge();
     await announce(c);
     return runId;
   }

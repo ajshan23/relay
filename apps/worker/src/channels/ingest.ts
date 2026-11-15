@@ -60,7 +60,15 @@ export type InboundHook = (
   event: InboundEventPayload,
 ) => Promise<void>;
 
-export function createIngest(db: Db, registry: ChannelRegistry, hooks: { onInbound?: InboundHook } = {}) {
+export function createIngest(
+  db: Db,
+  registry: ChannelRegistry,
+  hooks: {
+    onInbound?: InboundHook;
+    /** After the transaction that called onInbound committed (wakes the automation worker now). */
+    afterInbound?: () => void;
+  } = {},
+) {
   /** Changes made while ingesting the current webhook; reset per ingest() call. */
   let changed: IngestResult["changed"] = [];
   const touched = (c: { id: string; organizationId: string; branchId: string | null }, messageId?: string) =>
@@ -382,7 +390,8 @@ export function createIngest(db: Db, registry: ChannelRegistry, hooks: { onInbou
 
     // The message, the conversation update and the attachment are saved together or not at all,
     // so a retry after a failure redoes everything instead of seeing a "duplicate" and stopping.
-    return db.transaction(async (tx) => {
+    let heard = false;
+    const saved = await db.transaction(async (tx) => {
       const id = newId("message");
       const inserted = await tx
         .insert(schema.message)
@@ -479,6 +488,7 @@ export function createIngest(db: Db, registry: ChannelRegistry, hooks: { onInbou
               : c.type === "interactive"
                 ? (c.title ?? "")
                 : (c.caption ?? "");
+        heard = true;
         await hooks.onInbound(tx, {
           messageId: id,
           organizationId: account.organizationId,
@@ -513,6 +523,8 @@ export function createIngest(db: Db, registry: ChannelRegistry, hooks: { onInbou
       });
       return [attachmentId];
     });
+    if (heard) hooks.afterInbound?.();
+    return saved;
   }
 
   /** Moves an outbound message's status forward. Matched by provider id, or by our own id echoed back. */

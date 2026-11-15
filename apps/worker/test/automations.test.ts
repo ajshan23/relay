@@ -466,6 +466,99 @@ describe("automations on Kairos", () => {
     assert.equal((note?.content as { text?: string } | undefined)?.text, "Mood: fine thanks");
   });
 
+  /** Waits until every router run of this chat has finished, and returns their decisions. */
+  async function routed(conversationId: string, count: number) {
+    return until(`${count} routed messages`, async () => {
+      const runs = await automations.kairos.listRuns({ workflow: "relay.route", labels: { conversationId } });
+      if (runs.length < count || runs.some((r) => r.status !== "completed")) return null;
+      const steps = await Promise.all(runs.map((r) => automations.kairos.getRun(r.id)));
+      return steps.map((g) => g?.steps[0]?.result as { action: string });
+    });
+  }
+
+  it("takes a keyword typed as an answer as the answer only, never as a new start", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["again"],
+      match: "exact",
+    });
+    def.nodes = [
+      {
+        id: "msg",
+        type: "send_message",
+        version: 1,
+        config: { text: "Say anything", media: null, waitForReply: true, saveAs: "", timeoutMinutes: 60 },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "msg" },
+      { id: "2", source: "msg", sourceHandle: "replied", target: "bye" },
+      { id: "3", source: "msg", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("again", def);
+    const chat = await newChat();
+    await customerSays(chat, "again");
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    // The answer is also the keyword. The run finishes on it before its router step runs.
+    await customerSays(chat, "again");
+    const decisions = await routed(chat.conversationId, 2);
+    assert.deepEqual(decisions.map((d) => d.action).sort(), ["answered", "started"]);
+    const runs = await automations.kairos.listRuns({
+      workflow: "relay.automation",
+      labels: { conversationId: chat.conversationId },
+    });
+    assert.equal(runs.length, 1, "the answer must not start a second run");
+  });
+
+  it("doesn't count test runs for 'Only once'", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["once"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, reentry: "once" };
+    def.nodes = [{ id: "hi", type: "send_message", version: 1, config: { text: "Hello once", media: null } }];
+    def.edges = [{ id: "1", source: "trigger", sourceHandle: "next", target: "hi" }];
+    await liveAutomation("once", def);
+    const chat = await newChat();
+    const [conv] = await db
+      .select()
+      .from(schema.conversation)
+      .where(sql`${schema.conversation.id} = ${chat.conversationId}`);
+    if (!conv) throw new Error("no chat");
+    // Tried out from the editor on this contact first.
+    const testRun = await automations.startRun({
+      def,
+      versionId: `${ids.version}_once`,
+      automationId: `${ids.automation}_once`,
+      conversation: conv,
+      contactId: chat.contactId,
+      idempotencyKey: `test:${chat.conversationId}`,
+      trigger: { kind: "manual", startedByUserId: "usr_test" },
+      test: true,
+    });
+    await until(
+      "the test run",
+      async () => (await automations.kairos.getRun(testRun))?.run.status === "completed",
+    );
+    await customerSays(chat, "once");
+    await routed(chat.conversationId, 1);
+    await until(
+      "the real run to finish",
+      async () => (await runOf(chat.conversationId))?.status === "completed",
+    );
+    await customerSays(chat, "once");
+    const decisions = await routed(chat.conversationId, 2);
+    assert.deepEqual(
+      decisions.map((d) => d.action).sort(),
+      ["skipped", "started"],
+      "the real first time starts; the second is 'already entered'",
+    );
+  });
+
   it("sends a template whose quick-reply buttons each lead their own way", async () => {
     await db.insert(schema.messageTemplate).values({
       id: `tpl_t${T}`,

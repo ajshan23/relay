@@ -85,6 +85,8 @@ export class Worker {
   private stopping: Promise<void> | null = null;
   private wake: (() => void) | null = null;
   private wokenByNotify = false;
+  /** A nudge that came while the loop was claiming: claim again instead of sleeping. */
+  private nudged = false;
   private timers: NodeJS.Timeout[] = [];
   private lastRetention = 0;
   readonly stats = {
@@ -96,6 +98,7 @@ export class Worker {
     lostClaims: 0,
     wakesByNotify: 0,
     wakesByPoll: 0,
+    wakesByNudge: 0,
     reclaimedByReaper: 0,
     infraRetries: 0,
   };
@@ -136,6 +139,19 @@ export class Worker {
     if (!this.opts.noMaintenance)
       this.timers.push(setInterval(() => void this.maintenance(), MAINTENANCE_EVERY_MS));
     void this.loop();
+  }
+
+  /** Claim now: new work was just committed in this process. */
+  nudge() {
+    if (!this.running) return;
+    this.stats.wakesByNudge++;
+    this.kick();
+  }
+
+  /** Wakes the loop, or makes it claim again if it is claiming right now (never loses the wake). */
+  private kick() {
+    if (this.wake) this.wake();
+    else this.nudged = true;
   }
 
   /** Stops claiming, lets running steps finish (up to the grace period), then gives back what's left. */
@@ -190,6 +206,10 @@ export class Worker {
         }
       }
       if (got > 0 && got === Math.min(free, 50)) continue;
+      if (this.nudged) {
+        this.nudged = false;
+        continue;
+      }
       await new Promise<void>((resolve) => {
         const t = setTimeout(() => {
           this.wake = null;
@@ -215,7 +235,8 @@ export class Worker {
       )
       .finally(() => {
         this.active.delete(c.run_id);
-        this.wake?.();
+        // A slot and maybe a serial key (the chat) just freed up: claim what was waiting on them.
+        this.kick();
       });
     this.active.set(c.run_id, p);
   }

@@ -81,7 +81,20 @@ export function createKairos(options: KairosOptions) {
   /** Runs `fn` in the caller's transaction if they gave one, else in a new one of ours. */
   async function inTx<T>(executor: Executor | undefined, fn: (ex: Executor) => Promise<T>): Promise<T> {
     if (executor) return fn(executor);
-    return (await sql.begin((tx) => fn(fromPostgres(tx)))) as T;
+    const out = (await sql.begin((tx) => fn(fromPostgres(tx)))) as T;
+    // Committed: this process's own workers look for the new work now, not at their next poll.
+    nudge();
+    return out;
+  }
+
+  /**
+   * Wakes this process's workers to claim right away. Kairos calls it after its own transactions;
+   * call it yourself after committing a transaction you passed as `executor`. Without LISTEN this is
+   * what keeps work started in this process (a run starting another run, an event waking a run) from
+   * waiting for the next poll.
+   */
+  function nudge() {
+    for (const w of workers) w.nudge();
   }
 
   async function start<I>(wf: Workflow<I, unknown>, input: I, opts: StartOptions): Promise<StartResult> {
@@ -241,6 +254,8 @@ export function createKairos(options: KairosOptions) {
       status?: RunStatus[];
       serialKey?: string;
       labels?: Record<string, unknown>;
+      /** Leave out runs that carry any of these label keys (e.g. test runs). */
+      withoutLabels?: string[];
       before?: Date;
       limit?: number;
     } = {},
@@ -256,6 +271,12 @@ export function createKairos(options: KairosOptions) {
     if (filter.status?.length) add("status = any(?::text[])", filter.status);
     if (filter.serialKey) add("serial_key = ?", filter.serialKey);
     if (filter.labels) add("labels @> ?::text::jsonb", JSON.stringify(filter.labels));
+    if (filter.withoutLabels?.length)
+      add(
+        // (Written without jsonb's ?| operator, whose "?" this helper would take for a parameter.)
+        "not exists (select 1 from jsonb_object_keys(labels) k where k = any(?::text[]))",
+        filter.withoutLabels,
+      );
     if (filter.before) add("created_at < ?", filter.before.toISOString());
     params.push(Math.min(Math.max(filter.limit ?? 50, 1), 500));
     return pool.query<RunRow>(
@@ -282,6 +303,7 @@ export function createKairos(options: KairosOptions) {
     retry,
     getRun,
     listRuns,
+    nudge,
     worker,
     /** Stops workers and closes the connection pool (if Kairos opened it). */
     async close() {

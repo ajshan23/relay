@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { isKairosControl, type Kairos, NonRetryableError, StepFailedError } from "../src/index";
-import { fast, setup, sleep, teardown, waitFor } from "./helpers";
+import { createKairos, isKairosControl, type Kairos, NonRetryableError, StepFailedError } from "../src/index";
+import { fast, setup, sleep, TEST_URL, teardown, waitFor } from "./helpers";
 
 let k: Kairos;
 before(async () => {
@@ -66,6 +66,34 @@ describe("runs and steps", () => {
       [a.runId],
     );
     assert.equal((await k.listRuns({ labels: { contactId: "c1" }, tenantId: "t9" })).length, 2);
+    // Leaving out runs by label key (e.g. test runs).
+    const t = await k.start(wf, {}, { tenantId: "t9", labels: { automationId: "aut_1", test: true } });
+    assert.deepEqual(
+      (await k.listRuns({ labels: { automationId: "aut_1" }, withoutLabels: ["test"] })).map((r) => r.id),
+      [a.runId],
+    );
+    assert.equal((await k.listRuns({ labels: { automationId: "aut_1" } }))[0]?.id, t.runId);
+  });
+
+  it("wakes its own workers when it commits new work, without LISTEN or a poll", async () => {
+    // No LISTEN and a 5 s poll: only the in-process nudge can make this fast.
+    const quiet = createKairos({ databaseUrl: TEST_URL, schema: k.schema, log: () => {} });
+    const child = quiet.workflow({ name: "nudge-child", version: 1 }, async () => "done");
+    const parent = quiet.workflow({ name: "nudge-parent", version: 1 }, async (ctx) =>
+      ctx.step("start child", async () => (await quiet.start(child, {}, { tenantId: "tn" })).runId),
+    );
+    const w = quiet.worker({ workflows: [parent, child], pollMs: 5_000, concurrency: 5 });
+    await w.start();
+    await sleep(200); // the loop's first claim found nothing; it now sleeps for 5 s
+    const t0 = Date.now();
+    const { runId } = await quiet.start(parent, {}, { tenantId: "tn" });
+    const p = await waitFor(quiet, runId, ["completed", "failed"]);
+    const c = await waitFor(quiet, p.run.output as string, ["completed", "failed"]);
+    const took = Date.now() - t0;
+    await w.stop();
+    await quiet.close();
+    assert.equal(c.run.status, "completed");
+    assert.ok(took < 2_000, `parent and child took ${took} ms; a nudge-less worker needs 5 s or more`);
   });
 
   it("returns the existing run for a repeated idempotency key", async () => {

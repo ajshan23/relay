@@ -379,7 +379,11 @@ export function automationRoutes(ctx: AppContext) {
         return fail(c, 422, "invalid_draft", d.error.issues[0]?.message ?? "The draft isn't valid.");
       draft = d.data;
     }
-    if (body.channelAccountId) {
+    if (body.channelAccountId && body.channelAccountId !== row.channelAccountId) {
+      // The live trigger and every waiting run use the number, and steps pick templates per number:
+      // moving a live automation would change it without a publish and without these checks.
+      if (row.status === "live")
+        return fail(c, 409, "number_locked", "Pause the automation to move it to another number.");
       const numbers = await branchNumbers(access.orgId, c.var.branchId);
       if (!numbers.some((n) => n.id === body.channelAccountId))
         return fail(c, 422, "wrong_number", "That number isn't connected to this branch.");
@@ -427,7 +431,20 @@ export function automationRoutes(ctx: AppContext) {
         409,
       );
     const sum = checksum(def);
-    const version = await ctx.db.transaction(async (tx) => {
+    const result = await ctx.db.transaction(async (tx) => {
+      // One publish of an automation at a time (a double click sends two).
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`automation.publish:${row.id}`}))`);
+      const [current] = await tx
+        .select({ status: a.status, live: v })
+        .from(a)
+        .leftJoin(v, eq(v.id, a.liveVersionId))
+        .where(eq(a.id, row.id));
+      // Nothing changed since the live version: keep it (and make sure it's live) instead of a copy.
+      if (current?.live && current.live.checksum === sum) {
+        if (current.status !== "live")
+          await tx.update(a).set({ status: "live", updatedAt: new Date() }).where(eq(a.id, row.id));
+        return { ver: current.live, unchanged: true };
+      }
       const [last] = await tx
         .select({ n: sql<number>`coalesce(max(${v.number}), 0)::int` })
         .from(v)
@@ -456,9 +473,13 @@ export function automationRoutes(ctx: AppContext) {
           updatedAt: new Date(),
         })
         .where(eq(a.id, row.id));
-      return ver;
+      return { ver, unchanged: false };
     });
-    return c.json({ version: { id: version.id, number: version.number }, issues });
+    return c.json({
+      version: { id: result.ver.id, number: result.ver.number },
+      unchanged: result.unchanged,
+      issues,
+    });
   });
 
   for (const action of ["pause", "resume", "archive"] as const)
@@ -469,6 +490,24 @@ export function automationRoutes(ctx: AppContext) {
       if (!row) return fail(c, 404, "not_found");
       if (action === "resume" && !row.liveVersionId)
         return fail(c, 409, "never_published", "Publish it first.");
+      if (action === "resume") {
+        // The number may have changed while it was paused: check the live version against it again.
+        const [live] = await ctx.db
+          .select({ definition: v.definition })
+          .from(v)
+          .where(eq(v.id, row.liveVersionId as string));
+        const opts = await options(access.orgId, c.var.branchId, row.channelAccountId);
+        const issues = live ? await check(row, migrateDefinition(live.definition), opts) : [];
+        if (hasErrors(issues))
+          return c.json(
+            {
+              error: "has_errors",
+              message: `It can't run as published: ${issues.find((i) => i.level === "error")?.message ?? "fix the problems"} Publish a fixed version.`,
+              issues,
+            },
+            422,
+          );
+      }
       // Pausing stops new runs; runs already going finish (stop them from the Runs tab if needed).
       const status = action === "pause" ? "paused" : action === "resume" ? "live" : "archived";
       const [saved] = await ctx.db

@@ -9,11 +9,10 @@ import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { Textarea } from "@relay/ui/ui/textarea";
 import { useQueryClient } from "@tanstack/react-query";
-import type { RefObject } from "react";
 import { useState } from "react";
 import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
-import { type AutomationSummary, automationKeys, type BranchNumber, useSaveAutomation } from "./queries";
+import { type AutomationSummary, automationKeys, type BranchNumber, type SaveBody } from "./queries";
 
 /** Name, number, and the run rules (who may enter, when a run stops). Rules publish with the steps. */
 export function AutomationSettings({
@@ -22,42 +21,48 @@ export function AutomationSettings({
   numbers,
   readOnly,
   onRules,
-  revision,
+  saveDetails,
 }: {
   automation: AutomationSummary;
   def: AutomationDefinition;
   numbers: BranchNumber[];
   readOnly: boolean;
   onRules: (rules: RunRules) => void;
-  revision: RefObject<number>;
+  /** The editor's save queue (one save at a time, so details and draft saves never collide). */
+  saveDetails: (body: Omit<SaveBody, "revision">) => Promise<unknown>;
 }) {
   const [name, setName] = useState(automation.name);
   const [description, setDescription] = useState(automation.description ?? "");
   const [number, setNumber] = useState(automation.channelAccountId ?? "");
-  const save = useSaveAutomation(automation.id);
+  const [saving, setSaving] = useState(false);
   const qc = useQueryClient();
   const { branch } = useBranch();
   const rules = def.rules;
   const setRule = (patch: Partial<RunRules>) => onRules({ ...rules, ...patch });
 
-  const saveDetails = () =>
-    save.mutate(
-      {
-        revision: revision.current ?? 0,
+  // A live automation keeps its number: the trigger and every waiting run use it, and its templates
+  // are picked per number. Pause it to move it to another number (it's checked again on resume).
+  const numberLocked = automation.status === "live";
+  const numberChanged = number !== (automation.channelAccountId ?? "");
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveDetails({
         name,
         description: description || null,
-        channelAccountId: number || undefined,
-      },
-      {
-        onSuccess: (res) => {
-          revision.current = res.automation.draftRevision;
-          notify.success("Saved");
-          qc.invalidateQueries({ queryKey: automationKeys.one(branch.id, automation.id) });
-        },
-        onError: (err) =>
-          notify.error("Not saved", { description: err instanceof ApiError ? err.message : undefined }),
-      },
-    );
+        channelAccountId: numberChanged && !numberLocked ? number || undefined : undefined,
+      });
+      notify.success("Saved");
+      qc.invalidateQueries({ queryKey: automationKeys.one(branch.id, automation.id) });
+      // Templates (and their status) are per number.
+      if (numberChanged) qc.invalidateQueries({ queryKey: automationKeys.options(branch.id, automation.id) });
+    } catch (err) {
+      notify.error("Not saved", { description: err instanceof ApiError ? err.message : undefined });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 overflow-y-auto px-6 py-8">
@@ -77,9 +82,14 @@ export function AutomationSettings({
           </Field>
           <Field
             label="WhatsApp number"
-            hint="The trigger listens on this number and every step sends from it. Two numbers need two automations."
+            hint={
+              numberLocked
+                ? "It's live on this number. Pause it to move it to another number."
+                : "The trigger listens on this number and every step sends from it. Two numbers need two automations."
+            }
           >
             <SelectField
+              disabled={numberLocked}
               value={number}
               onValueChange={setNumber}
               placeholder="Pick a number"
@@ -89,7 +99,7 @@ export function AutomationSettings({
               }))}
             />
           </Field>
-          <Button className="self-start" onClick={saveDetails} disabled={save.isPending || !name.trim()}>
+          <Button className="self-start" onClick={() => void save()} disabled={saving || !name.trim()}>
             Save details
           </Button>
         </fieldset>

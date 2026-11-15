@@ -54,7 +54,13 @@ void automations
 const mediaQueue = new Queue<MediaJob>(queues.media, { connection });
 const webhooks = new Worker<WebhookJob>(
   queues.webhooks,
-  createWebhookProcessor({ db, mediaQueue, redis: connection, onInbound: automations.onInbound }),
+  createWebhookProcessor({
+    db,
+    mediaQueue,
+    redis: connection,
+    onInbound: automations.onInbound,
+    afterInbound: automations.kairos.nudge,
+  }),
   {
     connection,
     concurrency: 10,

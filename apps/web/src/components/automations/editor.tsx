@@ -28,6 +28,7 @@ import { Canvas } from "./canvas";
 import { connect, disconnect, insertStep, removeStep, updateConfig } from "./ops";
 import {
   automationKeys,
+  type SaveBody,
   useAutomation,
   useAutomationAction,
   useEditorOptions,
@@ -67,12 +68,17 @@ export function AutomationEditor({ id }: { id: string }) {
   const [picker, setPicker] = useState<{ source: string; handle: string } | null>(null);
   const [state, setState] = useState<SaveState>("saved");
   const [publishing, setPublishing] = useState<{ issues: Issue[]; blocked: boolean } | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const revision = useRef(0);
   const past = useRef<AutomationDefinition[]>([]);
   const future = useRef<AutomationDefinition[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef<AutomationDefinition | null>(null);
+  /** The draft changed since the last save went out. */
+  const dirty = useRef(false);
+  /** Saves go out one at a time: each needs the revision the previous one returned. */
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const lastPush = useRef(0);
 
   // Load once; after that the editor owns the draft and the server only confirms saves.
@@ -85,16 +91,45 @@ export function AutomationEditor({ id }: { id: string }) {
     }
   }, [detail.data, def, id]);
 
-  const flush = useCallback(async () => {
-    if (!latest.current) return;
+  /**
+   * Every save of this automation (the draft, and the details on the Settings tab) goes through here,
+   * after the one before it has come back. Two saves in flight would carry the same revision and the
+   * second would be refused as if someone else had edited.
+   */
+  const saveInTurn = useCallback(
+    (body: Omit<SaveBody, "revision">) => {
+      const res = queue.current.then(async () => {
+        const r = await save.mutateAsync({ ...body, revision: revision.current });
+        revision.current = r.automation.draftRevision;
+        return r;
+      });
+      queue.current = res.catch(() => {});
+      return res;
+    },
+    [save],
+  );
+
+  /** Saves the draft now if it has unsaved changes. True when everything is saved. */
+  const flush = useCallback(async (): Promise<boolean> => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (!dirty.current || !latest.current) {
+      await queue.current;
+      return !dirty.current;
+    }
+    dirty.current = false;
     setState("saving");
     try {
-      const res = await save.mutateAsync({ revision: revision.current, draft: latest.current });
-      revision.current = res.automation.draftRevision;
+      const res = await saveInTurn({ draft: latest.current });
       setIssues(res.issues);
-      setState("saved");
+      // Edits made while this save was out are still unsaved (their own save is on its way).
+      if (!dirty.current) setState("saved");
       qc.invalidateQueries({ queryKey: automationKeys.one(branch.id, id) });
+      return !dirty.current;
     } catch (err) {
+      dirty.current = true;
       if (err instanceof ApiError && err.status === 409) setState("stale");
       else {
         setState("error");
@@ -102,8 +137,9 @@ export function AutomationEditor({ id }: { id: string }) {
           description: err instanceof ApiError ? err.message : "Check your connection.",
         });
       }
+      return false;
     }
-  }, [save, qc, branch.id, id]);
+  }, [saveInTurn, qc, branch.id, id]);
 
   const change = useCallback(
     (next: AutomationDefinition, opts: { undo?: boolean } = {}) => {
@@ -114,10 +150,14 @@ export function AutomationEditor({ id }: { id: string }) {
         future.current = [];
       }
       latest.current = next;
+      dirty.current = true;
       setDef(next);
       setState("unsaved");
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => void flush(), 700);
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        void flush();
+      }, 700);
     },
     [flush],
   );
@@ -180,9 +220,25 @@ export function AutomationEditor({ id }: { id: string }) {
   const errors = issues.filter((i) => i.level === "error");
 
   async function publish(acknowledgeWarnings: boolean) {
-    if (timer.current) {
-      clearTimeout(timer.current);
-      await flush();
+    if (publishBusy) return;
+    setPublishBusy(true);
+    try {
+      await publishNow(acknowledgeWarnings);
+    } finally {
+      setPublishBusy(false);
+    }
+  }
+
+  async function publishNow(acknowledgeWarnings: boolean) {
+    // Publish what's on screen: the server publishes its saved draft, so that must be this one.
+    if (!(await flush())) {
+      notify.error("Not published", {
+        description:
+          state === "stale"
+            ? "Someone else changed this automation. Reload to see their changes."
+            : "Your latest changes aren't saved yet. Try again in a moment.",
+      });
+      return;
     }
     const res = await fetch(`/api${inBranch(`/automations/${id}/publish`, branch.id)}`, {
       method: "POST",
@@ -194,12 +250,18 @@ export function AutomationEditor({ id }: { id: string }) {
       issues?: Issue[];
       message?: string;
       version?: { number: number };
+      unchanged?: boolean;
     };
     if (res.ok) {
       setPublishing(null);
-      notify.success(`Version ${body.version?.number ?? ""} is live`, {
-        description: "New runs use it now; runs already going finish on their version.",
-      });
+      if (body.unchanged)
+        notify.success(`Version ${body.version?.number ?? ""} is live`, {
+          description: "Nothing changed since it was published.",
+        });
+      else
+        notify.success(`Version ${body.version?.number ?? ""} is live`, {
+          description: "New runs use it now; runs already going finish on their version.",
+        });
       qc.invalidateQueries({ queryKey: ["automations", branch.id] });
       return;
     }
@@ -312,7 +374,18 @@ export function AutomationEditor({ id }: { id: string }) {
                       Pause (no new runs)
                     </DropdownMenuItem>
                   ) : (
-                    <DropdownMenuItem onSelect={() => action.mutate("resume")}>Resume</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        action.mutate("resume", {
+                          onError: (err) =>
+                            notify.error("Not resumed", {
+                              description: err instanceof ApiError ? err.message : undefined,
+                            }),
+                        })
+                      }
+                    >
+                      Resume
+                    </DropdownMenuItem>
                   )}
                 </>
               ) : null}
@@ -329,8 +402,8 @@ export function AutomationEditor({ id }: { id: string }) {
                 <Icon name="play" />
                 Test
               </Button>
-              <Button size="sm" onClick={() => void publish(false)}>
-                {liveVersion ? "Publish changes" : "Publish"}
+              <Button size="sm" disabled={publishBusy} onClick={() => void publish(false)}>
+                {publishBusy ? "Publishing…" : liveVersion ? "Publish changes" : "Publish"}
               </Button>
             </>
           ) : null}
@@ -414,7 +487,7 @@ export function AutomationEditor({ id }: { id: string }) {
           numbers={options.data?.numbers ?? []}
           readOnly={readOnly}
           onRules={(rules) => change({ ...def, rules })}
-          revision={revision}
+          saveDetails={saveInTurn}
         />
       )}
 
@@ -440,7 +513,11 @@ export function AutomationEditor({ id }: { id: string }) {
             <Button variant="outline" onClick={() => setPublishing(null)}>
               {publishing?.blocked ? "Close" : "Go back"}
             </Button>
-            {publishing?.blocked ? null : <Button onClick={() => void publish(true)}>Publish anyway</Button>}
+            {publishing?.blocked ? null : (
+              <Button disabled={publishBusy} onClick={() => void publish(true)}>
+                Publish anyway
+              </Button>
+            )}
           </ModalActions>
         }
       >
@@ -484,7 +561,7 @@ function TestDialog({
   id: string;
   open: boolean;
   onOpenChange: (o: boolean) => void;
-  flush: () => Promise<void>;
+  flush: () => Promise<boolean>;
 }) {
   const [q, setQ] = useState("");
   const chats = useTestChats(id, q, open);
@@ -514,7 +591,13 @@ function TestDialog({
                   type="button"
                   disabled={test.isPending}
                   onClick={async () => {
-                    await flush();
+                    // The test runs the saved draft, so it must be what's on screen.
+                    if (!(await flush())) {
+                      notify.error("Test not started", {
+                        description: "Your latest changes aren't saved yet. Try again in a moment.",
+                      });
+                      return;
+                    }
                     test.mutate(c.conversationId, {
                       onSuccess: () => {
                         onOpenChange(false);

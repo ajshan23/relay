@@ -17,13 +17,15 @@ export function createWebhookProcessor({
   mediaQueue,
   redis,
   onInbound,
+  afterInbound,
 }: {
   db: Db;
   mediaQueue: Queue<MediaJob>;
   redis: Publisher;
   onInbound?: InboundHook;
+  afterInbound?: () => void;
 }) {
-  const { ingest } = createIngest(db, channels(), { onInbound });
+  const { ingest } = createIngest(db, channels(), { onInbound, afterInbound });
 
   return async function processWebhook(job: Job<WebhookJob>) {
     const [event] = await db
