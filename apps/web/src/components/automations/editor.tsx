@@ -83,7 +83,7 @@ export function AutomationEditor({ id }: { id: string }) {
       setIssues(detail.data.issues);
       revision.current = detail.data.automation.draftRevision;
     }
-  }, [detail.data, def]);
+  }, [detail.data, def, id]);
 
   const flush = useCallback(async () => {
     if (!latest.current) return;

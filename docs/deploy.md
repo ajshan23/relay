@@ -127,15 +127,35 @@ In the app's Webhooks settings (WhatsApp Business Account object) subscribe to: 
 - Numbers that stay on the WhatsApp Business app (coexistence) get their contacts and up to 6 months of chats copied
   within 24 hours of connecting; imported chats start closed and never count as unread.
 
+**9. Automations (Kairos).** Automations run on Kairos, a Postgres-only engine inside `relay-worker`: no extra
+service, and the worker creates and migrates its `kairos` schema itself when it starts.
+- Optional, for instant wake-ups when a customer replies (otherwise within about a second):
+  `KAIROS_LISTEN_URL` = the Neon **direct** URL (the `DATABASE_URL` without `-pooler` in the host).
+- The Kairos dashboard (runs, waits, failures, workers, engine health) is its own small app on 127.0.0.1:3204.
+  Set `KAIROS_ADMIN_PASSWORD` in `.env` (a long random one; it is the only login), add an A record `kairos.relay`
+  under `operium.pro`, then this site file and `certbot --nginx -d kairos.relay.operium.pro`:
+```nginx
+server {
+    listen 80;
+    server_name kairos.relay.operium.pro;
+    location / {
+        proxy_pass http://127.0.0.1:3204;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+- First time: `pnpm --filter @relay/kairos-dashboard build && pm2 start ecosystem.config.cjs --only kairos-dashboard`.
+
 ## Updating
 
 ```bash
-cd /var/www/relay && git pull && pnpm install --frozen-lockfile && pnpm --filter @relay/web build && pm2 reload ecosystem.config.cjs
+cd /var/www/relay && git pull && pnpm install --frozen-lockfile && pnpm --filter @relay/web build && pnpm --filter @relay/kairos-dashboard build && pm2 reload ecosystem.config.cjs
 ```
 When a commit adds a migration: `DATABASE_URL="$(grep ^DATABASE_URL= .env | cut -d= -f2-)" pnpm --filter @relay/db migrate` before the reload.
-(0019, Embedded Signup, is already applied to the shared Neon database.)
+(Up to 0022, automations, is already applied to the shared Neon database.)
 
 ## Rules
 
-- **Only one worker per database.** The server and a laptop both pointing at the same Neon database must not both run `relay-worker`, or webhooks and sends get split between them.
+- **Only one worker per database.** The server and a laptop both pointing at the same Neon database must not both run `relay-worker`, or webhooks and sends get split between them (and automation runs would execute on whichever code version claims them).
 - Logs: `pm2 logs relay-api` (pm2-logrotate caps them).

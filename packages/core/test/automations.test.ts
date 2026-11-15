@@ -8,8 +8,8 @@ import {
   migrateDefinition,
   nodeSpecs,
   pickAutomation,
-  starters,
   resolveText,
+  starters,
   type Trigger,
   triggerMatches,
   triggersOverlap,
@@ -274,7 +274,9 @@ describe("definitions", () => {
 describe("starters", () => {
   it("are valid automations with no errors", () => {
     for (const s of starters) {
-      const issues = validateDefinition(s.build({ timezone: "Asia/Kolkata" })).filter((i) => i.level === "error");
+      const issues = validateDefinition(s.build({ timezone: "Asia/Kolkata" })).filter(
+        (i) => i.level === "error",
+      );
       assert.deepEqual(issues, [], s.id);
     }
   });

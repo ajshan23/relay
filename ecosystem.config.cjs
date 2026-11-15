@@ -46,8 +46,17 @@ module.exports = {
       node_args: ts,
       env,
       max_memory_restart: "550M",
-      // Let in-flight sends finish before a restart.
+      // Let in-flight sends (and automation steps, up to 25 s) finish before a restart.
       kill_timeout: 30000,
+    },
+    {
+      // Kairos dashboard: automation runs, waits and engine health. Admin password only (KAIROS_ADMIN_PASSWORD).
+      name: "kairos-dashboard",
+      cwd: "apps/kairos-dashboard",
+      script: "node_modules/next/dist/bin/next",
+      args: "start --port 3204 --hostname 127.0.0.1",
+      env,
+      max_memory_restart: "300M",
     },
   ],
 };

@@ -30,6 +30,7 @@ import {
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { Spinner } from "@relay/ui/ui/spinner";
 import { type DragEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { AutomationBanner, RunAutomationButton } from "@/components/automations/chat-controls";
 import { DateSeparator } from "@/components/ui/whatsapp/date-separator";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
@@ -182,6 +183,7 @@ export function Thread({ id, onBack, className }: Props) {
         onDetails={() => setDetails(true)}
         onSearch={() => setSearching((s) => !s)}
       />
+      {d?.conversation.kind === "direct" ? <AutomationBanner conversationId={id} /> : null}
 
       <div className="relative min-h-0 flex-1">
         {messages.isPending || !d ? (
@@ -554,6 +556,7 @@ function ThreadHeader({
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
+        {c.kind === "direct" ? <RunAutomationButton conversationId={c.id} /> : null}
         {d.canWork && c.status === "open" ? (
           <SnoozeMenu
             snoozedUntil={c.snoozedUntil}

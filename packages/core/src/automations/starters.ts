@@ -1,4 +1,9 @@
-import { type AutomationDefinition, type AutomationEdge, type AutomationNode, emptyDefinition } from "./definition";
+import {
+  type AutomationDefinition,
+  type AutomationEdge,
+  type AutomationNode,
+  emptyDefinition,
+} from "./definition";
 
 /*
  * Ready-made automations offered when creating one. Each is a complete, valid definition the business
@@ -157,7 +162,9 @@ export const starters: Starter[] = [
         n(
           "rate",
           "ask_question",
-          ask("How did we do today?", "rating", ["😊 Great", "😐 Okay", "🙁 Not good"], { timeoutMinutes: 720 }),
+          ask("How did we do today?", "rating", ["😊 Great", "😐 Okay", "🙁 Not good"], {
+            timeoutMinutes: 720,
+          }),
         ),
         n("thanks", "send_message", { text: "Thank you, that made our day! 🙏", media: null }),
         n(

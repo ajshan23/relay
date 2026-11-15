@@ -101,7 +101,9 @@ function NoteCard({ message: m, onDelete }: { message: Msg; onDelete?: (m: Msg) 
       <div className="mx-auto w-full max-w-xl rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-50">
         <div className="mb-1 flex items-center gap-1.5 text-xs text-amber-800 dark:text-amber-200/80">
           <Icon name="lock" size="xs" />
-          <span className="font-medium">Note · {m.sender.name ?? "Teammate"}</span>
+          <span className="font-medium">
+            Note · {m.sender.name ?? (m.senderType === "bot" ? "Automation" : "Teammate")}
+          </span>
           <span>· only your team sees this</span>
           <span className="ml-auto tabular-nums">{clockTime(m.sentAt)}</span>
           {onDelete && !m.pending ? (

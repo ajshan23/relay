@@ -215,6 +215,7 @@ function NewAutomationDialog({
       <div className="flex flex-col gap-4 px-6 pb-5">
         <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Start from">
           {choices.map((c) => (
+            // biome-ignore lint/a11y/useSemanticElements: cards with a title and a description, acting as a radio group
             <button
               key={c.id}
               type="button"
