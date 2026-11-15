@@ -61,6 +61,8 @@ export type WorkerOptions = {
 type Claim = { run_id: string; attempt: number; workflow: string; version: number; db_now: Date };
 
 const MAINTENANCE_EVERY_MS = 5_000;
+/** Sleeps up to this long get a local timer to claim them when due (longer ones: the poll). */
+const SHORT_SLEEP_MS = 5 * 60_000;
 const RETENTION_EVERY_MS = 60_000;
 
 /**
@@ -383,7 +385,25 @@ export class Worker {
 
   /** Internals for Execution. */
   get internals() {
-    return { S: this.S, sql: this.sql, pool: this.pool, log: this.opts.log, stats: this.stats, id: this.id };
+    return {
+      S: this.S,
+      sql: this.sql,
+      pool: this.pool,
+      log: this.opts.log,
+      stats: this.stats,
+      id: this.id,
+      wakeIn: (ms: number) => this.wakeIn(ms),
+    };
+  }
+
+  /**
+   * A run here just went to sleep for a short while: claim again when it's due instead of at the
+   * next poll, so a 1.5 s pause is 1.5 s, not up to a poll later. (Another worker may take it; fine.)
+   */
+  private wakeIn(ms: number) {
+    if (!this.running || ms > SHORT_SLEEP_MS) return;
+    const t = setTimeout(() => this.kick(), Math.max(0, ms) + 15);
+    t.unref?.();
   }
 }
 
@@ -752,6 +772,12 @@ class Execution implements WorkflowContext {
       this.done(finished);
       return;
     }
+    const wakeAt = row?.wake_at
+      ? new Date(row.wake_at).getTime() - this.clockOffset
+      : at.until
+        ? at.until.getTime()
+        : Date.now() + (at.ms ?? 0);
+    this.w.wakeIn(wakeAt - Date.now());
     this.stop("suspended");
     throw new KairosControl("suspended");
   }

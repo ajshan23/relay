@@ -32,7 +32,22 @@ export type AutomationRunInput = {
     tagId?: string;
     startedByUserId?: string;
   };
+  /**
+   * Show "typing…" and pause before each message (the rule, frozen when the run starts). Runs that
+   * started before this existed don't have it, so their recorded steps replay unchanged.
+   */
+  typing?: boolean;
 };
+
+/**
+ * How long "typing…" shows before a message: about as long as a quick typist takes, between 1.2 s
+ * and 4 s. Photos and files without a caption take 1.5 s.
+ */
+export function typingPauseMs(text: string): number {
+  const n = text.trim().length;
+  if (!n) return 1_500;
+  return Math.round(Math.min(4_000, Math.max(1_200, 800 + n * 30)));
+}
 
 /** Labels on every automation run (searchable in Kairos and by the API). */
 export type AutomationRunLabels = {

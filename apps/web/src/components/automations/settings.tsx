@@ -158,6 +158,18 @@ export function AutomationSettings({
       </section>
 
       <section className="flex flex-col gap-3">
+        <h2 className="text-base font-semibold">How it writes</h2>
+        <fieldset disabled={readOnly} className="flex flex-col divide-y">
+          <SwitchRow
+            label="Show “typing…” before each message"
+            description="Customers see it typing for a moment (1–4 seconds, longer for longer messages), like a person. It also marks their last message as read, so it only shows when read receipts are on for this number."
+            checked={rules.typing !== false}
+            onCheckedChange={(v) => setRule({ typing: v })}
+          />
+        </fieldset>
+      </section>
+
+      <section className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">When it stops</h2>
         <fieldset disabled={readOnly} className="flex flex-col divide-y">
           <SwitchRow

@@ -1,4 +1,5 @@
-import { newId, type Publisher, publishInboxEvent } from "@relay/core";
+import type { ChannelType } from "@relay/channels";
+import { newId, type Publisher, publishInboxEvent, type SignalJob } from "@relay/core";
 import {
   type AskQuestionConfig,
   type AutomationDefinition,
@@ -19,6 +20,7 @@ import {
   resolveText,
   type SendMessageConfig,
   type SendTemplateConfig,
+  typingPauseMs,
   type VariableScope,
   type WaitConfig,
 } from "@relay/core/automations";
@@ -45,6 +47,7 @@ import {
 } from "@relay/kairos";
 import type { Queue } from "bullmq";
 import type { InboundHook } from "../channels/ingest";
+import { channels } from "../channels/registry";
 import { nextTimeOfDay, readAnswer, withinBusinessHours } from "./helpers";
 
 /*
@@ -83,6 +86,11 @@ export function createAutomations({
   outboxJobOptions,
   databaseUrl,
   listenUrl,
+  signals,
+  canType = (type) => {
+    const adapter = channels().get(type as ChannelType);
+    return !!adapter?.markRead && !!adapter.capabilities.readReceipts;
+  },
 }: {
   db: Db;
   redis: Publisher;
@@ -90,6 +98,10 @@ export function createAutomations({
   outboxJobOptions: Record<string, unknown>;
   databaseUrl: string;
   listenUrl?: string;
+  /** Read receipts and "typing…" (queue "signals"); without it automations never show typing. */
+  signals?: Pick<Queue, "add">;
+  /** Whether a channel type can show "typing…" (WhatsApp can). */
+  canType?: (channelType: string) => boolean;
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
 
@@ -307,6 +319,7 @@ export function createAutomations({
       conversationId: c.id,
       contactId: o.contactId,
       trigger: o.trigger,
+      typing: o.def.rules.typing !== false,
     };
     const labels: AutomationRunLabels = {
       automationId: o.automationId,
@@ -399,12 +412,14 @@ export function createAutomations({
     switch (node.type) {
       case "send_message": {
         const m = config as SendMessageConfig;
+        await typeFirst(ctx, input, name, m.text);
         const r = await ctx.step(name, () => sendMessage(input, memory, stepKey, m));
         if (!r.ok) return "failed";
         return m.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, m, []) : "next";
       }
       case "send_template": {
         const t = config as SendTemplateConfig;
+        await typeFirst(ctx, input, name, "");
         const r = await ctx.step(name, () => sendTemplate(input, memory, stepKey, t));
         if (!r.ok) return "failed";
         return t.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, t, t.replyButtons) : "next";
@@ -535,6 +550,7 @@ export function createAutomations({
     stepKey: string,
     q: AskQuestionConfig,
   ): Promise<string> {
+    await typeFirst(ctx, input, name, q.text);
     const sent = await ctx.step(`${name}:ask`, () => sendQuestion(input, memory, stepKey, q, q.text));
     if (!sent.ok) return "failed";
     const deadline = await ctx.step(`${name}:deadline`, () => Date.now() + q.timeoutMinutes * 60_000);
@@ -551,11 +567,70 @@ export function createAutomations({
         return answer.handle;
       }
       if (attempt >= q.retries) return "invalid";
+      await typeFirst(ctx, input, `${name}:re${attempt + 1}`, q.retryText);
       const again = await ctx.step(`${name}:reask${attempt + 1}`, () =>
         sendQuestion(input, memory, `${stepKey}:re${attempt + 1}`, q, q.retryText, stepKey),
       );
       if (!again.ok) return "failed";
     }
+  }
+
+  /**
+   * Before a message: "typing…" in the customer's WhatsApp, then a pause about as long as typing it
+   * would take, so the bot reads like a person. Only for runs that started with typing on; skipped
+   * (no pause) when typing can't be shown: the chat's window is closed, read receipts are off for
+   * the number, or the customer hasn't written yet.
+   */
+  async function typeFirst(ctx: WorkflowContext, input: AutomationRunInput, name: string, text: string) {
+    if (!input.typing) return;
+    const shown = await ctx.step(`${name}:typing`, () => showTyping(input, `${ctx.runId}_${name}`));
+    if (shown) await ctx.sleep(`${name}:pause`, typingPauseMs(text));
+  }
+
+  /** Queues WhatsApp's typing indicator on the customer's latest message (it also marks it read). */
+  async function showTyping(input: AutomationRunInput, key: string): Promise<boolean> {
+    if (!signals) return false;
+    const conv = await conversationOf(input.conversationId);
+    if (conv?.kind !== "direct" || !conv.windowExpiresAt || conv.windowExpiresAt <= new Date()) return false;
+    const [account] = await db
+      .select({
+        type: schema.channelAccount.type,
+        status: schema.channelAccount.status,
+        settings: schema.channelAccount.settings,
+      })
+      .from(schema.channelAccount)
+      .where(eq(schema.channelAccount.id, conv.channelAccountId))
+      .limit(1);
+    if (account?.status !== "active" || account.settings.readReceipts === false || !canType(account.type))
+      return false;
+    const m = schema.message;
+    const [newest] = await db
+      .select({ id: m.id })
+      .from(m)
+      .where(and(eq(m.conversationId, conv.id), eq(m.direction, "inbound"), sql`${m.externalId} is not null`))
+      .orderBy(sql`${m.sentAt} desc`)
+      .limit(1);
+    if (!newest) return false;
+    // Typing marks their message read on WhatsApp; the inbox keeps track of that.
+    await db
+      .update(schema.conversation)
+      .set({ providerReadMessageId: newest.id })
+      .where(eq(schema.conversation.id, conv.id));
+    // Best effort: a missed "typing…" isn't worth holding the message for, so give up after 1 s.
+    await Promise.race([
+      signals.add(
+        "typing",
+        { kind: "typing", conversationId: conv.id, messageId: newest.id } satisfies SignalJob,
+        {
+          jobId: `typing_${key.replace(/[^A-Za-z0-9_-]/g, "_")}`,
+          attempts: 1,
+          removeOnComplete: { age: 60 },
+          removeOnFail: { age: 3600 },
+        },
+      ),
+      new Promise((r) => setTimeout(r, 1_000)),
+    ]).catch(() => {});
+    return true;
   }
 
   // ---------------------------------------------------------------- side effects (inside steps)

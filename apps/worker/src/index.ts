@@ -34,6 +34,7 @@ emails.on("ready", () => console.log(`emails worker ready (provider: ${emailProv
 
 /* Automations run on Kairos (Postgres only): durable steps, waits for replies, delays. */
 const automationOutbox = new Queue(queues.outbox, { connection });
+const automationSignals = new Queue(queues.signals, { connection });
 const automations = createAutomations({
   db,
   redis: connection,
@@ -41,6 +42,7 @@ const automations = createAutomations({
   outboxJobOptions,
   databaseUrl: config.DATABASE_URL,
   listenUrl: config.KAIROS_LISTEN_URL,
+  signals: automationSignals,
 });
 const automationWorker = automations.worker();
 void automations
@@ -305,6 +307,7 @@ async function shutdown() {
   await automations.kairos.close();
   await Promise.all([
     automationOutbox.close(),
+    automationSignals.close(),
     emails.close(),
     webhooks.close(),
     outbox.close(),

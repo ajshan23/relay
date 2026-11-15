@@ -43,6 +43,11 @@ export const runRulesSchema = z.object({
   stopOnAgentReply: z.boolean().default(true),
   /** Stop when the contact opts out. */
   stopOnOptOut: z.boolean().default(true),
+  /**
+   * Show "typing…" in the customer's WhatsApp for a moment before each message, like a person
+   * would. Missing means on (no default here, so older versions keep their checksum).
+   */
+  typing: z.boolean().optional(),
 });
 export type RunRules = z.infer<typeof runRulesSchema>;
 export const defaultRunRules: RunRules = runRulesSchema.parse({});

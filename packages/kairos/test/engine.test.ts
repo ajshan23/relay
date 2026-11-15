@@ -75,6 +75,24 @@ describe("runs and steps", () => {
     assert.equal((await k.listRuns({ labels: { automationId: "aut_1" } }))[0]?.id, t.runId);
   });
 
+  it("wakes a short sleep on time, not at the next poll", async () => {
+    const quiet = createKairos({ databaseUrl: TEST_URL, schema: k.schema, log: () => {} });
+    const wf = quiet.workflow({ name: "short-nap", version: 1 }, async (ctx) => {
+      await ctx.sleep("nap", 400);
+      return "awake";
+    });
+    const w = quiet.worker({ workflows: [wf], pollMs: 5_000, concurrency: 5 });
+    await w.start();
+    const t0 = Date.now();
+    const { runId } = await quiet.start(wf, {}, { tenantId: "ts" });
+    const r = await waitFor(quiet, runId, ["completed", "failed"]);
+    const took = Date.now() - t0;
+    await w.stop();
+    await quiet.close();
+    assert.equal(r.run.status, "completed");
+    assert.ok(took >= 400 && took < 1_500, `a 400 ms sleep took ${took} ms (the poll is 5 s)`);
+  });
+
   it("wakes its own workers when it commits new work, without LISTEN or a poll", async () => {
     // No LISTEN and a 5 s poll: only the in-process nudge can make this fast.
     const quiet = createKairos({ databaseUrl: TEST_URL, schema: k.schema, log: () => {} });

@@ -18,6 +18,13 @@ const URL = process.env.AUTOMATION_TEST_DATABASE_URL ?? "postgres://relay:relay@
 const { db, sql: pg } = createDb(URL);
 const queued: string[] = [];
 const outbox = { add: async (_: string, d: { messageId: string }) => queued.push(d.messageId) };
+const typing: { messageId: string; at: number }[] = [];
+const signals = {
+  add: async (_: string, d: { kind: string; messageId: string }) => {
+    if (d.kind === "typing") typing.push({ messageId: d.messageId, at: Date.now() });
+    return {} as never;
+  },
+};
 const automations = createAutomations({
   db,
   redis: { publish: async () => 0 },
@@ -25,6 +32,8 @@ const automations = createAutomations({
   outboxJobOptions: {},
   databaseUrl: URL,
   listenUrl: URL,
+  signals,
+  canType: () => true,
 });
 const worker = automations.worker();
 
@@ -80,6 +89,8 @@ async function customerSays(
   text: string,
   reply: { id: string; title: string } | null = null,
   messageId = `msg_t${T}_${++msgSeq}`,
+  /** WhatsApp's id for it; typing can only answer a message that has one. */
+  externalId: string | null = null,
 ) {
   await db.transaction(async (tx) => {
     await tx
@@ -94,6 +105,7 @@ async function customerSays(
         type: reply ? "interactive" : "text",
         content: { type: "text", text },
         status: "received",
+        externalId,
         sentAt: new Date(),
       })
       .onConflictDoNothing();
@@ -557,6 +569,61 @@ describe("automations on Kairos", () => {
       ["skipped", "started"],
       "the real first time starts; the second is 'already entered'",
     );
+  });
+
+  it("shows typing on the customer's message, pauses about as long as typing takes, then sends", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["typey"],
+      match: "exact",
+    });
+    const text = "Thanks for writing, we will get back to you shortly"; // 51 chars → 2.33 s
+    def.nodes = [{ id: "hi", type: "send_message", version: 1, config: { text, media: null } }];
+    def.edges = [{ id: "1", source: "trigger", sourceHandle: "next", target: "hi" }];
+    await liveAutomation("typey", def);
+    const chat = await newChat();
+    const inbound = await customerSays(chat, "typey", null, undefined, `wamid.typey${T}`);
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    const shown = typing.find((t) => t.messageId === inbound);
+    assert.ok(shown, "typing was queued on the customer's message");
+    const [sent] = await botMessages(chat.conversationId);
+    const gap = new Date(sent?.createdAt ?? 0).getTime() - shown.at;
+    assert.ok(gap >= 2_200 && gap < 3_500, `the message went out ${gap} ms after typing started`);
+    const names = (await automations.kairos.getRun(run.id))?.steps.map((s) => s.name);
+    assert.deepEqual(names?.slice(0, 3), [
+      "send_message:hi#1:typing",
+      "send_message:hi#1:pause",
+      "send_message:hi#1",
+    ]);
+  });
+
+  it("doesn't type when the automation has typing off", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["quiet"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, typing: false };
+    def.nodes = [{ id: "hi", type: "send_message", version: 1, config: { text: "Hello", media: null } }];
+    def.edges = [{ id: "1", source: "trigger", sourceHandle: "next", target: "hi" }];
+    await liveAutomation("quiet", def);
+    const chat = await newChat();
+    const inbound = await customerSays(chat, "quiet", null, undefined, `wamid.quiet${T}`);
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.equal(
+      typing.find((t) => t.messageId === inbound),
+      undefined,
+    );
+    const names = (await automations.kairos.getRun(run.id))?.steps.map((s) => s.name);
+    assert.equal(names?.[0], "send_message:hi#1");
   });
 
   it("sends a template whose quick-reply buttons each lead their own way", async () => {

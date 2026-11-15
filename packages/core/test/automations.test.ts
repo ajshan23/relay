@@ -13,6 +13,7 @@ import {
   type Trigger,
   triggerMatches,
   triggersOverlap,
+  typingPauseMs,
   validateDefinition,
   variablesUsed,
 } from "../src/automations/index";
@@ -325,5 +326,14 @@ describe("wait for a reply on send steps", () => {
       nodeSpecs.send_message.handles(old).map((h) => h.id),
       ["next", "failed"],
     );
+  });
+});
+
+describe("typing pause", () => {
+  it("grows with the message, between 1.2 s and 4 s", () => {
+    assert.equal(typingPauseMs(""), 1_500);
+    assert.equal(typingPauseMs("Hi"), 1_200);
+    assert.equal(typingPauseMs("x".repeat(40)), 2_000);
+    assert.equal(typingPauseMs("x".repeat(500)), 4_000);
   });
 });
