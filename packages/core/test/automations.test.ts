@@ -7,10 +7,14 @@ import {
   emptyDefinition,
   migrateDefinition,
   nodeSpecs,
+  optionOfReply,
+  optionReplyId,
+  parseStepKey,
   pickAutomation,
   resolveText,
   starters,
   type Trigger,
+  tapTarget,
   triggerMatches,
   triggersOverlap,
   typingPauseMs,
@@ -335,5 +339,39 @@ describe("typing pause", () => {
     assert.equal(typingPauseMs("Hi"), 1_200);
     assert.equal(typingPauseMs("x".repeat(40)), 2_000);
     assert.equal(typingPauseMs("x".repeat(500)), 4_000);
+  });
+});
+
+describe("older button taps", () => {
+  it("reads the step and option back from what a button carries", () => {
+    assert.deepEqual(parseStepKey("run_ab12:menu#2"), { runId: "run_ab12", nodeId: "menu" });
+    assert.deepEqual(parseStepKey("run_ab12:menu#1:re1"), { runId: "run_ab12", nodeId: "menu" });
+    assert.equal(parseStepKey("nonsense"), null);
+    assert.equal(optionOfReply(optionReplyId("run_ab12:menu#1", "a3")), "a3");
+    assert.equal(optionOfReply("not-ours"), null);
+  });
+
+  it("finds where an option leads, and nothing for a step or option that's gone", () => {
+    const def = emptyDefinition({ type: "message_received", mode: "any" });
+    def.nodes = [
+      {
+        id: "menu",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "Pick",
+          answer: { type: "buttons", options: [{ id: "a1", title: "Prices" }] },
+          saveAs: "choice",
+        },
+      },
+    ];
+    assert.deepEqual(tapTarget(def, "menu", "a1"), {
+      node: "menu",
+      handle: "opt:a1",
+      value: "Prices",
+      saveAs: "choice",
+    });
+    assert.equal(tapTarget(def, "menu", "a9"), null);
+    assert.equal(tapTarget(def, "gone", "a1"), null);
   });
 });

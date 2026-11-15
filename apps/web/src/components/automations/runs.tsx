@@ -234,7 +234,12 @@ function stepLabel(name: string): string {
     route: "Route",
   };
   if (name === "release chat") return "Chat handed back";
-  return `${words[type ?? ""] ?? type} (${node})${what ? ` · ${what}` : ""}`;
+  const parts: Record<string, string> = {
+    typing: "typing…",
+    pause: "pause",
+    older_button: "tapped an earlier button",
+  };
+  return `${words[type ?? ""] ?? type} (${node})${what ? ` · ${parts[what] ?? what}` : ""}`;
 }
 
 /** Steps visited so far, from recorded step names ("type:node#visit…"), as "node" entries. */

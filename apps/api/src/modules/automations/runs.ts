@@ -74,6 +74,7 @@ export async function startRunInChat(
     contactId: conv.contactId,
     trigger: { kind: "manual", startedByUserId: o.userId },
     typing: def.rules.typing !== false,
+    followTaps: true,
   };
   const labels: AutomationRunLabels = {
     automationId: o.automationId,

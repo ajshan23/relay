@@ -91,6 +91,8 @@ async function customerSays(
   messageId = `msg_t${T}_${++msgSeq}`,
   /** WhatsApp's id for it; typing can only answer a message that has one. */
   externalId: string | null = null,
+  /** The message a tapped button belongs to (WhatsApp sends this with every button tap). */
+  replyToMessageId: string | null = null,
 ) {
   await db.transaction(async (tx) => {
     await tx
@@ -106,6 +108,7 @@ async function customerSays(
         content: { type: "text", text },
         status: "received",
         externalId,
+        replyToMessageId,
         sentAt: new Date(),
       })
       .onConflictDoNothing();
@@ -624,6 +627,139 @@ describe("automations on Kairos", () => {
     );
     const names = (await automations.kairos.getRun(run.id))?.steps.map((s) => s.name);
     assert.equal(names?.[0], "send_message:hi#1");
+  });
+
+  /** Menu → "Book" (a message waiting for a reply) or "Talk" (hand to a human). */
+  function bookOrTalk(keyword: string): AutomationDefinition {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: [keyword],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, typing: false, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "menu",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "How can we help?",
+          answer: {
+            type: "buttons",
+            options: [
+              { id: "a1", title: "Book" },
+              { id: "a2", title: "Talk" },
+            ],
+          },
+          saveAs: "choice",
+          retries: 1,
+          retryText: "Pick one",
+          timeoutMinutes: 60,
+        },
+      },
+      {
+        id: "book",
+        type: "send_message",
+        version: 1,
+        config: { text: "Book here", media: null, waitForReply: true, saveAs: "", timeoutMinutes: 60 },
+      },
+      { id: "human", type: "handoff", version: 1, config: { note: "Wants a person", userId: null } },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "menu" },
+      { id: "2", source: "menu", sourceHandle: "opt:a1", target: "book" },
+      { id: "3", source: "menu", sourceHandle: "opt:a2", target: "human" },
+      { id: "4", source: "menu", sourceHandle: "invalid", target: "bye" },
+      { id: "5", source: "menu", sourceHandle: "no_reply", target: "bye" },
+      { id: "6", source: "book", sourceHandle: "replied", target: "bye" },
+      { id: "7", source: "book", sourceHandle: "no_reply", target: "bye" },
+    ];
+    return def;
+  }
+
+  /** The menu message the bot sent, and the reply id of one of its buttons. */
+  async function menuButton(conversationId: string, title: string, nth = 0) {
+    const menus = await until("the menu", async () => {
+      const m = (await botMessages(conversationId)).filter((x) => x.type === "interactive");
+      return m.length > nth ? m : null;
+    });
+    const menu = menus[nth];
+    const option = (
+      menu?.content as { options?: { id: string; title: string }[] } | undefined
+    )?.options?.find((o) => o.title === title);
+    if (!menu || !option) throw new Error(`no ${title} button`);
+    return { menuId: menu.id, replyId: option.id };
+  }
+
+  const runsOf = (conversationId: string) =>
+    automations.kairos.listRuns({ workflow: "relay.automation", labels: { conversationId } });
+
+  it("follows a tap on an earlier menu's button: Book a visit, then Talk to someone hands over", async () => {
+    await liveAutomation("booktalk", bookOrTalk("booktalk"));
+    const chat = await newChat();
+    await customerSays(chat, "booktalk");
+    const book = await menuButton(chat.conversationId, "Book");
+    await customerSays(chat, "Book", { id: book.replyId, title: "Book" }, undefined, null, book.menuId);
+    await until("the booking message", async () =>
+      (await botMessages(chat.conversationId)).some(
+        (m) => (m.content as { text?: string }).text === "Book here",
+      ),
+    );
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    // Scrolls up and taps "Talk" on the same menu while the bot waits for a reply to "Book here".
+    const talk = await menuButton(chat.conversationId, "Talk");
+    await customerSays(chat, "Talk", { id: talk.replyId, title: "Talk" }, undefined, null, talk.menuId);
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    const out = run.output as { path: string[]; answers: Record<string, string> };
+    assert.deepEqual(out.path, ["menu:opt:a1", "book:older_button", "menu:opt:a2", "human:end"]);
+    assert.equal(out.answers.choice, "Talk");
+    assert.equal((await runsOf(chat.conversationId)).length, 1, "the same run carried on");
+  });
+
+  it("starts again at the tapped choice when that run has ended, or from the top when the choice is gone", async () => {
+    await liveAutomation("ended", bookOrTalk("ended"));
+    const chat = await newChat();
+    await customerSays(chat, "ended");
+    const book = await menuButton(chat.conversationId, "Book");
+    await customerSays(chat, "Book", { id: book.replyId, title: "Book" }, undefined, null, book.menuId);
+    await until("the booking message", async () =>
+      (await botMessages(chat.conversationId)).some(
+        (m) => (m.content as { text?: string }).text === "Book here",
+      ),
+    );
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, "thanks");
+    await until("the run to finish", async () => (await runOf(chat.conversationId))?.status === "completed");
+
+    // Later they tap "Talk" on that old menu: a new run starts right at "Talk".
+    const talk = await menuButton(chat.conversationId, "Talk");
+    await customerSays(chat, "Talk", { id: talk.replyId, title: "Talk" }, undefined, null, talk.menuId);
+    const second = await until("a second run", async () => {
+      const runs = await runsOf(chat.conversationId);
+      return runs.length === 2 && runs[0]?.status === "completed" ? runs[0] : null;
+    });
+    assert.deepEqual((second.output as { path: string[] }).path, ["menu:opt:a2", "human:end"]);
+    assert.equal((second.input as { trigger: { kind: string } }).trigger.kind, "button");
+
+    // A button whose option isn't in the live version any more: they get the current menu again.
+    await customerSays(
+      chat,
+      "Old",
+      { id: talk.replyId.replace(/_a2$/, "_gone"), title: "Old" },
+      undefined,
+      null,
+      talk.menuId,
+    );
+    await until("a third run asking again", async () => {
+      const runs = await runsOf(chat.conversationId);
+      return runs.length === 3 && runs[0]?.status === "waiting";
+    });
+    await menuButton(chat.conversationId, "Book", 1);
   });
 
   it("sends a template whose quick-reply buttons each lead their own way", async () => {

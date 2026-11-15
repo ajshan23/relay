@@ -15,11 +15,15 @@ import {
   migrateDefinition,
   nodeSpec,
   optionFromReply,
+  optionOfReply,
   optionReplyId,
+  parseStepKey,
   pickAutomation,
   resolveText,
   type SendMessageConfig,
   type SendTemplateConfig,
+  type TapTarget,
+  tapTarget,
   typingPauseMs,
   type VariableScope,
   type WaitConfig,
@@ -218,6 +222,10 @@ export function createAutomations({
     if (matched.length) return { action: "answered", runIds: matched };
     if (live) return { action: "ignored", reason: "chat_in_automation" };
 
+    // A tap on a button from an automation's earlier (finished) run: carry on from that choice.
+    const resumed = await resumeFromTap(ev, conv);
+    if (resumed) return resumed;
+
     // Which live automation this message starts: candidates on this number, most specific wins.
     const rows = await db
       .select({ a: schema.automation, v: schema.automationVersion })
@@ -261,12 +269,59 @@ export function createAutomations({
     return { action: "started", automationId: pick.id, runId };
   }
 
+  /**
+   * The customer tapped a button that a finished run of a live automation sent (on this number): start
+   * that automation again at the choice they tapped, or from the top when that step or option is no
+   * longer in the live version (they get the current menu). Null when the message isn't such a tap.
+   * The re-entry rule doesn't apply (they're answering the automation, not starting it); the others do.
+   */
+  async function resumeFromTap(
+    ev: InboundEventPayload,
+    conv: typeof schema.conversation.$inferSelect,
+  ): Promise<Record<string, unknown> | null> {
+    if (!ev.reply) return null;
+    const src = await tapSource(ev.messageId);
+    const key = src ? parseStepKey(src.stepKey) : null;
+    const option = optionOfReply(ev.reply.id);
+    if (!src || !key || !option) return null;
+    const [row] = await db
+      .select({ a: schema.automation, v: schema.automationVersion })
+      .from(schema.automation)
+      .innerJoin(schema.automationVersion, eq(schema.automationVersion.id, schema.automation.liveVersionId))
+      .where(
+        and(
+          eq(schema.automation.id, src.automationId),
+          eq(schema.automation.organizationId, ev.organizationId),
+          eq(schema.automation.channelAccountId, ev.channelAccountId),
+          eq(schema.automation.status, "live"),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+    const def = migrateDefinition(row.v.definition);
+    const skip = await ruleBlocks(def, row.a.id, ev.contactId, conv.assignedUserId, { reentry: false });
+    if (skip) return { action: "skipped", reason: skip, automationId: row.a.id };
+    const target = tapTarget(def, key.nodeId, option);
+    const runId = await startRun({
+      def,
+      versionId: row.v.id,
+      automationId: row.a.id,
+      conversation: conv,
+      contactId: ev.contactId,
+      idempotencyKey: `msg:${ev.messageId}`,
+      trigger: { kind: "button", messageId: ev.messageId, text: ev.text },
+      startAt: target ?? undefined,
+    });
+    return { action: target ? "resumed_at_choice" : "restarted", automationId: row.a.id, runId };
+  }
+
   /** Why the run rules keep this contact out right now, or null. */
   async function ruleBlocks(
     def: AutomationDefinition,
     automationId: string,
     contactId: string,
     assignedUserId: string | null,
+    o: { reentry?: boolean } = {},
   ): Promise<string | null> {
     const rules = def.rules;
     if (rules.skipIfAssigned && assignedUserId) return "chat_assigned";
@@ -279,7 +334,7 @@ export function createAutomations({
       });
       if (theirs.length) return "in_another_run";
     }
-    if (rules.reentry !== "every_time") {
+    if (rules.reentry !== "every_time" && o.reentry !== false) {
       // Test runs from the editor don't count: testing on yourself must not use up "Only once".
       const [last] = await kairos.listRuns({
         workflow: automationWorkflows.run.name,
@@ -307,6 +362,7 @@ export function createAutomations({
     contactId: string;
     idempotencyKey: string;
     trigger: AutomationRunInput["trigger"];
+    startAt?: AutomationRunInput["startAt"];
     test?: boolean;
   }): Promise<string> {
     const c = o.conversation;
@@ -320,6 +376,8 @@ export function createAutomations({
       contactId: o.contactId,
       trigger: o.trigger,
       typing: o.def.rules.typing !== false,
+      followTaps: true,
+      ...(o.startAt ? { startAt: o.startAt } : {}),
     };
     const labels: AutomationRunLabels = {
       automationId: o.automationId,
@@ -368,6 +426,13 @@ export function createAutomations({
       const visits = new Map<string, number>();
       let executed = 0;
       let current = next.get("trigger:next");
+      if (input.startAt) {
+        // Started by a tap on a button from an earlier run: carry on from that choice.
+        const t = input.startAt;
+        if (t.saveAs) memory.answers[t.saveAs] = t.value;
+        memory.path.push(`${t.node}:${t.handle}`);
+        current = next.get(`${t.node}:${t.handle}`);
+      }
       try {
         while (current) {
           const node = nodes.get(current);
@@ -378,7 +443,15 @@ export function createAutomations({
             throw new NonRetryableError(
               `Stopped: the automation went round a loop too many times (step ${node.id}, visit ${visit}).`,
             );
-          const handle = await runStep(ctx, input, node, visit, memory);
+          const handle = await runStep(ctx, input, def, node, visit, memory);
+          if (handle !== null && typeof handle === "object") {
+            // They tapped a button from an earlier message instead: go where that choice leads.
+            const t = handle.jump;
+            if (t.saveAs) memory.answers[t.saveAs] = t.value;
+            memory.path.push(`${node.id}:older_button`, `${t.node}:${t.handle}`);
+            current = next.get(`${t.node}:${t.handle}`);
+            continue;
+          }
           memory.path.push(`${node.id}:${handle ?? "end"}`);
           if (handle === null) break;
           current = next.get(`${node.id}:${handle}`);
@@ -394,15 +467,18 @@ export function createAutomations({
   );
 
   type RunMemory = { answers: Record<string, string>; path: string[] };
+  /** An exit, the end (null), or a jump to where an older button of this automation leads. */
+  type Exit = string | null | { jump: TapTarget };
 
   /** Runs one step and returns the exit it takes (null: the run ends here). */
   async function runStep(
     ctx: WorkflowContext,
     input: AutomationRunInput,
+    def: AutomationDefinition,
     node: AutomationNode,
     visit: number,
     memory: RunMemory,
-  ): Promise<string | null> {
+  ): Promise<Exit> {
     const spec = nodeSpec(node.type);
     if (!spec) throw new NonRetryableError(`Unknown step type ${node.type}`);
     const config = spec.config.parse(node.config);
@@ -415,17 +491,19 @@ export function createAutomations({
         await typeFirst(ctx, input, name, m.text);
         const r = await ctx.step(name, () => sendMessage(input, memory, stepKey, m));
         if (!r.ok) return "failed";
-        return m.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, m, []) : "next";
+        return m.waitForReply ? waitForReply(ctx, input, def, memory, name, stepKey, m, []) : "next";
       }
       case "send_template": {
         const t = config as SendTemplateConfig;
         await typeFirst(ctx, input, name, "");
         const r = await ctx.step(name, () => sendTemplate(input, memory, stepKey, t));
         if (!r.ok) return "failed";
-        return t.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, t, t.replyButtons) : "next";
+        return t.waitForReply
+          ? waitForReply(ctx, input, def, memory, name, stepKey, t, t.replyButtons)
+          : "next";
       }
       case "ask_question":
-        return ask(ctx, input, memory, name, stepKey, config as AskQuestionConfig);
+        return ask(ctx, input, def, memory, name, stepKey, config as AskQuestionConfig);
       case "condition": {
         const yes = await ctx.step(name, () => evaluate(input, memory, config as ConditionConfig));
         return yes ? "yes" : "no";
@@ -513,12 +591,13 @@ export function createAutomations({
   async function waitForReply(
     ctx: WorkflowContext,
     input: AutomationRunInput,
+    def: AutomationDefinition,
     memory: RunMemory,
     name: string,
     stepKey: string,
     cfg: { saveAs: string; timeoutMinutes: number },
     buttons: { index: number; title: string }[],
-  ): Promise<string> {
+  ): Promise<Exit> {
     const reply = await ctx.waitForEvent<InboundEventPayload>(`${name}:reply`, {
       key: automationEvents.messageReceived,
       scope: input.conversationId,
@@ -536,6 +615,9 @@ export function createAutomations({
     if (button) {
       handle = `btn:${button.index}`;
       value = button.title;
+    } else if (p.reply && tapped === null && input.followTaps) {
+      const jump = await ctx.step(`${name}:older_button`, () => olderTap(input, def, p));
+      if (jump) return { jump };
     }
     if (cfg.saveAs) memory.answers[cfg.saveAs] = value;
     return handle;
@@ -545,11 +627,12 @@ export function createAutomations({
   async function ask(
     ctx: WorkflowContext,
     input: AutomationRunInput,
+    def: AutomationDefinition,
     memory: RunMemory,
     name: string,
     stepKey: string,
     q: AskQuestionConfig,
-  ): Promise<string> {
+  ): Promise<Exit> {
     await typeFirst(ctx, input, name, q.text);
     const sent = await ctx.step(`${name}:ask`, () => sendQuestion(input, memory, stepKey, q, q.text));
     if (!sent.ok) return "failed";
@@ -566,6 +649,12 @@ export function createAutomations({
         memory.answers[q.saveAs] = answer.value;
         return answer.handle;
       }
+      const p = reply.event.payload;
+      if (p.reply && input.followTaps) {
+        // A button from an earlier question of this automation: go where that choice leads.
+        const jump = await ctx.step(`${name}:older_button${attempt}`, () => olderTap(input, def, p));
+        if (jump) return { jump };
+      }
       if (attempt >= q.retries) return "invalid";
       await typeFirst(ctx, input, `${name}:re${attempt + 1}`, q.retryText);
       const again = await ctx.step(`${name}:reask${attempt + 1}`, () =>
@@ -573,6 +662,33 @@ export function createAutomations({
       );
       if (!again.ok) return "failed";
     }
+  }
+
+  /**
+   * The bot message a tapped button belongs to (WhatsApp says which message it answers), with the
+   * automation and step that sent it.
+   */
+  async function tapSource(messageId: string) {
+    const rows = (await db.execute(sql`
+      select b.automation_id as "automationId", b.automation_step_key as "stepKey"
+      from message m join message b on b.id = m.reply_to_message_id
+      where m.id = ${messageId} and b.automation_id is not null and b.automation_step_key is not null
+      limit 1`)) as unknown as { automationId: string; stepKey: string }[];
+    return rows[0] ?? null;
+  }
+
+  /** Where a tap on one of this automation's earlier buttons leads in this run's version, or null. */
+  async function olderTap(
+    input: AutomationRunInput,
+    def: AutomationDefinition,
+    p: InboundEventPayload,
+  ): Promise<TapTarget | null> {
+    if (!p.reply) return null;
+    const src = await tapSource(p.messageId);
+    if (src?.automationId !== input.automationId) return null;
+    const key = parseStepKey(src.stepKey);
+    const option = optionOfReply(p.reply.id);
+    return key && option ? tapTarget(def, key.nodeId, option) : null;
   }
 
   /**

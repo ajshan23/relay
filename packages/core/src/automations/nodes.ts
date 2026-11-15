@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FilterRule } from "../contacts";
+import type { AutomationDefinition } from "./definition";
 
 /*
  * The step catalogue. Each step type has a versioned config schema, the handles (exits) it offers for a
@@ -368,4 +369,45 @@ export function optionReplyId(stepKey: string, optionId: string): string {
 export function optionFromReply(stepKey: string, replyId: string): string | null {
   const prefix = optionReplyId(stepKey, "");
   return replyId.startsWith(prefix) ? replyId.slice(prefix.length) || null : null;
+}
+
+/** The option id inside any reply id we sent (whichever question it came from), or null. */
+export function optionOfReply(replyId: string): string | null {
+  return /^q[0-9a-z]+_(.+)$/.exec(replyId)?.[1] ?? null;
+}
+
+/** "run_x:menu#2" or "run_x:menu#2:re1" (a re-ask) → the run and the step that sent the message. */
+export function parseStepKey(stepKey: string): { runId: string; nodeId: string } | null {
+  const m = /^([^:]+):([^#:]+)#\d+/.exec(stepKey);
+  return m?.[1] && m[2] ? { runId: m[1], nodeId: m[2] } : null;
+}
+
+/** Where a tap on one of an automation's buttons leads: that step's exit for the option. */
+export type TapTarget = { node: string; handle: string; value: string; saveAs?: string };
+
+/**
+ * The exit a button leads to in this definition: an option of an "Ask a question" with buttons or a
+ * list, or a quick-reply button of a template waiting for a reply. Null when that step or option isn't
+ * in this version (the customer tapped a button from before an edit).
+ */
+export function tapTarget(def: AutomationDefinition, nodeId: string, optionId: string): TapTarget | null {
+  const node = def.nodes.find((n) => n.id === nodeId);
+  const spec = node ? nodeSpec(node.type) : null;
+  if (!node || !spec) return null;
+  const parsed = spec.config.safeParse(node.config);
+  if (!parsed.success) return null;
+  if (node.type === "ask_question") {
+    const q = parsed.data as AskQuestionConfig;
+    if (q.answer.type !== "buttons") return null;
+    const opt = q.answer.options.find((o) => o.id === optionId);
+    return opt ? { node: node.id, handle: `opt:${opt.id}`, value: opt.title, saveAs: q.saveAs } : null;
+  }
+  if (node.type === "send_template") {
+    const t = parsed.data as SendTemplateConfig;
+    const b = t.waitForReply ? t.replyButtons.find((x) => String(x.index) === optionId) : undefined;
+    return b
+      ? { node: node.id, handle: `btn:${b.index}`, value: b.title, saveAs: t.saveAs || undefined }
+      : null;
+  }
+  return null;
 }

@@ -25,7 +25,8 @@ export type AutomationRunInput = {
   conversationId: string;
   contactId: string;
   trigger: {
-    kind: "message" | "tag" | "manual";
+    /** "button": the customer tapped a button from an earlier run of this automation (see startAt). */
+    kind: "message" | "tag" | "manual" | "button";
     messageId?: string;
     text?: string;
     adId?: string | null;
@@ -37,6 +38,13 @@ export type AutomationRunInput = {
    * started before this existed don't have it, so their recorded steps replay unchanged.
    */
   typing?: boolean;
+  /**
+   * A tap on an older button of this automation (still on the customer's screen) jumps to that
+   * choice. Frozen at start like `typing`, so runs from before this replay unchanged.
+   */
+  followTaps?: boolean;
+  /** Start at this choice's exit instead of the trigger (a tap on a button from an ended run). */
+  startAt?: { node: string; handle: string; value: string; saveAs?: string };
 };
 
 /**
