@@ -65,7 +65,16 @@ type Db = ReturnType<typeof createDb>["db"];
 const finished = new Set(["completed", "failed", "cancelled"]);
 const isLive = (r: RunRow | null | undefined) => !!r && !finished.has(r.status);
 
-export type RouterInput = { kind: "message"; event: InboundEventPayload; matched: string[] };
+export type RouterInput =
+  | { kind: "message"; event: InboundEventPayload; matched: string[] }
+  | {
+      kind: "tag";
+      organizationId: string;
+      branchId: string;
+      contactId: string;
+      tagId: string;
+      eventId: string;
+    };
 
 export function createAutomations({
   db,
@@ -110,10 +119,68 @@ export function createAutomations({
 
   const router = kairos.workflow<RouterInput, unknown>(
     { ...automationWorkflows.router, retries: 5 },
-    async (ctx, input) => ctx.step("route", () => route(input)),
+    async (ctx, input) => ctx.step<Record<string, unknown>>("route", () => (input.kind === "tag" ? routeTag(input) : route(input))),
   );
 
-  async function route({ event: ev, matched }: RouterInput) {
+  /** A team member tagged a contact: start each live automation on that tag, in the contact's chat on its number. */
+  async function routeTag(t: Extract<RouterInput, { kind: "tag" }>) {
+    const rows = await db
+      .select({ a: schema.automation, v: schema.automationVersion })
+      .from(schema.automation)
+      .innerJoin(schema.automationVersion, eq(schema.automationVersion.id, schema.automation.liveVersionId))
+      .where(
+        and(
+          eq(schema.automation.organizationId, t.organizationId),
+          eq(schema.automation.branchId, t.branchId),
+          eq(schema.automation.status, "live"),
+          eq(schema.automation.triggerType, "tag_added"),
+        ),
+      );
+    const results: Record<string, string> = {};
+    for (const r of rows) {
+      const def = migrateDefinition(r.v.definition);
+      if (def.trigger.type !== "tag_added" || def.trigger.tagId !== t.tagId || !r.a.channelAccountId)
+        continue;
+      const [conv] = await db
+        .select()
+        .from(schema.conversation)
+        .where(
+          and(
+            eq(schema.conversation.contactId, t.contactId),
+            eq(schema.conversation.channelAccountId, r.a.channelAccountId),
+            eq(schema.conversation.kind, "direct"),
+          ),
+        )
+        .orderBy(sql`${schema.conversation.lastMessageAt} desc nulls last`)
+        .limit(1);
+      if (!conv) {
+        results[r.a.id] = "no_chat_on_this_number";
+        continue;
+      }
+      const controller = conv.automationRunId ? await kairos.getRun(conv.automationRunId) : null;
+      if (isLive(controller?.run)) {
+        results[r.a.id] = "chat_in_automation";
+        continue;
+      }
+      const skip = await ruleBlocks(def, r.a.id, t.contactId, conv.assignedUserId);
+      if (skip) {
+        results[r.a.id] = skip;
+        continue;
+      }
+      results[r.a.id] = await startRun({
+        def,
+        versionId: r.v.id,
+        automationId: r.a.id,
+        conversation: conv,
+        contactId: t.contactId,
+        idempotencyKey: `tag:${t.contactId}:${t.tagId}:${t.eventId}:${r.a.id}`,
+        trigger: { kind: "tag", tagId: t.tagId },
+      });
+    }
+    return { action: "tag", results };
+  }
+
+  async function route({ event: ev, matched }: Extract<RouterInput, { kind: "message" }>) {
     const conv = await conversationOf(ev.conversationId);
     if (!conv) return { action: "no_chat" };
 

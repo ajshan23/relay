@@ -25,6 +25,7 @@ import { channels } from "../../channels";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
+import { stopForAgentReply } from "../automations/runs";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { requireBranch } from "../contacts/shared";
@@ -1064,6 +1065,8 @@ export function conversationRoutes(ctx: AppContext) {
       throw err;
     }
     await enqueue(ctx.queues.outbox, "send", { messageId: id }, { jobId: id, ...outboxJobOptions });
+    // A person replied: the automation in charge of the chat steps aside (its rules decide).
+    await stopForAgentReply(ctx, conversation);
     await announce(conversation);
     return c.json({ message }, 201);
   });

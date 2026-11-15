@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
+import { onTagsAdded } from "../automations/runs";
 import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { compileFilter, compileKeyset, compileSort, FilterError } from "./filter";
@@ -663,6 +664,17 @@ export function contactRoutes(ctx: AppContext) {
         } as never)
         .where(eq(c.id, contact.id))
         .returning();
+      if (row && values.tagIds) {
+        const before = new Set(contact.tagIds ?? []);
+        await onTagsAdded(
+          ctx,
+          access.orgId,
+          c2.var.branchId,
+          (row.tagIds ?? [])
+            .filter((t: string) => !before.has(t))
+            .map((tagId: string) => ({ contactId: contact.id, tagId })),
+        );
+      }
       if (parsed.data.optOut)
         await setOptOut(
           ctx.db,
@@ -719,6 +731,11 @@ export function contactRoutes(ctx: AppContext) {
         ids.map((t) => sql`${t}`),
         sql`, `,
       )}]::text[]`;
+      // Which contacts don't have each tag yet: only those count as "tag added" for automations.
+      const before =
+        b.action === "add_tags"
+          ? await ctx.db.select({ id: c.id, tagIds: c.tagIds }).from(c).where(scope)
+          : [];
       const res = await ctx.db
         .update(c)
         .set({
@@ -731,6 +748,15 @@ export function contactRoutes(ctx: AppContext) {
         .where(scope)
         .returning({ id: c.id });
       affected = res.length;
+      if (b.action === "add_tags")
+        await onTagsAdded(
+          ctx,
+          access.orgId,
+          c2.var.branchId,
+          before.flatMap((r) =>
+            ids.filter((t) => !(r.tagIds ?? []).includes(t)).map((tagId) => ({ contactId: r.id, tagId })),
+          ),
+        );
     } else if (b.action === "opt_out" || b.action === "opt_in") {
       const channelId = b.channelAccountId ?? null;
       if (channelId && !(await ownChannel(ctx.db, access.orgId, channelId)))

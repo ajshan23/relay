@@ -43,15 +43,13 @@ async function newChat() {
   const contactId = `ct_t${T}_${contactSeq}`;
   const identityId = `cid_t${T}_${contactSeq}`;
   const conversationId = `conv_t${T}_${contactSeq}`;
-  await db
-    .insert(schema.contact)
-    .values({
-      id: contactId,
-      organizationId: ids.org,
-      branchId: ids.branch,
-      name: "Asha Rao",
-      phone: `9198470${contactSeq}`,
-    });
+  await db.insert(schema.contact).values({
+    id: contactId,
+    organizationId: ids.org,
+    branchId: ids.branch,
+    name: "Asha Rao",
+    phone: `9198470${contactSeq}`,
+  });
   await db.insert(schema.contactIdentity).values({
     id: identityId,
     organizationId: ids.org,
@@ -361,5 +359,49 @@ describe("automations on Kairos", () => {
     await customerSays(quiet, "hello there");
     await new Promise((r) => setTimeout(r, 1500));
     assert.equal(await runOf(quiet.conversationId), null);
+  });
+
+  it("starts a tag automation in the contact's chat on its number", async () => {
+    const def = emptyDefinition({ type: "tag_added", tagId: `vip_t${T}` });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [{ id: "note", type: "add_note", version: 1, config: { text: "VIP: {{contact.name}}" } }];
+    def.edges = [{ id: "t1", source: "trigger", sourceHandle: "next", target: "note" }];
+    await db.insert(schema.automation).values({
+      id: `${ids.automation}_tag`,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      name: "VIP welcome",
+      channelAccountId: ids.channel,
+      status: "live",
+      draft: def,
+      liveVersionId: `${ids.version}_tag`,
+      triggerType: "tag_added",
+    });
+    await db.insert(schema.automationVersion).values({
+      id: `${ids.version}_tag`,
+      automationId: `${ids.automation}_tag`,
+      organizationId: ids.org,
+      number: 1,
+      definition: def,
+      checksum: "test",
+    });
+    const chat = await newChat();
+    await automations.kairos.start(
+      automations.router,
+      {
+        kind: "tag",
+        organizationId: ids.org,
+        branchId: ids.branch,
+        contactId: chat.contactId,
+        tagId: `vip_t${T}`,
+        eventId: "1",
+      },
+      { tenantId: ids.org, serialKey: `contact:${chat.contactId}` },
+    );
+    const notes = await until("the note", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "note");
+      return m.length ? m : null;
+    });
+    assert.equal((notes[0]?.content as { text: string }).text, "VIP: Asha Rao");
   });
 });

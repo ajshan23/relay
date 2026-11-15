@@ -8,6 +8,7 @@ import {
   migrateDefinition,
   nodeSpecs,
   pickAutomation,
+  starters,
   resolveText,
   type Trigger,
   triggerMatches,
@@ -267,5 +268,14 @@ describe("definitions", () => {
     delete raw.rules;
     assert.equal(migrateDefinition(raw).rules.reentry, "every_time");
     assert.throws(() => migrateDefinition({ ...raw, schemaVersion: 99 }));
+  });
+});
+
+describe("starters", () => {
+  it("are valid automations with no errors", () => {
+    for (const s of starters) {
+      const issues = validateDefinition(s.build({ timezone: "Asia/Kolkata" })).filter((i) => i.level === "error");
+      assert.deepEqual(issues, [], s.id);
+    }
   });
 });

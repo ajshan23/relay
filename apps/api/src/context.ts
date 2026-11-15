@@ -1,5 +1,6 @@
 import { env, queues } from "@relay/core";
 import { createDb } from "@relay/db";
+import { createKairos } from "@relay/kairos";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 
@@ -34,9 +35,14 @@ export function createContext() {
   const previewsQueue = new Queue(queues.previews, { connection });
   const onboardingQueue = new Queue(queues.onboarding, { connection });
 
+  // Automation runs live in Kairos (schema "kairos", migrated by the worker). The API starts, stops and
+  // lists them; it never executes steps.
+  const kairos = createKairos({ sql, schema: "kairos", log: () => {} });
+
   return {
     config,
     db,
+    kairos,
     redis,
     queues: {
       webhooks: webhookQueue,
