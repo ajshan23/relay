@@ -24,4 +24,5 @@ export {
 export * from "./client";
 export * from "./contact-filter";
 export * from "./files";
+export * from "./outbound";
 export * as schema from "./schema/index";

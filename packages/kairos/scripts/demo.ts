@@ -57,11 +57,19 @@ for (let i = 0; i < 40; i++) {
   const flow = flows[i % flows.length] ?? "answer";
   const tenant = tenants[i % tenants.length] ?? "org_lumen";
   const conv = `conv_${(1000 + i).toString(36)}`;
-  await k.start(router, { event: "message.received" }, { tenantId: tenant, serialKey: conv, idempotencyKey: `evt_${i}` });
+  await k.start(
+    router,
+    { event: "message.received" },
+    { tenantId: tenant, serialKey: conv, idempotencyKey: `evt_${i}` },
+  );
   const { runId } = await k.start(
     automation,
     { conversationId: conv, flow, name: `Customer ${i}` },
-    { tenantId: tenant, serialKey: conv, labels: { automationId: `auto_${(i % 4) + 1}`, contactId: `ct_${i}` } },
+    {
+      tenantId: tenant,
+      serialKey: conv,
+      labels: { automationId: `auto_${(i % 4) + 1}`, contactId: `ct_${i}` },
+    },
   );
   runs.push({ id: runId, conv, flow, tenant });
 }

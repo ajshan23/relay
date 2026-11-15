@@ -342,6 +342,19 @@ export type OutboundMessage = (
     }
   /** An emoji on one of the customer's (or our) messages; an empty emoji takes ours away. */
   | { type: "reaction"; targetExternalId: string; emoji: string }
+  /**
+   * A question with choices: up to maxReplyButtons as reply buttons, up to maxListRows as a list behind
+   * one button. A tap comes back as an inbound interactive button_reply / list_reply with the option id.
+   */
+  | {
+      type: "interactive";
+      kind: "buttons" | "list";
+      body: string;
+      options: { id: string; title: string; description?: string }[];
+      /** The list's button (lists only). */
+      buttonText?: string;
+      footer?: string;
+    }
 ) & {
   /** Provider id of the message being replied to. */
   replyToExternalId?: string;

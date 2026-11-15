@@ -139,3 +139,45 @@ describe("WhatsApp voice notes we send", async () => {
     assert.deepEqual(file.audio, { id: "M2" });
   });
 });
+
+describe("interactive messages", () => {
+  const to = { kind: "direct" as const, phone: "919847000000", userId: null };
+  it("sends up to three options as reply buttons, cutting long titles", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      {
+        type: "interactive",
+        kind: "buttons",
+        body: "What do you need?",
+        options: [
+          { id: "q1_a1", title: "Prices" },
+          { id: "q1_a2", title: "A title that is far too long" },
+        ],
+      },
+      "msg_1",
+    ) as {
+      type: string;
+      interactive: { type: string; action: { buttons: { reply: { id: string; title: string } }[] } };
+    };
+    assert.equal(body.type, "interactive");
+    assert.equal(body.interactive.type, "button");
+    assert.deepEqual(body.interactive.action.buttons[0]?.reply, { id: "q1_a1", title: "Prices" });
+    assert.equal(body.interactive.action.buttons[1]?.reply.title.length, 20);
+  });
+  it("sends more options as a list behind one button", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      {
+        type: "interactive",
+        kind: "list",
+        body: "Pick a branch",
+        buttonText: "Branches",
+        options: Array.from({ length: 5 }, (_, i) => ({ id: `q1_b${i}`, title: `Branch ${i}` })),
+      },
+      "msg_2",
+    ) as { interactive: { type: string; action: { button: string; sections: { rows: unknown[] }[] } } };
+    assert.equal(body.interactive.type, "list");
+    assert.equal(body.interactive.action.button, "Branches");
+    assert.equal(body.interactive.action.sections[0]?.rows.length, 5);
+  });
+});

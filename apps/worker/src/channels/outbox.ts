@@ -412,26 +412,28 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
           targetExternalId: reactionTarget,
           emoji: (message.content as { emoji?: string }).emoji ?? "",
         }
-      : isTemplate
-        ? {
-            type: "template",
-            name: content.name ?? "",
-            language: content.language ?? "en",
-            values: content.values ?? {},
-            auth: !!content.auth,
-            headerMedia,
-            replyToExternalId,
-          }
-        : media
+      : message.type === "interactive"
+        ? interactiveOutbound(message.content, replyToExternalId)
+        : isTemplate
           ? {
-              type: message.type as "image" | "video" | "audio" | "document" | "sticker",
-              providerMediaId: media.id,
-              caption: content.caption ?? undefined,
-              fileName: media.file.fileName ?? undefined,
-              voice: message.type === "audio" && (message.content as { voice?: boolean }).voice === true,
+              type: "template",
+              name: content.name ?? "",
+              language: content.language ?? "en",
+              values: content.values ?? {},
+              auth: !!content.auth,
+              headerMedia,
               replyToExternalId,
             }
-          : { type: "text", text: content.text ?? "", replyToExternalId };
+          : media
+            ? {
+                type: message.type as "image" | "video" | "audio" | "document" | "sticker",
+                providerMediaId: media.id,
+                caption: content.caption ?? undefined,
+                fileName: media.file.fileName ?? undefined,
+                voice: message.type === "audio" && (message.content as { voice?: boolean }).voice === true,
+                replyToExternalId,
+              }
+            : { type: "text", text: content.text ?? "", replyToExternalId };
 
     try {
       const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);
@@ -486,4 +488,24 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
       throw err;
     }
   }
+}
+
+/** A stored question with choices (see packages/channels OutboundMessage "interactive"). */
+function interactiveOutbound(content: Record<string, unknown>, replyToExternalId?: string): OutboundMessage {
+  const c = content as {
+    kind?: string;
+    body?: string;
+    buttonText?: string;
+    footer?: string;
+    options?: { id: string; title: string; description?: string }[];
+  };
+  return {
+    type: "interactive",
+    kind: c.kind === "list" ? "list" : "buttons",
+    body: c.body ?? "",
+    options: c.options ?? [],
+    buttonText: c.buttonText,
+    footer: c.footer,
+    replyToExternalId,
+  };
 }

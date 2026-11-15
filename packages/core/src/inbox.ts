@@ -27,7 +27,7 @@ export function previewText(content: Record<string, unknown>): string | null {
     case "button":
       return str(content.text);
     case "interactive":
-      return str(content.title) ?? str(content.name);
+      return str(content.title) ?? str(content.name) ?? str(content.body);
     case "order":
       return str(content.text);
     case "template":

@@ -30,6 +30,9 @@ export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, o
   } else if (message.type === "template") {
     body.type = "template";
     body.template = buildWhatsAppTemplateMessage(message);
+  } else if (message.type === "interactive") {
+    body.type = "interactive";
+    body.interactive = buildWhatsAppInteractive(message);
   } else {
     body.type = message.type;
     body[message.type] = {
@@ -95,4 +98,43 @@ export async function describeWhatsAppNumber(graph: GraphClient, account: WhatsA
 /** Subscribes our Meta app to the business account's webhooks, so its messages reach us. */
 export async function subscribeWhatsAppAccount(graph: GraphClient, wabaId: string, accessToken: string) {
   await graph.request("POST", `${wabaId}/subscribed_apps`, accessToken);
+}
+
+/**
+ * Reply buttons (at most 3, titles ≤ 20) or a list (at most 10 rows, titles ≤ 24, descriptions ≤ 72,
+ * button ≤ 20). Longer titles are cut rather than refused: Meta rejects the whole message otherwise.
+ */
+export function buildWhatsAppInteractive(message: Extract<OutboundMessage, { type: "interactive" }>) {
+  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  const body = { text: cut(message.body, 1024) };
+  const footer = message.footer ? { footer: { text: cut(message.footer, 60) } } : {};
+  if (message.kind === "buttons")
+    return {
+      type: "button",
+      body,
+      ...footer,
+      action: {
+        buttons: message.options.slice(0, 3).map((o) => ({
+          type: "reply",
+          reply: { id: o.id.slice(0, 256), title: cut(o.title, 20) },
+        })),
+      },
+    };
+  return {
+    type: "list",
+    body,
+    ...footer,
+    action: {
+      button: cut(message.buttonText || "Choose", 20),
+      sections: [
+        {
+          rows: message.options.slice(0, 10).map((o) => ({
+            id: o.id.slice(0, 200),
+            title: cut(o.title, 24),
+            ...(o.description ? { description: cut(o.description, 72) } : {}),
+          })),
+        },
+      ],
+    },
+  };
 }

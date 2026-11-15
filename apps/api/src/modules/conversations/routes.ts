@@ -1,6 +1,19 @@
 import { type InboxEvent, messagePreview, newId, publishInboxEvent, type SignalJob } from "@relay/core";
 import { fillVariables, type TemplateContent, templateVariables } from "@relay/core/templates";
-import { and, asc, desc, eq, ilike, inArray, isNull, or, schema, sql } from "@relay/db";
+import {
+  AttachmentTaken,
+  and,
+  asc,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  insertOutboundMessage,
+  isNull,
+  or,
+  schema,
+  sql,
+} from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
 import { channels } from "../../channels";
@@ -1041,42 +1054,25 @@ export function conversationRoutes(ctx: AppContext) {
       .where(eq(schema.user.id, access.userId))
       .limit(1);
 
-    const message = await ctx.db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(schema.message)
-        .values({
-          id,
-          organizationId: conversation.organizationId,
-          conversationId: conversation.id,
-          channelAccountId: conversation.channelAccountId,
-          direction: "outbound",
-          senderType: "user",
-          senderUserId: access.userId,
-          type,
-          content,
-          status: "queued",
-          replyToMessageId,
-          sentAt: now,
-        })
-        .returning();
-      if (upload) {
-        const linked = await tx
-          .update(schema.attachment)
-          .set({ messageId: id })
-          .where(and(eq(schema.attachment.id, upload.id), isNull(schema.attachment.messageId)))
-          .returning({ id: schema.attachment.id });
-        if (!linked.length) throw new Error("upload already used");
-      }
-      await tx
-        .update(schema.conversation)
-        .set({
-          lastMessageAt: now,
-          lastMessagePreview: messagePreview(type, content, "outbound", user?.name ?? null),
-          updatedAt: now,
-        })
-        .where(eq(schema.conversation.id, conversation.id));
-      return row;
-    });
+    let message: typeof schema.message.$inferSelect;
+    try {
+      ({ message } = await insertOutboundMessage(ctx.db, {
+        id,
+        conversation,
+        type,
+        content,
+        senderType: "user",
+        senderUserId: access.userId,
+        senderName: user?.name ?? null,
+        replyToMessageId,
+        attachmentId: upload?.id ?? null,
+        now,
+      }));
+    } catch (err) {
+      if (err instanceof AttachmentTaken)
+        return fail(c, 422, "invalid_upload", "That file was not found or was already sent.");
+      throw err;
+    }
     await enqueue(ctx.queues.outbox, "send", { messageId: id }, { jobId: id, ...outboxJobOptions });
     await announce(conversation);
     return c.json({ message }, 201);

@@ -325,3 +325,19 @@ export type ContactRule = FilterRule;
 export function askLayout(optionCount: number): "buttons" | "list" {
   return optionCount <= 3 ? "buttons" : "list";
 }
+
+/**
+ * The id sent with each option of one question. It carries a short mark of the step that sent it, so a
+ * tap on an older question's button (still on the customer's screen) is never taken as this answer.
+ */
+export function optionReplyId(stepKey: string, optionId: string): string {
+  let h = 0;
+  for (const ch of stepKey) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
+  return `q${(h >>> 0).toString(36)}_${optionId}`;
+}
+
+/** The option id inside a reply id, if it belongs to this step's question. */
+export function optionFromReply(stepKey: string, replyId: string): string | null {
+  const prefix = optionReplyId(stepKey, "");
+  return replyId.startsWith(prefix) ? replyId.slice(prefix.length) || null : null;
+}

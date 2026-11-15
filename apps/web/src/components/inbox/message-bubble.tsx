@@ -431,6 +431,36 @@ function Body({
       );
     }
     case "interactive":
+      if (c.kind === "buttons" || c.kind === "list") {
+        // A question we sent: reply buttons, or a list behind one button.
+        const options = (c.options as { id: string; title: string }[] | undefined) ?? [];
+        return (
+          <TemplateBubble
+            {...common}
+            label={m.senderType === "bot" ? "Automation" : undefined}
+            body={str(c.body) ?? ""}
+            footer={
+              c.kind === "list" ? options.map((o) => o.title).join(" · ") : (str(c.footer) ?? undefined)
+            }
+            buttons={
+              c.kind === "list"
+                ? [{ type: "quick_reply", label: `☰ ${str(c.buttonText) ?? "Choose"}` }]
+                : options.map((o): TemplateButton => ({ type: "quick_reply", label: o.title }))
+            }
+          />
+        );
+      }
+      return (
+        <ChatBubble
+          {...common}
+          isGroupChat={!!memberName}
+          sender={first ? (memberName ?? undefined) : undefined}
+        >
+          {quote}
+          <span className="mr-1.5 text-xs text-wa-text-secondary">Tapped</span>
+          {str(c.title) ?? str(c.text) ?? str(c.name) ?? "a reply"}
+        </ChatBubble>
+      );
     case "button":
       return (
         <ChatBubble
