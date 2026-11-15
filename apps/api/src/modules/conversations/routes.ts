@@ -1,10 +1,5 @@
 import { type InboxEvent, messagePreview, newId, publishInboxEvent, type SignalJob } from "@relay/core";
-import {
-  fillVariables,
-  type TemplateContent,
-  templateMessageContent,
-  templateVariables,
-} from "@relay/core/templates";
+import { type TemplateContent, templateMessageContent, templateVariables } from "@relay/core/templates";
 import {
   AttachmentTaken,
   and,
@@ -1167,7 +1162,7 @@ export function conversationRoutes(ctx: AppContext) {
         ),
       )
       .limit(1);
-    if (!message || message.direction !== "outbound") return fail(c, 404, "not_found");
+    if (message?.direction !== "outbound") return fail(c, 404, "not_found");
     if (message.status !== "failed")
       return fail(c, 409, "not_failed", "Only failed messages can be sent again.");
     const body = (await c.req.json().catch(() => ({}))) as { confirm?: boolean };

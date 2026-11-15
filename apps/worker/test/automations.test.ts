@@ -293,7 +293,7 @@ describe("automations on Kairos", () => {
     await customerSays(chat, "maybe later");
     await until("the re-ask", async () => (await botMessages(chat.conversationId)).length === 2);
     const second = (await botMessages(chat.conversationId))[1];
-    assert.equal((second?.content as { body?: string }).body, "Please tap one of the buttons.");
+    assert.equal((second?.content as { body?: string } | undefined)?.body, "Please tap one of the buttons.");
     await until(
       "the run to wait again",
       async () => (await runOf(chat.conversationId))?.status === "waiting",
@@ -402,6 +402,6 @@ describe("automations on Kairos", () => {
       const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "note");
       return m.length ? m : null;
     });
-    assert.equal((notes[0]?.content as { text: string }).text, "VIP: Asha Rao");
+    assert.equal((notes[0]?.content as { text: string } | undefined)?.text, "VIP: Asha Rao");
   });
 });

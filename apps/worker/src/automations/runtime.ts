@@ -119,7 +119,10 @@ export function createAutomations({
 
   const router = kairos.workflow<RouterInput, unknown>(
     { ...automationWorkflows.router, retries: 5 },
-    async (ctx, input) => ctx.step<Record<string, unknown>>("route", () => (input.kind === "tag" ? routeTag(input) : route(input))),
+    async (ctx, input) =>
+      ctx.step<Record<string, unknown>>("route", () =>
+        input.kind === "tag" ? routeTag(input) : route(input),
+      ),
   );
 
   /** A team member tagged a contact: start each live automation on that tag, in the contact's chat on its number. */
@@ -665,7 +668,7 @@ export function createAutomations({
         ),
       )
       .limit(1);
-    if (!row || row.copy.status !== "ready") return { ok: false, reason: "template_not_ready" };
+    if (row?.copy.status !== "ready") return { ok: false, reason: "template_not_ready" };
     const scope = await scopeOf(input, memory);
     const values: Record<string, string> = {};
     for (const v of templateVariables(row.template.content as unknown as TemplateContent)) {

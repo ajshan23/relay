@@ -57,10 +57,10 @@ export function parseDate(text: string): string | null {
   let y: number;
   let m: number;
   let d: number;
-  let match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
-  if (match) [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  else if ((match = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/.exec(t)))
-    [d, m, y] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
+  const dayFirst = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/.exec(t);
+  if (iso) [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  else if (dayFirst) [d, m, y] = [Number(dayFirst[1]), Number(dayFirst[2]), Number(dayFirst[3])];
   else {
     const parsed = Date.parse(t);
     if (Number.isNaN(parsed)) return null;

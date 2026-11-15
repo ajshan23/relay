@@ -51,7 +51,7 @@ export async function startRunInChat(
       ),
     )
     .limit(1);
-  if (!conv || conv.kind !== "direct" || !conv.contactId)
+  if (conv?.kind !== "direct" || !conv.contactId)
     return { ok: false, status: 404, code: "chat_not_found", message: "That chat wasn't found." };
   if (conv.automationRunId) {
     const current = await ctx.kairos.getRun(conv.automationRunId);
