@@ -157,6 +157,8 @@ export const conversation = pgTable(
     /** The last customer message marked read at the channel (blue ticks), so each is sent once. */
     providerReadMessageId: text("provider_read_message_id"),
     windowExpiresAt: timestamp("window_expires_at"),
+    /** The automation run (Kairos run id) in charge of this chat right now; replies go to it first. */
+    automationRunId: text("automation_run_id"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -226,6 +228,10 @@ export const message = pgTable(
     replyToMessageId: text("reply_to_message_id"),
     /** Sent by a broadcast (see broadcasts.ts). No foreign key: broadcasts.ts imports this file. */
     broadcastId: text("broadcast_id"),
+    /** Sent by an automation (no foreign key, like broadcastId). */
+    automationId: text("automation_id"),
+    /** The automation step that sent it (run id + step position): unique, so a retried step never sends twice. */
+    automationStepKey: text("automation_step_key"),
     /** When the customer sent it (inbound) or when we asked to send it (outbound). */
     sentAt: timestamp("sent_at").notNull(),
     acceptedAt: timestamp("accepted_at"),
@@ -238,6 +244,9 @@ export const message = pgTable(
     uniqueIndex("message_account_external_uidx").on(t.channelAccountId, t.externalId),
     index("message_conversation_idx").on(t.conversationId, t.sentAt),
     index("message_broadcast_idx").on(t.broadcastId),
+    uniqueIndex("message_automation_step_uidx")
+      .on(t.automationStepKey)
+      .where(sql`${t.automationStepKey} is not null`),
     // The worker's minute sweep for outgoing messages whose queue job went missing (Redis outage).
     index("message_queued_idx").on(t.createdAt).where(sql`${t.status} = 'queued'`),
     // Search inside a conversation: message text and media captions.

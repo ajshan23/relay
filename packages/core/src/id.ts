@@ -38,6 +38,8 @@ export const idPrefixes = {
   storedFile: "file",
   broadcast: "bc",
   broadcastRecipient: "bcr",
+  automation: "aut",
+  automationVersion: "autv",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;
