@@ -35,26 +35,26 @@ export default async function Workers() {
   return (
     <>
       <PageHeader title="Workers" description="Processes running workflows, with their last heartbeat." />
-      <div className="flex flex-col gap-5 p-6">
+      <div className="flex flex-col gap-6 px-6 pb-12 lg:px-10">
         <Section title="Workers">
           {workers.length ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-4">Worker</TableHead>
+                  <TableHead className="pl-5">Worker</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Heartbeat</TableHead>
                   <TableHead className="text-right">Running now</TableHead>
                   <TableHead>Workflows</TableHead>
                   <TableHead className="text-right">Completed</TableHead>
                   <TableHead className="text-right">Failed</TableHead>
-                  <TableHead className="pr-4 text-right">Lost claims</TableHead>
+                  <TableHead className="pr-5 text-right">Lost claims</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {workers.map((w) => (
                   <TableRow key={w.id}>
-                    <TableCell className="pl-4">
+                    <TableCell className="pl-5">
                       <div className="font-mono text-xs">{w.id}</div>
                       <div className="text-xs text-muted-foreground">
                         {w.host} · pid {w.pid} · up since {ago(w.started_at)}
@@ -78,7 +78,7 @@ export default async function Workers() {
                     <TableCell className="font-mono text-xs">{w.workflows.join(", ")}</TableCell>
                     <TableCell className="text-right tabular-nums">{num(w.stats?.completed)}</TableCell>
                     <TableCell className="text-right tabular-nums">{num(w.stats?.failed)}</TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">{num(w.stats?.lostClaims)}</TableCell>
+                    <TableCell className="pr-5 text-right tabular-nums">{num(w.stats?.lostClaims)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -92,15 +92,15 @@ export default async function Workers() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-4">Tenant</TableHead>
-                  <TableHead className="pr-4 text-right">Executing</TableHead>
+                  <TableHead className="pl-5">Tenant</TableHead>
+                  <TableHead className="pr-5 text-right">Executing</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {tenants.map((t) => (
                   <TableRow key={t.tenant_id}>
-                    <TableCell className="pl-4 font-mono text-xs">{t.tenant_id}</TableCell>
-                    <TableCell className="pr-4 text-right tabular-nums">{num(t.n)}</TableCell>
+                    <TableCell className="pl-5 font-mono text-xs">{t.tenant_id}</TableCell>
+                    <TableCell className="pr-5 text-right tabular-nums">{num(t.n)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { Empty, Json, PageHeader, Section, Stat } from "@/components/page";
+import { Live } from "@/components/live";
+import { Body, Empty, PageHeader, Section, Stat } from "@/components/page";
 import { Status } from "@/components/status";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { type RailData, TimeRail } from "@/components/time-rail";
 import { q, S } from "@/lib/db";
 import { ago, num, shortId } from "@/lib/format";
 
@@ -10,36 +11,38 @@ export const dynamic = "force-dynamic";
 const statuses = ["running", "queued", "sleeping", "waiting", "completed", "failed", "cancelled"];
 
 export default async function Overview() {
-  const [byStatus, live, tenants, hourly, failures] = await Promise.all([
-    q<{ status: string; d1: string; d7: string; live: string }>(
+  const [byStatus, live, tenants, past, future, failures] = await Promise.all([
+    q<{ status: string; d1: string; d7: string }>(
       `select status,
          count(*) filter (where created_at > now() - interval '24 hours') d1,
-         count(*) filter (where created_at > now() - interval '7 days') d7,
-         count(*) filter (where finished_at is null) live
+         count(*) filter (where created_at > now() - interval '7 days') d7
        from ${S}.run group by status`,
     ),
-    q<{ executing: string; ready: string; scheduled: string; open_ended: string; oldest_ready: Date | null }>(
+    q<{ executing: string; ready: string; parked: string; open_ended: string; oldest_ready: Date | null }>(
       `select count(*) filter (where claimed_by is not null) executing,
          count(*) filter (where claimed_by is null and wake_at <= now()) ready,
-         count(*) filter (where claimed_by is null and wake_at > now() and wake_at <> 'infinity') scheduled,
+         count(*) filter (where claimed_by is null and wake_at > now()) parked,
          count(*) filter (where wake_at = 'infinity') open_ended,
          min(wake_at) filter (where claimed_by is null and wake_at <= now()) oldest_ready
        from ${S}.wakeup`,
     ),
-    q<{ tenant_id: string; ready: string; executing: string; oldest: Date | null }>(
+    q<{ tenant_id: string; ready: string; executing: string; parked: string }>(
       `select tenant_id,
          count(*) filter (where claimed_by is null and wake_at <= now()) ready,
          count(*) filter (where claimed_by is not null) executing,
-         min(wake_at) filter (where claimed_by is null and wake_at <= now()) oldest
-       from ${S}.wakeup group by tenant_id
-       having count(*) filter (where claimed_by is not null or wake_at <= now()) > 0
-       order by 2 desc, 3 desc limit 10`,
+         count(*) filter (where claimed_by is null and wake_at > now()) parked
+       from ${S}.wakeup group by tenant_id order by 3 desc, 2 desc, 4 desc limit 8`,
     ),
-    q<{ h: Date; failed: string; completed: string }>(
-      `select date_trunc('hour', finished_at) h,
-         count(*) filter (where status = 'failed') failed,
-         count(*) filter (where status = 'completed') completed
-       from ${S}.run where finished_at > now() - interval '24 hours' group by 1 order by 1`,
+    q<{ b: number; completed: string; failed: string }>(
+      `select floor(extract(epoch from (now() - finished_at)) / 1800)::int b,
+         count(*) filter (where status = 'completed') completed,
+         count(*) filter (where status = 'failed') failed
+       from ${S}.run where finished_at > now() - interval '12 hours' group by 1`,
+    ),
+    q<{ b: number; n: string }>(
+      `select floor(extract(epoch from (wake_at - now())) / 1800)::int b, count(*) n
+       from ${S}.wakeup where claimed_by is null and wake_at > now() and wake_at < now() + interval '12 hours'
+       group by 1`,
     ),
     q<{
       id: string;
@@ -50,185 +53,167 @@ export default async function Overview() {
       finished_at: Date;
     }>(
       `select id, workflow, version, tenant_id, error, finished_at from ${S}.run
-       where status = 'failed' order by finished_at desc limit 8`,
+       where status = 'failed' order by finished_at desc limit 6`,
     ),
   ]);
-  const count = (s: string, k: "d1" | "d7" | "live") =>
-    Number(byStatus.find((r) => r.status === s)?.[k] ?? 0);
+  const count = (s: string, k: "d1" | "d7") => Number(byStatus.find((r) => r.status === s)?.[k] ?? 0);
   const l = live[0];
-  // A fixed 24-slot axis, so a quiet day still reads as a day.
-  const hourStart = Math.floor(Date.now() / 3_600_000) * 3_600_000;
-  const slots = Array.from({ length: 24 }, (_, i) => {
-    const t = hourStart - (23 - i) * 3_600_000;
-    const row = hourly.find((h) => new Date(h.h).getTime() === t);
-    return { t, completed: Number(row?.completed ?? 0), failed: Number(row?.failed ?? 0) };
-  });
-  const max = Math.max(1, ...slots.map((h) => h.failed + h.completed));
+  const rail: RailData = {
+    past: Array.from({ length: 24 }, (_, i) => {
+      const r = past.find((p) => Number(p.b) === i);
+      return { completed: Number(r?.completed ?? 0), failed: Number(r?.failed ?? 0) };
+    }),
+    future: Array.from({ length: 24 }, (_, i) => Number(future.find((f) => Number(f.b) === i)?.n ?? 0)),
+    readyNow: Number(l?.ready ?? 0),
+  };
+  const total7 = Math.max(1, ...statuses.map((s) => count(s, "d7")));
+  const failed24 = count("failed", "d1");
 
   return (
     <>
-      <PageHeader title="Overview" description="What's running, waiting and failing right now." />
-      <div className="flex flex-col gap-5 p-6">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Stat label="Executing now" value={num(l?.executing)} hint={`${num(l?.ready)} ready to run`} />
+      <PageHeader
+        title="Overview"
+        description="What ran, what's running, and what wakes up next."
+        actions={<Live />}
+      />
+      <Body>
+        <TimeRail data={rail} />
+
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <Stat
+            label="Executing now"
+            value={num(l?.executing)}
+            tone="live"
+            hint={`${num(l?.ready)} ready for a worker`}
+          />
           <Stat
             label="Oldest ready run"
-            value={l?.oldest_ready ? ago(l.oldest_ready).replace(" ago", "") : "—"}
-            hint="Waiting for a free worker"
+            value={l?.oldest_ready ? ago(l.oldest_ready).replace(" ago", "") : "None"}
+            tone={l?.oldest_ready ? "warn" : undefined}
+            hint={l?.oldest_ready ? "Waiting for a free worker" : "Nothing is queued up"}
           />
           <Stat
-            label="Sleeping or waiting"
-            value={num(Number(l?.scheduled ?? 0) + Number(l?.open_ended ?? 0))}
-            hint={`${num(l?.open_ended)} with no deadline`}
+            label="Parked"
+            value={num(l?.parked)}
+            hint={`${num(l?.open_ended)} wait for an event with no deadline`}
           />
           <Stat
-            label="Failed, last 24 h"
-            value={num(count("failed", "d1"))}
+            label="Failed, last 24 hours"
+            value={num(failed24)}
+            tone={failed24 ? "bad" : "good"}
             hint={`${num(count("completed", "d1"))} completed`}
           />
         </div>
 
-        <div className="grid gap-5 lg:grid-cols-[2fr_1fr]">
-          <Section title="Finished runs per hour (24 h)">
-            {hourly.length ? (
-              <div className="px-4 pt-4 pb-3">
-                <div
-                  className="flex h-36 items-end gap-1"
-                  role="img"
-                  aria-label="Completed and failed runs per hour, last 24 hours"
-                >
-                  {slots.map((h) => (
-                    <div
-                      key={h.t}
-                      className="flex h-full flex-1 flex-col justify-end"
-                      title={`${new Date(h.t).getHours()}:00 · ${h.completed} completed, ${h.failed} failed`}
+        <div className="grid gap-6 xl:grid-cols-[1.1fr_1fr]">
+          <Section title="Runs this week" description="Started in the last 7 days, by where they are now.">
+            <ul className="flex flex-col gap-3 px-5 pb-5">
+              {statuses.map((s) => {
+                const n = count(s, "d7");
+                return (
+                  <li key={s}>
+                    <Link
+                      href={`/runs?status=${s}`}
+                      className="group grid grid-cols-[96px_1fr_64px] items-center gap-3"
                     >
-                      {h.failed ? (
-                        <div
-                          className="rounded-t-sm bg-destructive"
-                          style={{ height: `${(h.failed / max) * 100}%` }}
+                      <Status value={s} className="justify-self-start" />
+                      <span className="h-2 overflow-hidden rounded-full bg-muted">
+                        <span
+                          className={
+                            s === "failed"
+                              ? "block h-full rounded-full bg-destructive"
+                              : s === "completed"
+                                ? "block h-full rounded-full bg-rail-past"
+                                : "block h-full rounded-full bg-primary/70"
+                          }
+                          style={{ width: `${(n / total7) * 100}%` }}
                         />
-                      ) : null}
-                      <div
-                        className={h.failed ? "bg-primary/70" : "rounded-t-sm bg-primary/70"}
-                        style={{ height: `${(h.completed / max) * 100}%`, minHeight: h.completed ? 2 : 0 }}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-1.5 flex justify-between text-[11px] text-muted-foreground">
-                  <span>24 h ago</span>
-                  <span>12 h ago</span>
-                  <span>now</span>
-                </div>
-                <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-sm bg-primary/70" aria-hidden />
-                    Completed
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-sm bg-destructive" aria-hidden />
-                    Failed
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <Empty>Nothing finished in the last 24 hours.</Empty>
-            )}
+                      </span>
+                      <span className="text-right text-sm tabular-nums group-hover:text-foreground">
+                        {num(n)}
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
           </Section>
-          <Section title="Runs by status">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">24 h</TableHead>
-                  <TableHead className="text-right">7 d</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {statuses.map((s) => (
-                  <TableRow key={s}>
-                    <TableCell>
-                      <Link href={`/runs?status=${s}`}>
-                        <Status value={s} />
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">{num(count(s, "d1"))}</TableCell>
-                    <TableCell className="text-right tabular-nums">{num(count(s, "d7"))}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Section>
-        </div>
 
-        <div className="grid gap-5 lg:grid-cols-2">
-          <Section title="Busiest tenants">
-            {tenants.length ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Tenant</TableHead>
-                    <TableHead className="text-right">Executing</TableHead>
-                    <TableHead className="text-right">Ready</TableHead>
-                    <TableHead className="text-right">Oldest ready</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tenants.map((t) => (
-                    <TableRow key={t.tenant_id}>
-                      <TableCell className="font-mono text-xs">
-                        <Link
-                          className="hover:underline"
-                          href={`/runs?tenant=${encodeURIComponent(t.tenant_id)}`}
-                        >
-                          {t.tenant_id}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{num(t.executing)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{num(t.ready)}</TableCell>
-                      <TableCell className="text-right">{t.oldest ? ago(t.oldest) : "—"}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <Empty>No tenant has runs executing or ready.</Empty>
-            )}
-          </Section>
           <Section
             title="Latest failures"
             right={
-              <Link href="/runs?status=failed" className="text-xs text-primary hover:underline">
+              <Link href="/runs?status=failed" className="text-xs font-medium text-primary hover:underline">
                 All failed runs
               </Link>
             }
           >
             {failures.length ? (
-              <ul className="divide-y">
+              <ul className="divide-y border-t">
                 {failures.map((f) => (
-                  <li key={f.id} className="px-4 py-2.5">
+                  <li key={f.id}>
                     <Link
                       href={`/runs/${f.id}`}
-                      className="flex items-baseline justify-between gap-3 hover:underline"
+                      className="block px-5 py-3 transition-colors hover:bg-muted/50"
                     >
-                      <span className="truncate text-sm font-medium">
-                        {f.workflow}@{f.version}{" "}
-                        <span className="font-mono text-xs text-muted-foreground">{shortId(f.id)}</span>
+                      <span className="flex items-baseline justify-between gap-3">
+                        <span className="truncate text-sm font-medium">
+                          {f.workflow}
+                          <span className="text-muted-foreground">@{f.version}</span>
+                        </span>
+                        <span className="shrink-0 text-xs text-muted-foreground">{ago(f.finished_at)}</span>
                       </span>
-                      <span className="shrink-0 text-xs text-muted-foreground">{ago(f.finished_at)}</span>
+                      <span className="mt-0.5 block truncate text-xs text-destructive">
+                        {f.error?.message ?? "Failed"}
+                      </span>
+                      <span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">
+                        {shortId(f.id)}
+                      </span>
                     </Link>
-                    <p className="mt-0.5 truncate text-xs text-destructive">{f.error?.message ?? "Failed"}</p>
                   </li>
                 ))}
               </ul>
             ) : (
-              <Empty>No failed runs. </Empty>
+              <Empty>No failed runs. Nothing to look into.</Empty>
             )}
           </Section>
         </div>
-        {byStatus.length === 0 ? <Json value="No runs yet: is Kairos migrated on this database?" /> : null}
-      </div>
+
+        <Section title="Tenants with live runs" description="Executing, ready, and parked until later.">
+          {tenants.length ? (
+            <div className="overflow-x-auto border-t">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground">
+                    <th className="px-5 py-2.5 font-medium">Tenant</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Executing</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Ready</th>
+                    <th className="px-5 py-2.5 text-right font-medium">Parked</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {tenants.map((t) => (
+                    <tr key={t.tenant_id} className="transition-colors hover:bg-muted/40">
+                      <td className="px-5 py-2.5 font-mono text-xs">
+                        <Link
+                          className="hover:text-primary"
+                          href={`/runs?tenant=${encodeURIComponent(t.tenant_id)}`}
+                        >
+                          {t.tenant_id}
+                        </Link>
+                      </td>
+                      <td className="px-5 py-2.5 text-right tabular-nums">{num(t.executing)}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums">{num(t.ready)}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums">{num(t.parked)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty>No tenant has a live run.</Empty>
+          )}
+        </Section>
+      </Body>
     </>
   );
 }

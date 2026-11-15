@@ -52,8 +52,9 @@
       opacity: 0;
     }
   }
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
   --radius-sm: calc(var(--radius) * 0.5);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) * 1.5);
@@ -91,82 +92,96 @@
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
   --color-overlay: var(--overlay);
+  --color-now: var(--now);
+  --color-rail-past: var(--rail-past);
+  --color-rail-future: var(--rail-future);
 }
 
-/* FlowFlex light */
+/*
+ * Kairos: cool porcelain by day, deep graphite by night. Lagoon teal is the brand and "live";
+ * amber is kept for one thing only, the "now" line on the time rail. Red and green mean failed and
+ * finished, nothing else.
+ */
 :root {
-  --radius: 4px;
-  --background: #ffffff;
-  --foreground: #100f0f;
+  --radius: 8px;
+  --background: #f3f5f8;
+  --foreground: #11151c;
   --card: #ffffff;
-  --card-foreground: #100f0f;
+  --card-foreground: #11151c;
   --popover: #ffffff;
-  --popover-foreground: #100f0f;
-  --primary: #6941c6;
+  --popover-foreground: #11151c;
+  --primary: #0e8a83;
   --primary-foreground: #ffffff;
-  --secondary: #f5f4f8;
-  --secondary-foreground: #100f0f;
-  --muted: #f5f4f8;
-  --muted-foreground: #656565;
-  --accent: #f0ebfa;
-  --accent-foreground: #6941c6;
-  --destructive: #b42318;
-  --border: #e8e8e8;
-  --input: #d5d7da;
-  --ring: #874cf4;
-  --nav: #ffffff;
-  --nav-foreground: #100f0f;
-  --nav-muted: #757575;
-  --nav-active: #f3f1f7;
-  --nav-border: #e8e8e8;
-  --ai: #ede9fb;
-  --ai-foreground: #53389e;
-  --ai-strong: #874cf4;
+  --secondary: #ebeef2;
+  --secondary-foreground: #11151c;
+  --muted: #edf0f4;
+  --muted-foreground: #5a6373;
+  --accent: #e2f3f1;
+  --accent-foreground: #0a6a65;
+  --destructive: #c4372d;
+  --border: #e0e5eb;
+  --input: #d2d9e1;
+  --ring: #0e8a83;
+  --nav: #f3f5f8;
+  --nav-foreground: #11151c;
+  --nav-muted: #667085;
+  --nav-active: #ffffff;
+  --nav-border: #e0e5eb;
+  --ai: #e2f3f1;
+  --ai-foreground: #0a6a65;
+  --ai-strong: #0e8a83;
   --ai-strong-foreground: #ffffff;
-  --good: #067a62;
-  --good-soft: #e1f5f0;
-  --danger-soft: #fdece9;
-  --warning: #8a6d00;
-  --warning-soft: #f8f5df;
-  --overlay: rgb(16 15 15 / 0.45);
+  --good: #11845b;
+  --good-soft: #e1f3ea;
+  --danger-soft: #fbe8e6;
+  --warning: #9a5b04;
+  --warning-soft: #fbf0d9;
+  --now: #e5860a;
+  --rail-past: #9fb3c8;
+  --rail-future: #0e8a83;
+  --overlay: rgb(17 21 28 / 0.42);
+  --elevation: 0 1px 2px rgb(17 21 28 / 0.04), 0 10px 30px -18px rgb(17 21 28 / 0.18);
   color-scheme: light;
 }
 
-/* FlowFlex dark */
 .dark {
-  --background: #171717;
-  --foreground: #f5f5f5;
-  --card: #1f1f1f;
-  --card-foreground: #f5f5f5;
-  --popover: #1f1f1f;
-  --popover-foreground: #f5f5f5;
-  --primary: #9e76ff;
-  --primary-foreground: #150a33;
-  --secondary: #262626;
-  --secondary-foreground: #f5f5f5;
-  --muted: #262626;
-  --muted-foreground: #a3a3a3;
-  --accent: #2a2140;
-  --accent-foreground: #d6c8ff;
-  --destructive: #ff8a7a;
-  --border: #333333;
-  --input: #3d3d3d;
-  --ring: #9e76ff;
-  --nav: #171717;
-  --nav-foreground: #f5f5f5;
-  --nav-muted: #a3a3a3;
-  --nav-active: #262626;
-  --nav-border: #2e2e2e;
-  --ai: #251d3d;
-  --ai-foreground: #d6c8ff;
-  --ai-strong: #9e76ff;
-  --ai-strong-foreground: #150a33;
-  --good: #4fd1b0;
-  --good-soft: #12332c;
-  --danger-soft: #3b1a16;
-  --warning: #e6c84f;
-  --warning-soft: #33290a;
+  --background: #0c0f14;
+  --foreground: #e7ebf1;
+  --card: #131821;
+  --card-foreground: #e7ebf1;
+  --popover: #161c26;
+  --popover-foreground: #e7ebf1;
+  --primary: #2ec4b6;
+  --primary-foreground: #04201d;
+  --secondary: #1a202a;
+  --secondary-foreground: #e7ebf1;
+  --muted: #1a202a;
+  --muted-foreground: #8b95a6;
+  --accent: #0f2f2c;
+  --accent-foreground: #7fe3d8;
+  --destructive: #ff6b5e;
+  --border: #222a36;
+  --input: #2b3441;
+  --ring: #2ec4b6;
+  --nav: #0a0d11;
+  --nav-foreground: #e7ebf1;
+  --nav-muted: #8b95a6;
+  --nav-active: #161c26;
+  --nav-border: #1b222c;
+  --ai: #0f2f2c;
+  --ai-foreground: #7fe3d8;
+  --ai-strong: #2ec4b6;
+  --ai-strong-foreground: #04201d;
+  --good: #3dd68c;
+  --good-soft: #0e2a1e;
+  --danger-soft: #331612;
+  --warning: #f2b441;
+  --warning-soft: #2d230f;
+  --now: #ffb547;
+  --rail-past: #3e4c60;
+  --rail-future: #2ec4b6;
   --overlay: rgb(0 0 0 / 0.6);
+  --elevation: 0 0 0 1px rgb(255 255 255 / 0.02), 0 12px 32px -20px rgb(0 0 0 / 0.8);
   color-scheme: dark;
 }
 
@@ -188,4 +203,37 @@
 @utility scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+}
+
+@utility shadow-elevated {
+  box-shadow: var(--elevation);
+}
+
+@layer base {
+  body {
+    font-feature-settings:
+      "tnum" 1,
+      "ss01" 1;
+  }
+}
+
+/* The live dot and the now line breathe; nothing else moves on its own. */
+@keyframes kairos-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+.kairos-breathe {
+  animation: kairos-breathe 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kairos-breathe {
+    animation: none;
+  }
 }

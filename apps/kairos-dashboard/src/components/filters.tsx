@@ -21,7 +21,7 @@ export function Filters({
   action: string;
 }) {
   return (
-    <form action={action} className="flex flex-wrap items-end gap-3 border-b px-6 py-3">
+    <form action={action} className="flex flex-wrap items-end gap-3 border-b px-5 py-4">
       {fields.map((f) => (
         <div key={f.name} className="flex flex-col gap-1">
           <Label htmlFor={`f-${f.name}`} className="text-xs text-muted-foreground">

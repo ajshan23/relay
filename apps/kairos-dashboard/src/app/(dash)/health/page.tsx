@@ -49,8 +49,8 @@ export default async function Health() {
   return (
     <>
       <PageHeader title="Health" description="How the engine itself is doing." />
-      <div className="flex flex-col gap-5 p-6">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="flex flex-col gap-6 px-6 pb-12 lg:px-10">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <Stat
             label="Ready for over 5 min"
             value={num(st?.n)}
@@ -78,10 +78,10 @@ export default async function Health() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-4">Workflow</TableHead>
+                  <TableHead className="pl-5">Workflow</TableHead>
                   <TableHead>Version</TableHead>
                   <TableHead className="text-right">Live runs</TableHead>
-                  <TableHead className="pr-4">State</TableHead>
+                  <TableHead className="pr-5">State</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -97,10 +97,10 @@ export default async function Health() {
                           : { label: "Current", tone: "bg-secondary text-foreground" };
                   return (
                     <TableRow key={`${v.workflow}@${v.version}`}>
-                      <TableCell className="pl-4 font-mono text-xs">{v.workflow}</TableCell>
+                      <TableCell className="pl-5 font-mono text-xs">{v.workflow}</TableCell>
                       <TableCell>{v.version}</TableCell>
                       <TableCell className="text-right tabular-nums">{num(live)}</TableCell>
-                      <TableCell className="pr-4">
+                      <TableCell className="pr-5">
                         <Badge variant="outline" className={`border-transparent ${state.tone}`}>
                           {state.label}
                         </Badge>
@@ -120,11 +120,11 @@ export default async function Health() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-4">Table</TableHead>
+                  <TableHead className="pl-5">Table</TableHead>
                   <TableHead className="text-right">Rows</TableHead>
                   <TableHead className="text-right">Dead rows</TableHead>
                   <TableHead className="text-right">Dead %</TableHead>
-                  <TableHead className="pr-4">Last vacuum</TableHead>
+                  <TableHead className="pr-5">Last vacuum</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -134,7 +134,7 @@ export default async function Health() {
                   const pct = live + dead ? Math.round((dead / (live + dead)) * 100) : 0;
                   return (
                     <TableRow key={t.relname}>
-                      <TableCell className="pl-4 font-mono text-xs">{t.relname}</TableCell>
+                      <TableCell className="pl-5 font-mono text-xs">{t.relname}</TableCell>
                       <TableCell className="text-right tabular-nums">{num(live)}</TableCell>
                       <TableCell className="text-right tabular-nums">{num(dead)}</TableCell>
                       <TableCell
@@ -142,7 +142,7 @@ export default async function Health() {
                       >
                         {pct}%
                       </TableCell>
-                      <TableCell className="pr-4 text-xs text-muted-foreground">
+                      <TableCell className="pr-5 text-xs text-muted-foreground">
                         {ago(t.last_autovacuum)}
                       </TableCell>
                     </TableRow>

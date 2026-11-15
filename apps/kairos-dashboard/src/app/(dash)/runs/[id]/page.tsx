@@ -82,8 +82,14 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
   return (
     <>
       <PageHeader
-        title={`${run.workflow}@${run.version}`}
-        description={run.id}
+        title={
+          <span className="flex flex-wrap items-center gap-3">
+            {run.workflow}
+            <span className="text-muted-foreground">@{run.version}</span>
+            <Status value={run.status} />
+          </span>
+        }
+        description={<span className="font-mono text-xs">{run.id}</span>}
         actions={
           <form className="flex gap-2">
             <input type="hidden" name="runId" value={run.id} />
@@ -100,87 +106,107 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
           </form>
         }
       />
-      <div className="grid gap-5 p-6 xl:grid-cols-[1fr_380px]">
-        <div className="flex min-w-0 flex-col gap-5">
-          <Section title="Timeline" right={<Status value={run.status} />}>
-            <ol className="flex flex-col">
-              <li className="flex gap-3 border-b px-4 py-3 text-sm">
-                <Hourglass className="mt-0.5 size-4 text-muted-foreground" aria-hidden />
-                <div>
-                  <div className="font-medium">Started</div>
-                  <div className="text-xs text-muted-foreground">
-                    {when(run.created_at)} · claimed {run.claims}×
-                    {run.claim_losses ? ` · lost its worker ${run.claim_losses}×` : ""}
-                  </div>
-                </div>
-              </li>
+      <div className="grid gap-6 px-6 pb-12 lg:px-10 xl:grid-cols-[1fr_360px]">
+        <div className="flex min-w-0 flex-col gap-6">
+          <Section
+            title="Timeline"
+            description="Every step it recorded, in order. A replay returns these results."
+          >
+            <ol className="relative px-5 pb-5">
+              <span className="absolute top-3 bottom-8 left-[33px] w-px bg-border" aria-hidden />
+              <TimelineItem
+                icon={<Hourglass className="size-3.5" />}
+                tone="muted"
+                title="Started"
+                meta={`${when(run.created_at)}, claimed ${run.claims} time${run.claims === 1 ? "" : "s"}${
+                  run.claim_losses
+                    ? `, lost its worker ${run.claim_losses} time${run.claim_losses === 1 ? "" : "s"}`
+                    : ""
+                }`}
+              />
               {steps.map((s) => {
                 const Icon = kindIcon[s.kind];
                 const wt = waitBySeq.get(s.seq);
                 return (
-                  <li key={s.seq} className="flex gap-3 border-b px-4 py-3 text-sm">
-                    <Icon className="mt-0.5 size-4 text-muted-foreground" aria-hidden />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">
-                          {s.seq}. {s.name}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{s.kind}</span>
+                  <TimelineItem
+                    key={s.seq}
+                    icon={<Icon className="size-3.5" />}
+                    tone={
+                      s.status === "failed"
+                        ? "bad"
+                        : s.status === "completed"
+                          ? "good"
+                          : s.status === "waiting"
+                            ? "live"
+                            : "warn"
+                    }
+                    title={
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span>{s.name}</span>
                         <Status value={s.status} />
                         {s.attempt > 1 ? (
-                          <span className="text-xs text-muted-foreground">attempt {s.attempt}</span>
+                          <span className="text-xs font-normal text-muted-foreground">
+                            attempt {s.attempt}
+                          </span>
                         ) : null}
-                        {canRetry ? (
-                          <form className="ml-auto">
-                            <input type="hidden" name="runId" value={run.id} />
-                            <input type="hidden" name="fromSeq" value={s.seq} />
-                            <Button type="submit" formAction={retryRuns} size="xs" variant="ghost">
-                              Retry from here
-                            </Button>
-                          </form>
-                        ) : null}
-                      </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">
-                        {when(s.started_at)}
-                        {s.completed_at ? ` · took ${duration(s.started_at, s.completed_at)}` : ""}
-                        {s.kind === "sleep" && s.wake_at ? ` · wakes ${when(s.wake_at)}` : ""}
-                        {wt
-                          ? ` · waits for "${wt.event_key}"${wt.scope ? ` in ${wt.scope}` : ""}${
-                              wt.deadline ? ` until ${when(wt.deadline)}` : ", no deadline"
-                            }`
-                          : ""}
-                      </div>
-                      {s.error ? (
-                        <p className="mt-1 text-xs text-destructive">{s.error.message ?? "Failed"}</p>
-                      ) : null}
-                      {s.result !== null && s.result !== undefined ? (
-                        <details className="mt-1.5">
-                          <summary className="cursor-pointer text-xs text-muted-foreground">Result</summary>
-                          <Json value={s.result} className="mt-1" />
-                        </details>
-                      ) : null}
-                    </div>
-                  </li>
+                      </span>
+                    }
+                    meta={[
+                      `${s.kind === "step" ? "Step" : s.kind === "sleep" ? "Sleep" : "Wait"} ${s.seq}, ${when(s.started_at)}`,
+                      s.completed_at ? `took ${duration(s.started_at, s.completed_at)}` : null,
+                      s.kind === "sleep" && s.wake_at ? `wakes ${when(s.wake_at)}` : null,
+                      wt
+                        ? `waits for "${wt.event_key}"${wt.scope ? ` in ${wt.scope}` : ""}${wt.deadline ? ` until ${when(wt.deadline)}` : ", no deadline"}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(", ")}
+                    action={
+                      canRetry ? (
+                        <form>
+                          <input type="hidden" name="runId" value={run.id} />
+                          <input type="hidden" name="fromSeq" value={s.seq} />
+                          <Button type="submit" formAction={retryRuns} size="xs" variant="ghost">
+                            Retry from here
+                          </Button>
+                        </form>
+                      ) : null
+                    }
+                  >
+                    {s.error ? (
+                      <p className="mt-1.5 text-xs text-destructive">{s.error.message ?? "Failed"}</p>
+                    ) : null}
+                    {s.result !== null && s.result !== undefined ? (
+                      <details className="group mt-2">
+                        <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                          Result
+                        </summary>
+                        <Json value={s.result} className="mt-1.5" />
+                      </details>
+                    ) : null}
+                  </TimelineItem>
                 );
               })}
               {run.finished_at ? (
-                <li className="flex gap-3 px-4 py-3 text-sm">
-                  <Hourglass className="mt-0.5 size-4 text-muted-foreground" aria-hidden />
-                  <div>
-                    <div className="font-medium capitalize">{run.status}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {when(run.finished_at)} · {duration(run.created_at, run.finished_at)} in all
-                    </div>
-                  </div>
-                </li>
+                <TimelineItem
+                  icon={<Hourglass className="size-3.5" />}
+                  tone={run.status === "failed" ? "bad" : run.status === "completed" ? "good" : "muted"}
+                  title={<Status value={run.status} />}
+                  meta={`${when(run.finished_at)}, ${duration(run.created_at, run.finished_at)} in all`}
+                />
               ) : (
-                <li className="px-4 py-3 text-xs text-muted-foreground">
-                  {w?.claimed_by
-                    ? `Executing on ${w.claimed_by} (claim ${w.attempt}, lease until ${when(w.claimed_until)})`
-                    : w
-                      ? `Next wake ${when(w.wake_at)} (${ago(w.wake_at)})`
-                      : "Not scheduled"}
-                </li>
+                <TimelineItem
+                  icon={<Hourglass className="size-3.5" />}
+                  tone="live"
+                  title="Next"
+                  meta={
+                    w?.claimed_by
+                      ? `Executing on ${w.claimed_by} (claim ${w.attempt}, lease until ${when(w.claimed_until)})`
+                      : w
+                        ? `Wakes ${when(w.wake_at)} (${ago(w.wake_at)})`
+                        : "Not scheduled"
+                  }
+                />
               )}
             </ol>
           </Section>
@@ -244,7 +270,7 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
           ) : null}
         </div>
 
-        <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-6">
           <Section title="Details">
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 p-4 text-sm">
               <dt className="text-muted-foreground">Tenant</dt>
@@ -298,5 +324,46 @@ export default async function RunDetail({ params }: { params: Promise<{ id: stri
         </div>
       </div>
     </>
+  );
+}
+
+function TimelineItem({
+  icon,
+  tone,
+  title,
+  meta,
+  action,
+  children,
+}: {
+  icon: React.ReactNode;
+  tone: "good" | "bad" | "warn" | "live" | "muted";
+  title: React.ReactNode;
+  meta?: string;
+  action?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const ring = {
+    good: "border-good/40 bg-good-soft text-good",
+    bad: "border-destructive/40 bg-danger-soft text-destructive",
+    warn: "border-warning/40 bg-warning-soft text-warning",
+    live: "border-primary/50 bg-accent text-accent-foreground",
+    muted: "border-border bg-muted text-muted-foreground",
+  }[tone];
+  return (
+    <li className="relative flex gap-4 py-3">
+      <span
+        className={`relative z-10 mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-full border ${ring}`}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="text-sm font-medium">{title}</div>
+          {action}
+        </div>
+        {meta ? <div className="mt-0.5 text-xs text-muted-foreground">{meta}</div> : null}
+        {children}
+      </div>
+    </li>
   );
 }

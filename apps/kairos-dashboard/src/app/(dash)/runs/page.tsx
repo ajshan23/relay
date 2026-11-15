@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { cancelRuns, retryRuns } from "@/app/actions";
 import { Filters, param } from "@/components/filters";
-import { Empty, PageHeader } from "@/components/page";
+import { Body, Empty, PageHeader } from "@/components/page";
 import { Status } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -76,94 +76,101 @@ export default async function Runs({
   return (
     <>
       <PageHeader title="Runs" description="Every run, newest first. Select runs to cancel or retry them." />
-      <Filters
-        action="/runs"
-        values={f}
-        fields={[
-          { name: "status", label: "Status", options: STATUSES.map((s) => ({ value: s, label: s })) },
-          { name: "workflow", label: "Workflow", placeholder: "relay.automation" },
-          { name: "version", label: "Version", placeholder: "any" },
-          { name: "tenant", label: "Tenant", placeholder: "org id" },
-          { name: "serial", label: "Serial key", placeholder: "conversation id" },
-          { name: "idem", label: "Idempotency key" },
-          { name: "label", label: "Label", placeholder: "automationId=…" },
-        ]}
-      />
-      <form>
-        <div className="flex flex-wrap items-center gap-2 px-6 py-2">
-          <Button type="submit" formAction={cancelRuns} size="sm" variant="outline">
-            Cancel selected
-          </Button>
-          <Button type="submit" formAction={retryRuns} size="sm" variant="outline">
-            Retry selected
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            Cancel stops unfinished runs. Retry re-runs failed or cancelled ones from the step that stopped.
-          </span>
+      <Body>
+        <div className="overflow-hidden rounded-xl border bg-card shadow-elevated">
+          <Filters
+            action="/runs"
+            values={f}
+            fields={[
+              { name: "status", label: "Status", options: STATUSES.map((s) => ({ value: s, label: s })) },
+              { name: "workflow", label: "Workflow", placeholder: "relay.automation" },
+              { name: "version", label: "Version", placeholder: "any" },
+              { name: "tenant", label: "Tenant", placeholder: "org id" },
+              { name: "serial", label: "Serial key", placeholder: "conversation id" },
+              { name: "idem", label: "Idempotency key" },
+              { name: "label", label: "Label", placeholder: "automationId=…" },
+            ]}
+          />
+          <form>
+            <div className="flex flex-wrap items-center gap-2 border-b px-5 py-2.5">
+              <Button type="submit" formAction={cancelRuns} size="sm" variant="outline">
+                Cancel selected
+              </Button>
+              <Button type="submit" formAction={retryRuns} size="sm" variant="outline">
+                Retry selected
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Cancel stops unfinished runs. Retry re-runs failed or cancelled ones from the step that
+                stopped.
+              </span>
+            </div>
+            {page.length ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10 pl-5">
+                      <span className="sr-only">Select</span>
+                    </TableHead>
+                    <TableHead>Run</TableHead>
+                    <TableHead>Workflow</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Tenant</TableHead>
+                    <TableHead>Serial key</TableHead>
+                    <TableHead>Labels</TableHead>
+                    <TableHead>Started</TableHead>
+                    <TableHead className="pr-5">Took</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {page.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell className="pl-5">
+                        <Checkbox name="runId" value={r.id} aria-label={`Select run ${r.id}`} />
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        <Link href={`/runs/${r.id}`} className="text-primary hover:underline">
+                          {shortId(r.id)}
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-sm font-medium">
+                        {r.workflow}
+                        <span className="text-muted-foreground">@{r.version}</span>
+                      </TableCell>
+                      <TableCell>
+                        <Status value={r.status} />
+                      </TableCell>
+                      <TableCell className="max-w-40 truncate font-mono text-xs">{r.tenant_id}</TableCell>
+                      <TableCell className="max-w-40 truncate font-mono text-xs">
+                        {r.serial_key ?? "—"}
+                      </TableCell>
+                      <TableCell className="max-w-56 truncate font-mono text-xs text-muted-foreground">
+                        {Object.entries(r.labels ?? {})
+                          .map(([k, v]) => `${k}=${String(v)}`)
+                          .join(" ") || "—"}
+                      </TableCell>
+                      <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                        {ago(r.created_at)}
+                      </TableCell>
+                      <TableCell className="pr-5 text-xs whitespace-nowrap text-muted-foreground">
+                        {r.finished_at ? duration(r.created_at, r.finished_at) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <Empty>No runs match these filters.</Empty>
+            )}
+          </form>
         </div>
-        {page.length ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10 pl-6">
-                  <span className="sr-only">Select</span>
-                </TableHead>
-                <TableHead>Run</TableHead>
-                <TableHead>Workflow</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Tenant</TableHead>
-                <TableHead>Serial key</TableHead>
-                <TableHead>Labels</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead className="pr-6">Took</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {page.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="pl-6">
-                    <Checkbox name="runId" value={r.id} aria-label={`Select run ${r.id}`} />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    <Link href={`/runs/${r.id}`} className="text-primary hover:underline">
-                      {shortId(r.id)}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {r.workflow}
-                    <span className="text-muted-foreground">@{r.version}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Status value={r.status} />
-                  </TableCell>
-                  <TableCell className="max-w-40 truncate font-mono text-xs">{r.tenant_id}</TableCell>
-                  <TableCell className="max-w-40 truncate font-mono text-xs">{r.serial_key ?? "—"}</TableCell>
-                  <TableCell className="max-w-56 truncate font-mono text-xs text-muted-foreground">
-                    {Object.entries(r.labels ?? {})
-                      .map(([k, v]) => `${k}=${String(v)}`)
-                      .join(" ") || "—"}
-                  </TableCell>
-                  <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
-                    {ago(r.created_at)}
-                  </TableCell>
-                  <TableCell className="pr-6 text-xs whitespace-nowrap text-muted-foreground">
-                    {r.finished_at ? duration(r.created_at, r.finished_at) : "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        ) : (
-          <Empty>No runs match these filters.</Empty>
-        )}
-      </form>
-      {rows.length > PAGE ? (
-        <div className="flex justify-end px-6 py-3">
-          <Button asChild size="sm" variant="outline">
-            <Link href={`/runs?${next.toString()}`}>Older runs</Link>
-          </Button>
-        </div>
-      ) : null}
+        {rows.length > PAGE ? (
+          <div className="flex justify-end">
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/runs?${next.toString()}`}>Older runs</Link>
+            </Button>
+          </div>
+        ) : null}
+      </Body>
     </>
   );
 }
