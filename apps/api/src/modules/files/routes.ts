@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import sharp from "sharp";
 import { channels } from "../../channels";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, requireOrg } from "../branches/access";
 import { canWork, findConversation } from "../conversations/access";
@@ -46,7 +47,8 @@ export function fileRoutes(ctx: AppContext) {
     const conversationId = form?.get("conversationId");
     // A template header picture or file is uploaded before any conversation: check it against the
     // business's channels that have templates.
-    const forTemplate = form?.get("use") === "template";
+    // An automation's file is uploaded in the editor, also before any conversation.
+    const forTemplate = form?.get("use") === "template" || form?.get("use") === "automation";
     if (!(file instanceof File) || (!forTemplate && typeof conversationId !== "string"))
       return fail(c, 422, "invalid_input", "Send a file and the conversation it is for.");
     let accountType: string | null = null;
@@ -180,9 +182,12 @@ export function fileRoutes(ctx: AppContext) {
     });
     // A small preview for the chat (the worker makes it).
     if ((kind === "image" || kind === "video") && !stored.previewKey)
-      await ctx.queues.previews
-        .add("preview", { fileId: stored.id }, { jobId: `preview_${stored.id}`, attempts: 2 })
-        .catch((err) => console.warn("preview job", err));
+      await enqueue(
+        ctx.queues.previews,
+        "preview",
+        { fileId: stored.id },
+        { jobId: `preview_${stored.id}`, attempts: 2 },
+      );
     const [row] = await ctx.db
       .insert(schema.attachment)
       .values({
@@ -209,6 +214,8 @@ export function fileRoutes(ctx: AppContext) {
           fileName: row.fileName,
           sizeBytes: row.sizeBytes,
           url: `/api/attachments/${row.id}`,
+          /** The stored file: an automation step keeps this and sends it each time it runs. */
+          fileId: row.fileId,
         },
       },
       201,

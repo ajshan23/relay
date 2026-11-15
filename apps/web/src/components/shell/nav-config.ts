@@ -1,9 +1,25 @@
 // Icons: imported from lucide-react until the shared Icon component lands.
-import { BarChart3, Bot, type LucideIcon, Megaphone, MessageCircle, Sparkles, Users } from "lucide-react";
+import {
+  BarChart3,
+  Bot,
+  type LucideIcon,
+  Megaphone,
+  MessageCircle,
+  Sparkles,
+  Users,
+  Workflow,
+} from "lucide-react";
 
 /** The main sections of the app, in sidebar order, and the sub-topics shown in the sub-menu. */
 
-export type SectionId = "today" | "conversations" | "contacts" | "agents" | "broadcasts" | "insights";
+export type SectionId =
+  | "today"
+  | "conversations"
+  | "contacts"
+  | "agents"
+  | "automations"
+  | "broadcasts"
+  | "insights";
 
 export type SubTopic = {
   label: string;
@@ -104,6 +120,12 @@ export const sections: Section[] = [
   section("agents", "AI agent", Bot, "Teach Mira, try her out, put her live and improve her answers.", [
     { label: "Mira", items: ["Teach", "Try", "Go live", "Improve"] },
     { label: "Knowledge", items: ["Website", "Files", "Questions and answers"] },
+  ]),
+  section("automations", "Automations", Workflow, "Replies and follow-ups that run by themselves.", [
+    {
+      label: "Automations",
+      items: [{ label: "All", view: "all" }, "Live", { label: "Drafts", view: "draft" }, "Paused"],
+    },
   ]),
   section("broadcasts", "Broadcasts", Megaphone, "Messages you send to many contacts at once.", [
     { label: "Broadcasts", items: ["All", "Drafts", "Scheduled", "Sending", "Done"] },
