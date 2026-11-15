@@ -269,6 +269,13 @@ export function buildWhatsAppTemplateMessage(m: Extract<OutboundMessage, { type:
     text: value,
   }));
   if (params.length) components.push({ type: "body", parameters: params });
+  for (const q of m.quickReplyPayloads ?? [])
+    components.push({
+      type: "button",
+      sub_type: "quick_reply",
+      index: String(q.index),
+      parameters: [{ type: "payload", payload: q.payload.slice(0, 256) }],
+    });
   return { name: m.name, language: { code: m.language }, ...(components.length ? { components } : {}) };
 }
 

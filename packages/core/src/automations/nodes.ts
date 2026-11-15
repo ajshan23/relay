@@ -47,16 +47,39 @@ const mediaSchema = z.object({
   name: z.string().max(200).optional(),
 });
 
+/*
+ * "Wait for a reply" on a send step: off by default, so steps saved before it existed behave the same.
+ * On, the step waits for their next message (or a tap on one of the template's quick-reply buttons),
+ * saves it under a name if one is given, and takes "No reply" after the timeout.
+ */
+const waitFields = {
+  waitForReply: z.boolean().default(false),
+  saveAs: z.union([variableName, z.literal("")]).default(""),
+  timeoutMinutes: z.number().int().min(5).max(10080).default(1440),
+};
+
 const sendMessage = z.object({
   text: z.string().max(4096).default(""),
   media: mediaSchema.nullable().default(null),
+  ...waitFields,
 });
 
 const sendTemplate = z.object({
   templateId: z.string().min(1, "Pick a template"),
   /** Template variable → text, which may use {{variables}}. */
   values: z.record(z.string(), z.string().max(1024)).default({}),
+  /** The template's quick-reply buttons (copied when it's picked): each becomes an exit when waiting. */
+  replyButtons: z.array(z.object({ index: z.number().int().min(0).max(9), title: z.string() })).default([]),
+  ...waitFields,
 });
+
+const waitExits = (c: { waitForReply: boolean; timeoutMinutes: number }, replied = "Replied") =>
+  c.waitForReply
+    ? [
+        { id: "replied", label: replied },
+        { id: "no_reply", label: "No reply" },
+      ]
+    : [{ id: "next", label: "Sent" }];
 
 export const answerFormats = ["any", "number", "email", "phone", "date"] as const;
 const askQuestion = z.object({
@@ -126,11 +149,8 @@ export const nodeSpecs = {
     label: "Send message",
     description: "Text, a photo, a video or a file.",
     config: sendMessage.refine((c) => c.text.trim() || c.media, "Write a message or add a file"),
-    defaults: () => ({ text: "", media: null }),
-    handles: () => [
-      { id: "next", label: "Sent" },
-      { id: "failed", label: "Couldn't send" },
-    ],
+    defaults: () => ({ text: "", media: null, waitForReply: false, saveAs: "", timeoutMinutes: 1440 }),
+    handles: (c) => [...waitExits(c), { id: "failed", label: "Couldn't send" }],
     summary: (c) => (c.media ? `${c.media.kind}${c.text ? `: ${c.text}` : ""}` : c.text || "Empty message"),
     sendsFreeText: true,
   } satisfies NodeSpec<z.infer<typeof sendMessage>>,
@@ -142,9 +162,17 @@ export const nodeSpecs = {
     label: "Send template",
     description: "An approved template; works outside the 24-hour window.",
     config: sendTemplate,
-    defaults: () => ({ templateId: "", values: {} }),
-    handles: () => [
-      { id: "next", label: "Sent" },
+    defaults: () => ({
+      templateId: "",
+      values: {},
+      replyButtons: [],
+      waitForReply: false,
+      saveAs: "",
+      timeoutMinutes: 1440,
+    }),
+    handles: (c) => [
+      ...(c.waitForReply ? c.replyButtons.map((b) => ({ id: `btn:${b.index}`, label: b.title })) : []),
+      ...waitExits(c, c.replyButtons.length ? "Replied something else" : "Replied"),
       { id: "failed", label: "Couldn't send" },
     ],
     summary: (c) => (c.templateId ? "Template" : "Pick a template"),

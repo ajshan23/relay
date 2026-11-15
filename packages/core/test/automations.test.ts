@@ -281,3 +281,49 @@ describe("starters", () => {
     }
   });
 });
+
+describe("wait for a reply on send steps", () => {
+  it("needs a No reply exit, saves the reply by name, and reopens the window", () => {
+    const def = emptyDefinition({ type: "tag_added", tagId: "t1" });
+    def.nodes = [
+      node("tpl", "send_template", {
+        templateId: "tpl_1",
+        values: {},
+        replyButtons: [{ index: 0, title: "Yes, book me" }],
+        waitForReply: true,
+        saveAs: "choice",
+        timeoutMinutes: 1440,
+      }),
+      node("thanks", "send_message", { text: "Great, {{answers.choice}}!", media: null }),
+    ];
+    def.edges = [
+      edge("trigger", "next", "tpl"),
+      edge("tpl", "btn:0", "thanks"),
+      edge("tpl", "replied", "thanks"),
+    ];
+    let c = codes(def);
+    assert.ok(c.includes("error:NO_REPLY_PATH"));
+    assert.ok(!c.includes("error:ANSWER_MISSING"), "the saved reply counts as an answer");
+    // After a reply the window is open, so the free text that follows isn't flagged.
+    assert.ok(!c.includes("warning:WINDOW"));
+    def.nodes.push(node("bye", "end", {}));
+    def.edges.push(edge("tpl", "no_reply", "bye"));
+    c = codes(def);
+    assert.ok(!c.includes("error:NO_REPLY_PATH"));
+    assert.deepEqual(
+      nodeSpecs.send_template
+        .handles(nodeSpecs.send_template.config.parse(def.nodes[0]?.config))
+        .map((h) => h.id),
+      ["btn:0", "replied", "no_reply", "failed"],
+    );
+  });
+
+  it("keeps steps saved before the option working as they did", () => {
+    const old = nodeSpecs.send_message.config.parse({ text: "Hi", media: null });
+    assert.equal(old.waitForReply, false);
+    assert.deepEqual(
+      nodeSpecs.send_message.handles(old).map((h) => h.id),
+      ["next", "failed"],
+    );
+  });
+});

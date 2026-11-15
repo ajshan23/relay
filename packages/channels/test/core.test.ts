@@ -181,3 +181,32 @@ describe("interactive messages", () => {
     assert.equal(body.interactive.action.sections[0]?.rows.length, 5);
   });
 });
+
+describe("template quick-reply payloads", () => {
+  it("sends our payload for each quick-reply button by position", () => {
+    const body = buildWhatsAppSendBody(
+      { kind: "direct", phone: "919847000000", userId: null },
+      {
+        type: "template",
+        name: "follow_up",
+        language: "en",
+        values: { name: "Asha" },
+        quickReplyPayloads: [
+          { index: 0, payload: "qabc_0" },
+          { index: 1, payload: "qabc_1" },
+        ],
+      },
+      "msg_3",
+    ) as {
+      template: { components: { type: string; sub_type?: string; index?: string; parameters: unknown[] }[] };
+    };
+    const buttons = body.template.components.filter((c) => c.type === "button");
+    assert.deepEqual(
+      buttons.map((b) => [b.sub_type, b.index, b.parameters]),
+      [
+        ["quick_reply", "0", [{ type: "payload", payload: "qabc_0" }]],
+        ["quick_reply", "1", [{ type: "payload", payload: "qabc_1" }]],
+      ],
+    );
+  });
+});

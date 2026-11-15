@@ -10,7 +10,7 @@ import {
   type Trigger,
   type WaitConfig,
 } from "@relay/core/automations";
-import { Segmented } from "@relay/ui/components/choice";
+import { Segmented, SwitchRow } from "@relay/ui/components/choice";
 import { Field } from "@relay/ui/components/field";
 import { Icon } from "@relay/ui/components/icon";
 import { SelectField } from "@relay/ui/components/select-field";
@@ -446,6 +446,7 @@ function SendMessageForm({ config, set, def, options }: FormProps) {
           )
         }
       </Field>
+      <WaitForReply config={config} set={set} buttons={[]} />
       <p className="text-xs text-muted-foreground">
         Free-form messages only go out within 24 hours of the customer's last message. Use a template
         otherwise.
@@ -463,7 +464,13 @@ function TemplateForm({ config, set, def, options }: FormProps) {
       <Field label="Template" hint="Approved templates on this automation's number.">
         <SelectField
           value={String(config.templateId ?? "")}
-          onValueChange={(templateId) => set({ templateId, values: {} })}
+          onValueChange={(templateId) =>
+            set({
+              templateId,
+              values: {},
+              replyButtons: templates.find((t) => t.id === templateId)?.replyButtons ?? [],
+            })
+          }
           placeholder="Pick a template"
           options={templates.map((t) => ({
             value: t.id,
@@ -486,6 +493,16 @@ function TemplateForm({ config, set, def, options }: FormProps) {
           rows={1}
         />
       ))}
+      <WaitForReply
+        config={config}
+        set={set}
+        buttons={chosen?.replyButtons ?? []}
+        hint={
+          chosen?.replyButtons.length
+            ? "Each quick-reply button gets its own way, plus one for anything else they write."
+            : undefined
+        }
+      />
     </>
   );
 }
@@ -640,6 +657,71 @@ function AskForm({ config, set, def, options }: Omit<FormProps, "config"> & { co
   );
 }
 
+/** "Wait for a reply" on a send step: the exits become Replied / No reply (and template buttons). */
+function WaitForReply({
+  config,
+  set,
+  buttons,
+  hint,
+}: {
+  config: Config;
+  set: (patch: Config) => void;
+  buttons: { index: number; title: string }[];
+  hint?: string;
+}) {
+  const on = !!config.waitForReply;
+  return (
+    <section className="flex flex-col gap-3 rounded-md border p-3">
+      <SwitchRow
+        label="Wait for a reply"
+        description={
+          on
+            ? (hint ?? "Goes on when they reply, or takes “No reply” after the time below.")
+            : "Off: the automation goes straight on after sending."
+        }
+        checked={on}
+        onCheckedChange={(waitForReply) =>
+          set({ waitForReply, replyButtons: buttons, timeoutMinutes: config.timeoutMinutes ?? 1440 })
+        }
+      />
+      {on ? (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Wait up to">
+            <SelectField
+              value={String(config.timeoutMinutes ?? 1440)}
+              onValueChange={(v) => set({ timeoutMinutes: Number(v) })}
+              options={[
+                [5, "5 minutes"],
+                [15, "15 minutes"],
+                [60, "1 hour"],
+                [180, "3 hours"],
+                [720, "12 hours"],
+                [1440, "1 day"],
+                [4320, "3 days"],
+                [10080, "7 days"],
+              ].map(([v, l]) => ({ value: String(v), label: String(l) }))}
+            />
+          </Field>
+          <Field label="Save the reply as" optional>
+            <TextInput
+              value={String(config.saveAs ?? "")}
+              placeholder="reply"
+              onChange={(e) =>
+                set({
+                  saveAs: e.target.value
+                    .toLowerCase()
+                    .replace(/[^a-z0-9_]/g, "_")
+                    .slice(0, 40),
+                })
+              }
+            />
+          </Field>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------- logic
 
 const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -647,7 +729,7 @@ const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function ConditionForm({ config, set, def, options }: FormProps) {
   const rules = (config.rules ?? []) as ConditionRule[];
   const answers = def.nodes
-    .filter((n) => n.type === "ask_question")
+    .filter((n) => n.type === "ask_question" || (n.config as { waitForReply?: boolean }).waitForReply)
     .map((n) => String((n.config as { saveAs?: string }).saveAs ?? ""))
     .filter(Boolean);
   const update = (i: number, rule: ConditionRule) =>
@@ -932,7 +1014,7 @@ function TextWithVariables({
     });
   };
   const answers = def.nodes
-    .filter((n) => n.type === "ask_question")
+    .filter((n) => n.type === "ask_question" || (n.config as { waitForReply?: boolean }).waitForReply)
     .map((n) => String((n.config as { saveAs?: string }).saveAs ?? ""))
     .filter(Boolean);
   return (

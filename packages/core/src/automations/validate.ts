@@ -167,6 +167,29 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
         );
       saved.set(q.saveAs, n.id);
     }
+    if ((n.type === "send_message" || n.type === "send_template") && c.waitForReply) {
+      if (!wired.has("no_reply"))
+        err(
+          "NO_REPLY_PATH",
+          "Connect “No reply”: what happens if they never answer? (Use an End step to stop.)",
+          n.id,
+        );
+      if (!wired.has("replied")) warn("REPLY_UNWIRED", "Nothing happens after they reply.", n.id);
+      const saveAs = String(c.saveAs ?? "");
+      if (saveAs) {
+        if (saved.has(saveAs) && saved.get(saveAs) !== n.id)
+          warn(
+            "ANSWER_NAME_REUSED",
+            `Another step also saves a reply as “${saveAs}”; the later one wins.`,
+            n.id,
+          );
+        saved.set(saveAs, n.id);
+      }
+      if (n.type === "send_template")
+        for (const b of (c.replyButtons ?? []) as { index: number; title: string }[])
+          if (!wired.has(`btn:${b.index}`))
+            warn("OPTION_UNWIRED", `Button “${b.title}” ends the automation.`, n.id);
+    }
     if (n.type === "condition") {
       for (const h of ["yes", "no"])
         if (!wired.has(h))
@@ -305,6 +328,10 @@ function windowRisks(
         next += w.mode === "delay" ? toHours(w.amount, w.unit) : 24;
       } else if (type === "ask_question" && c) {
         if (handle === "no_reply") next += (c as AskQuestionConfig).timeoutMinutes / 60;
+        else if (handle !== "failed") next = 0;
+      } else if ((type === "send_message" || type === "send_template") && c?.waitForReply) {
+        // They replied: the window is open again. No reply: the wait adds its time.
+        if (handle === "no_reply") next += Number(c.timeoutMinutes ?? 0) / 60;
         else if (handle !== "failed") next = 0;
       } else if (type === "condition" && c && handle === "yes") {
         const cc = c as ConditionConfig;

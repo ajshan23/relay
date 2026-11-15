@@ -43,7 +43,14 @@ export type EditorOptions = {
   tags: { id: string; name: string; colour: string | null }[];
   fields: { key: string; label: string; type: string }[];
   users: { id: string; name: string; email?: string }[];
-  templates: { id: string; name: string; status: string; body: string; variables: string[] }[];
+  templates: {
+    id: string;
+    name: string;
+    status: string;
+    body: string;
+    variables: string[];
+    replyButtons: { index: number; title: string }[];
+  }[];
   numbers: BranchNumber[];
 };
 

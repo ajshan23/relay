@@ -422,6 +422,9 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
               values: content.values ?? {},
               auth: !!content.auth,
               headerMedia,
+              quickReplyPayloads: (
+                message.content as { quickReplyPayloads?: { index: number; payload: string }[] }
+              ).quickReplyPayloads,
               replyToExternalId,
             }
           : media

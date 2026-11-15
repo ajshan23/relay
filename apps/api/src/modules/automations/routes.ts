@@ -179,6 +179,10 @@ export function automationRoutes(ctx: AppContext) {
         status: t.status,
         body: (t.content as unknown as TemplateContent).body,
         variables: templateVariables(t.content as unknown as TemplateContent),
+        /** Quick-reply buttons by position: an automation waiting for a reply can branch on each. */
+        replyButtons: ((t.content as unknown as TemplateContent).buttons ?? []).flatMap((b, index) =>
+          b.kind === "reply" ? [{ index, title: b.text }] : [],
+        ),
       })),
     };
   }

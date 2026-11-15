@@ -404,4 +404,156 @@ describe("automations on Kairos", () => {
     });
     assert.equal((notes[0]?.content as { text: string } | undefined)?.text, "VIP: Asha Rao");
   });
+
+  async function liveAutomation(suffix: string, def: AutomationDefinition) {
+    const id = `${ids.automation}_${suffix}`;
+    await db.insert(schema.automation).values({
+      id,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      name: suffix,
+      channelAccountId: ids.channel,
+      status: "live",
+      draft: def,
+      liveVersionId: `${ids.version}_${suffix}`,
+      triggerType: def.trigger.type,
+      priority: 30,
+    });
+    await db.insert(schema.automationVersion).values({
+      id: `${ids.version}_${suffix}`,
+      automationId: id,
+      organizationId: ids.org,
+      number: 1,
+      definition: def,
+      checksum: "test",
+    });
+  }
+
+  it("waits for a reply after a text, saves it, and goes on", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["check"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "msg",
+        type: "send_message",
+        version: 1,
+        config: { text: "How are you?", media: null, waitForReply: true, saveAs: "mood", timeoutMinutes: 60 },
+      },
+      { id: "note", type: "add_note", version: 1, config: { text: "Mood: {{answers.mood}}" } },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "msg" },
+      { id: "2", source: "msg", sourceHandle: "replied", target: "note" },
+      { id: "3", source: "msg", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("reply", def);
+    const chat = await newChat();
+    await customerSays(chat, "check");
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, "fine thanks");
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["msg:replied", "note:next"]);
+    const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
+    assert.equal((note?.content as { text?: string } | undefined)?.text, "Mood: fine thanks");
+  });
+
+  it("sends a template whose quick-reply buttons each lead their own way", async () => {
+    await db.insert(schema.messageTemplate).values({
+      id: `tpl_t${T}`,
+      organizationId: ids.org,
+      name: "Offer",
+      slug: "offer",
+      language: "en",
+      purpose: "marketing",
+      content: {
+        body: "Hi {{name}}, want 20% off?",
+        buttons: [
+          { kind: "reply", text: "Yes please" },
+          { kind: "link", text: "See it", url: "https://example.com" },
+          { kind: "reply", text: "No thanks" },
+        ],
+      },
+      variables: [{ name: "name", example: "Asha" }],
+    });
+    await db.insert(schema.templateChannel).values({
+      id: `tpc_t${T}`,
+      organizationId: ids.org,
+      templateId: `tpl_t${T}`,
+      channelAccountId: ids.channel,
+      scope: "waba",
+      status: "ready",
+    });
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["offer"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "tpl",
+        type: "send_template",
+        version: 1,
+        config: {
+          templateId: `tpl_t${T}`,
+          values: { name: "{{contact.first_name}}" },
+          replyButtons: [
+            { index: 0, title: "Yes please" },
+            { index: 2, title: "No thanks" },
+          ],
+          waitForReply: true,
+          saveAs: "pick",
+          timeoutMinutes: 60,
+        },
+      },
+      { id: "yes", type: "add_note", version: 1, config: { text: "Booked" } },
+      { id: "no", type: "add_note", version: 1, config: { text: "Declined ({{answers.pick}})" } },
+      { id: "other", type: "add_note", version: 1, config: { text: "Other: {{answers.pick}}" } },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "tpl" },
+      { id: "2", source: "tpl", sourceHandle: "btn:0", target: "yes" },
+      { id: "3", source: "tpl", sourceHandle: "btn:2", target: "no" },
+      { id: "4", source: "tpl", sourceHandle: "replied", target: "other" },
+      { id: "5", source: "tpl", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("offer", def);
+    const chat = await newChat();
+    await customerSays(chat, "offer");
+    const [sent] = await until("the template", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "template");
+      return m.length ? m : null;
+    });
+    const content = sent?.content as {
+      body?: string;
+      quickReplyPayloads?: { index: number; payload: string }[];
+    };
+    assert.equal(content.body, "Hi Asha, want 20% off?");
+    assert.deepEqual(
+      content.quickReplyPayloads?.map((q) => q.index),
+      [0, 2],
+    );
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    // The customer taps "No thanks": WhatsApp sends back our payload for button 2.
+    const payload = content.quickReplyPayloads?.find((q) => q.index === 2)?.payload ?? "";
+    await customerSays(chat, "No thanks", { id: payload, title: "No thanks" });
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["tpl:btn:2", "no:next"]);
+    const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
+    assert.equal((note?.content as { text?: string } | undefined)?.text, "Declined (No thanks)");
+  });
 });

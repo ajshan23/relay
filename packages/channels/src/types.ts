@@ -331,6 +331,11 @@ export type OutboundMessage = (
       auth?: boolean;
       /** For templates with a picture, video or file header: the file handed to the channel. */
       headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string };
+      /**
+       * What a tap on each quick-reply button sends back (by the button's position), instead of its
+       * text: lets an automation tell this message's buttons from an older one's.
+       */
+      quickReplyPayloads?: { index: number; payload: string }[];
     }
   | {
       type: "image" | "video" | "audio" | "document" | "sticker";

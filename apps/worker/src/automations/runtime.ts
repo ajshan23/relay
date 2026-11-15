@@ -392,16 +392,16 @@ export function createAutomations({
 
     switch (node.type) {
       case "send_message": {
-        const r = await ctx.step(name, () =>
-          sendMessage(input, memory, stepKey, config as SendMessageConfig),
-        );
-        return r.ok ? "next" : "failed";
+        const m = config as SendMessageConfig;
+        const r = await ctx.step(name, () => sendMessage(input, memory, stepKey, m));
+        if (!r.ok) return "failed";
+        return m.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, m, []) : "next";
       }
       case "send_template": {
-        const r = await ctx.step(name, () =>
-          sendTemplate(input, memory, stepKey, config as SendTemplateConfig),
-        );
-        return r.ok ? "next" : "failed";
+        const t = config as SendTemplateConfig;
+        const r = await ctx.step(name, () => sendTemplate(input, memory, stepKey, t));
+        if (!r.ok) return "failed";
+        return t.waitForReply ? waitForReply(ctx, input, memory, name, stepKey, t, t.replyButtons) : "next";
       }
       case "ask_question":
         return ask(ctx, input, memory, name, stepKey, config as AskQuestionConfig);
@@ -482,6 +482,42 @@ export function createAutomations({
       default:
         throw new NonRetryableError(`No runtime for step type ${node.type}`);
     }
+  }
+
+  /**
+   * After a send with "Wait for a reply": their next message takes "Replied" (a tap on one of this
+   * template's quick-reply buttons, or typing its title, takes that button's exit); nothing before the
+   * timeout takes "No reply". The reply is saved under saveAs when given.
+   */
+  async function waitForReply(
+    ctx: WorkflowContext,
+    input: AutomationRunInput,
+    memory: RunMemory,
+    name: string,
+    stepKey: string,
+    cfg: { saveAs: string; timeoutMinutes: number },
+    buttons: { index: number; title: string }[],
+  ): Promise<string> {
+    const reply = await ctx.waitForEvent<InboundEventPayload>(`${name}:reply`, {
+      key: automationEvents.messageReceived,
+      scope: input.conversationId,
+      timeoutMs: cfg.timeoutMinutes * 60_000,
+    });
+    if (reply.timedOut) return "no_reply";
+    const p = reply.event.payload;
+    let handle = "replied";
+    let value = p.text;
+    const tapped = p.reply ? optionFromReply(stepKey, p.reply.id) : null;
+    const typed = p.text.trim().toLowerCase();
+    const button =
+      buttons.find((b) => tapped !== null && String(b.index) === tapped) ??
+      (typed ? buttons.find((b) => b.title.trim().toLowerCase() === typed) : undefined);
+    if (button) {
+      handle = `btn:${button.index}`;
+      value = button.title;
+    }
+    if (cfg.saveAs) memory.answers[cfg.saveAs] = value;
+    return handle;
   }
 
   /** Ask, then wait for an answer that fits; re-ask up to `retries` times, all within one deadline. */
@@ -676,7 +712,14 @@ export function createAutomations({
       if (!filled) return { ok: false, reason: `missing_value:${v}` };
       values[v] = filled;
     }
-    return queueSend(input, stepKey, "template", templateMessageContent(row.template, values));
+    const content = templateMessageContent(row.template, values);
+    // Waiting for a tap: each quick-reply button sends back a payload marked with this step.
+    if (t.waitForReply && t.replyButtons.length)
+      content.quickReplyPayloads = t.replyButtons.map((b) => ({
+        index: b.index,
+        payload: optionReplyId(stepKey, String(b.index)),
+      }));
+    return queueSend(input, stepKey, "template", content);
   }
 
   async function sendQuestion(
