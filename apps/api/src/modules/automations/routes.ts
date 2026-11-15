@@ -2,13 +2,17 @@ import { createHash } from "node:crypto";
 import { newId } from "@relay/core";
 import {
   type AutomationDefinition,
+  type AutomationRunInput,
   type AutomationRunLabels,
   automationWorkflows,
   definitionSchema,
+  describeRun,
   emptyDefinition,
   hasErrors,
   type Issue,
+  type MessagePreview,
   migrateDefinition,
+  startedBy,
   starters,
   triggerPriority,
   triggersOverlap,
@@ -573,6 +577,60 @@ export function automationRoutes(ctx: AppContext) {
     return new Map(contacts.map((x) => [x.id, x]));
   }
 
+  /** Names for "Started by": who ran it from a chat, which tag was added. */
+  async function triggerNames(orgId: string, runs: { input: unknown }[]) {
+    const triggers = runs.map((r) => (r.input as Partial<AutomationRunInput> | null)?.trigger);
+    const userIds = [...new Set(triggers.map((t) => t?.startedByUserId).filter(Boolean))] as string[];
+    const tagIds = [...new Set(triggers.map((t) => t?.tagId).filter(Boolean))] as string[];
+    const [users, tags] = await Promise.all([
+      userIds.length
+        ? ctx.db
+            .select({ id: schema.user.id, name: schema.user.name })
+            .from(schema.user)
+            .where(inArray(schema.user.id, userIds))
+        : [],
+      tagIds.length
+        ? ctx.db
+            .select({ id: schema.tag.id, name: schema.tag.name })
+            .from(schema.tag)
+            .where(and(eq(schema.tag.organizationId, orgId), inArray(schema.tag.id, tagIds)))
+        : [],
+    ]);
+    const user = new Map(users.map((u) => [u.id, u.name]));
+    const tag = new Map(tags.map((t) => [t.id, t.name]));
+    return (input: unknown) => {
+      const t = (input as Partial<AutomationRunInput> | null)?.trigger;
+      if (!t) return { label: "—", names: {} };
+      const names = {
+        user: t.startedByUserId ? (user.get(t.startedByUserId) ?? null) : null,
+        tag: t.tagId ? (tag.get(t.tagId) ?? null) : null,
+      };
+      return { label: startedBy(t, names), names };
+    };
+  }
+
+  /** What was really sent, to quote in a run's history (only messages of this organization). */
+  async function messagePreviews(orgId: string, steps: { result: unknown }[]) {
+    const ids = [
+      ...new Set(
+        steps
+          .map((s) => (s.result as { messageId?: unknown } | null)?.messageId)
+          .filter((x): x is string => typeof x === "string"),
+      ),
+    ];
+    if (!ids.length) return {};
+    const rows = await ctx.db
+      .select({ id: schema.message.id, type: schema.message.type, content: schema.message.content })
+      .from(schema.message)
+      .where(and(eq(schema.message.organizationId, orgId), inArray(schema.message.id, ids)));
+    const out: Record<string, MessagePreview> = {};
+    for (const r of rows) {
+      const c = (r.content ?? {}) as { text?: string; body?: string; caption?: string | null };
+      out[r.id] = { type: r.type, text: c.text ?? c.body ?? c.caption ?? "" };
+    }
+    return out;
+  }
+
   app.get("/:id/runs", async (c) => {
     const access = c.var.access;
     const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
@@ -590,6 +648,7 @@ export function automationRoutes(ctx: AppContext) {
       })
       .catch(() => []);
     const contacts = await runRows(access.orgId, runs);
+    const started = await triggerNames(access.orgId, runs);
     return c.json({
       runs: runs.map((r) => {
         const l = r.labels as Partial<AutomationRunLabels>;
@@ -597,6 +656,7 @@ export function automationRoutes(ctx: AppContext) {
           id: r.id,
           status: r.status,
           test: !!l.test,
+          startedBy: started(r.input).label,
           versionId: l.versionId,
           conversationId: l.conversationId,
           contact: l.contactId ? (contacts.get(l.contactId) ?? null) : null,
@@ -623,6 +683,29 @@ export function automationRoutes(ctx: AppContext) {
           .where(eq(v.id, l.versionId))
       : [];
     const contacts = await runRows(access.orgId, [found.run]);
+    const started = (await triggerNames(access.orgId, [found.run]))(found.run.input);
+    const history = ver
+      ? describeRun({
+          def: migrateDefinition(ver.definition),
+          input: found.run.input as AutomationRunInput,
+          steps: found.steps.map((s) => ({
+            name: s.name,
+            kind: s.kind,
+            status: s.status,
+            result: s.result,
+            error: s.error as { message?: string } | null,
+            startedAt: s.started_at,
+            completedAt: s.completed_at,
+            wakeAt: s.wake_at,
+          })),
+          messages: await messagePreviews(access.orgId, found.steps),
+          status: found.run.status,
+          error: found.run.error as { message?: string } | null,
+          createdAt: found.run.created_at,
+          finishedAt: found.run.finished_at,
+          names: started.names,
+        })
+      : [];
     return c.json({
       run: {
         id: found.run.id,
@@ -635,7 +718,9 @@ export function automationRoutes(ctx: AppContext) {
         createdAt: found.run.created_at,
         finishedAt: found.run.finished_at,
         nextWakeAt: found.wakeup?.wake_at ?? null,
+        startedBy: started.label,
       },
+      history,
       steps: found.steps.map((s) => ({
         seq: s.seq,
         kind: s.kind,

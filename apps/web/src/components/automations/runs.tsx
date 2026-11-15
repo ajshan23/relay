@@ -1,5 +1,6 @@
 "use client";
 
+import type { HistoryEntry } from "@relay/core/automations";
 import { Segmented } from "@relay/ui/components/choice";
 import { createDataTableColumns, DataTable } from "@relay/ui/components/data-table";
 import { EmptyState } from "@relay/ui/components/empty-state";
@@ -41,6 +42,15 @@ export function AutomationRuns({ id }: { id: string }) {
             </button>
           );
         },
+      }),
+      col.display({
+        id: "startedBy",
+        header: "Started by",
+        cell: ({ row }) => (
+          <span className="line-clamp-1 max-w-56 text-sm text-muted-foreground">
+            {row.original.startedBy ?? "—"}
+          </span>
+        ),
       }),
       col.accessor("status", {
         header: "Status",
@@ -173,22 +183,16 @@ function RunPanel({ id, runId, onClose }: { id: string; runId: string | null; on
               />
             </div>
           ) : null}
-          {d.run.output?.answers && Object.keys(d.run.output.answers).length ? (
-            <section className="flex flex-col gap-1">
-              <h3 className="text-sm font-semibold">Answers</h3>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-                {Object.entries(d.run.output.answers).map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="text-muted-foreground">{k}</dt>
-                    <dd>{v}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ) : null}
-          <section className="flex flex-col gap-1">
-            <h3 className="text-sm font-semibold">Steps</h3>
-            <ol className="flex flex-col divide-y rounded-lg border">
+          <Answers history={d.history ?? []} />
+          <section className="flex flex-col gap-2">
+            <h3 className="text-sm font-semibold">What happened</h3>
+            <Timeline history={d.history ?? []} />
+          </section>
+          <details className="group flex flex-col gap-1">
+            <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">
+              Technical steps ({d.steps.length})
+            </summary>
+            <ol className="mt-2 flex flex-col divide-y rounded-lg border">
               {d.steps.map((s) => (
                 <li key={s.seq} className="flex items-start justify-between gap-3 px-3 py-2 text-sm">
                   <span className="flex min-w-0 flex-col">
@@ -204,12 +208,85 @@ function RunPanel({ id, runId, onClose }: { id: string; runId: string | null; on
                 </li>
               ))}
             </ol>
-          </section>
+          </details>
         </div>
       ) : (
         <p className="px-6 text-sm text-muted-foreground">Loading…</p>
       )}
     </SidePanel>
+  );
+}
+
+const toneClass: Record<HistoryEntry["tone"], string> = {
+  normal: "text-foreground",
+  muted: "text-muted-foreground",
+  customer: "text-foreground font-medium",
+  jump: "text-warning font-medium",
+  warn: "text-warning",
+  bad: "text-destructive",
+};
+const dotClass: Record<HistoryEntry["tone"], string> = {
+  normal: "bg-primary",
+  muted: "bg-border",
+  customer: "bg-foreground",
+  jump: "bg-warning",
+  warn: "bg-warning",
+  bad: "bg-destructive",
+};
+
+/** The run as a story, oldest first: started, sent, replied, tapped an earlier button, ended. */
+function Timeline({ history }: { history: HistoryEntry[] }) {
+  if (!history.length) return <p className="text-sm text-muted-foreground">Nothing recorded yet.</p>;
+  return (
+    <ol className="relative flex flex-col gap-3 border-l pl-4">
+      {history.map((h, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: entries never reorder
+        <li key={i} className="relative flex items-start justify-between gap-3 text-sm">
+          <span
+            className={`absolute top-1.5 -left-[21px] size-2.5 rounded-full ring-2 ring-background ${dotClass[h.tone]}`}
+          />
+          <span className={toneClass[h.tone]}>
+            {h.text}
+            {h.until ? ` until ${new Date(h.until).toLocaleString()}` : ""}
+          </span>
+          {h.at ? (
+            <time className="shrink-0 text-xs text-muted-foreground tabular-nums" dateTime={h.at}>
+              {new Date(h.at).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}
+            </time>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Every answer saved, in order: a later one (an earlier button tapped) doesn't hide the first. */
+function Answers({ history }: { history: HistoryEntry[] }) {
+  const byName = new Map<string, string[]>();
+  for (const h of history)
+    if (h.saved) byName.set(h.saved.name, [...(byName.get(h.saved.name) ?? []), h.saved.value]);
+  if (!byName.size) return null;
+  return (
+    <section className="flex flex-col gap-1">
+      <h3 className="text-sm font-semibold">Answers</h3>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        {[...byName].map(([name, values]) => (
+          <div key={name} className="contents">
+            <dt className="text-muted-foreground">{name}</dt>
+            <dd>
+              {values.at(-1)}
+              {values.length > 1 ? (
+                <span className="text-muted-foreground"> (before: {values.slice(0, -1).join(", ")})</span>
+              ) : null}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 

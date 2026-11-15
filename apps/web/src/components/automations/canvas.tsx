@@ -66,7 +66,15 @@ type CardData = {
 };
 
 type AddData = { label: string; onAdd: () => void; readOnly: boolean };
-type EdgeData = { label: string; back: boolean; stub: boolean; highlighted: boolean; onInsert?: () => void };
+type EdgeData = {
+  label: string;
+  back: boolean;
+  stub: boolean;
+  highlighted: boolean;
+  /** A run jumped here: the customer tapped a button on an earlier message. */
+  jump?: boolean;
+  onInsert?: () => void;
+};
 
 function StepCard({ data }: NodeProps<Node<CardData>>) {
   return (
@@ -155,9 +163,9 @@ function FlowEdge(props: EdgeProps<Edge<EdgeData>>) {
         path={path}
         markerEnd={markerEnd}
         style={{
-          stroke: data?.highlighted ? "var(--primary)" : "var(--border)",
+          stroke: data?.jump ? "var(--warning)" : data?.highlighted ? "var(--primary)" : "var(--border)",
           strokeWidth: data?.highlighted ? 2.5 : 1.5,
-          strokeDasharray: data?.back || data?.stub ? "5 4" : undefined,
+          strokeDasharray: data?.jump ? "6 4" : data?.back || data?.stub ? "5 4" : undefined,
         }}
       />
       <EdgeLabelRenderer>
@@ -249,24 +257,45 @@ function CanvasInner({ def, issues, options, selectedId, onSelect, onAdd, readOn
     [laid, def, issues, options, selectedId, onSelect, onAdd, readOnly, path, visited],
   );
 
-  const edges = useMemo<Edge[]>(
-    () =>
-      laid.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
+  const edges = useMemo<Edge[]>(() => {
+    // A run that started at an earlier button never went through the trigger's line.
+    const fromButton = walked.has(`${TRIGGER_NODE_ID}:older_button`);
+    const drawn: Edge[] = laid.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      type: "flow",
+      data: {
+        label: e.label,
+        back: e.back,
+        stub: e.stub,
+        highlighted:
+          walked.has(`${e.source}:${e.handle}`) ||
+          (e.source === TRIGGER_NODE_ID && !!path?.length && !fromButton),
+        onInsert: readOnly || !onAdd ? undefined : () => onAdd(e.source, e.handle),
+      } satisfies EdgeData,
+    }));
+    // Jumps: where the customer was when they tapped an earlier button → the step that button belongs to.
+    (path ?? []).forEach((p, i) => {
+      const [from, handle] = [p.slice(0, p.indexOf(":")), p.slice(p.indexOf(":") + 1)];
+      const to = path?.[i + 1]?.split(":")[0];
+      if (handle !== "older_button" || !to) return;
+      drawn.push({
+        id: `jump-${i}`,
+        source: from,
+        target: to,
         type: "flow",
         data: {
-          label: e.label,
-          back: e.back,
-          stub: e.stub,
-          highlighted:
-            walked.has(`${e.source}:${e.handle}`) || (e.source === TRIGGER_NODE_ID && !!path?.length),
-          onInsert: readOnly || !onAdd ? undefined : () => onAdd(e.source, e.handle),
+          label: "Earlier button",
+          back: true,
+          stub: false,
+          highlighted: true,
+          jump: true,
         } satisfies EdgeData,
-      })),
-    [laid, walked, readOnly, onAdd, path],
-  );
+      });
+    });
+    return drawn;
+  }, [laid, walked, readOnly, onAdd, path]);
 
   // Keep the whole automation in view when steps are added or removed.
   const shape = `${def.nodes.length}:${def.edges.length}`;

@@ -4,6 +4,7 @@ import {
   type AutomationDefinition,
   type AutomationNode,
   askLayout,
+  describeRun,
   emptyDefinition,
   migrateDefinition,
   nodeSpecs,
@@ -373,5 +374,112 @@ describe("older button taps", () => {
     });
     assert.equal(tapTarget(def, "menu", "a9"), null);
     assert.equal(tapTarget(def, "gone", "a1"), null);
+  });
+});
+
+describe("run history", () => {
+  it("tells Book, then an earlier Talk button, as it happened", () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["hi"],
+      match: "exact",
+    });
+    def.nodes = [
+      {
+        id: "menu",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "How can we help?",
+          answer: {
+            type: "buttons",
+            options: [
+              { id: "a1", title: "Book" },
+              { id: "a2", title: "Talk" },
+            ],
+          },
+          saveAs: "choice",
+        },
+      },
+      {
+        id: "book",
+        type: "send_message",
+        version: 1,
+        config: { text: "Book here", media: null, waitForReply: true, timeoutMinutes: 5 },
+      },
+      { id: "human", type: "handoff", version: 1, config: { note: "", userId: null } },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "menu" },
+      { id: "2", source: "menu", sourceHandle: "opt:a1", target: "book" },
+      { id: "3", source: "menu", sourceHandle: "opt:a2", target: "human" },
+    ];
+    const t = (s: number) => new Date(Date.UTC(2026, 10, 15, 16, 0, s)).toISOString();
+    const step = (name: string, kind: string, result: unknown, s: number) => ({
+      name,
+      kind,
+      status: "completed",
+      result,
+      error: null,
+      startedAt: t(s),
+      completedAt: t(s),
+      wakeAt: null,
+    });
+    const reply = (text: string) => ({ event: { payload: { text } }, timedOut: false });
+    const history = describeRun({
+      def,
+      input: {
+        automationId: "a",
+        versionId: "v",
+        organizationId: "o",
+        branchId: "b",
+        channelAccountId: "c",
+        conversationId: "cv",
+        contactId: "ct",
+        trigger: { kind: "message", text: "Hi" },
+      },
+      steps: [
+        step("ask_question:menu#1:typing", "step", true, 1),
+        step("ask_question:menu#1:pause", "sleep", null, 2),
+        step("ask_question:menu#1:ask", "step", { ok: true, messageId: "m1" }, 3),
+        step("ask_question:menu#1:deadline", "step", 0, 3),
+        step("ask_question:menu#1:answer0", "wait", reply("Book"), 5),
+        step("send_message:book#1", "step", { ok: true, messageId: "m2" }, 6),
+        step("send_message:book#1:reply", "wait", reply("Talk"), 9),
+        step(
+          "send_message:book#1:older_button",
+          "step",
+          { node: "menu", handle: "opt:a2", value: "Talk", saveAs: "choice" },
+          9,
+        ),
+        step("handoff:human#1", "step", null, 10),
+        step("release chat", "step", null, 10),
+      ],
+      messages: {
+        m1: { type: "interactive", text: "Hi Asha! How can we help?" },
+        m2: { type: "image", text: "Book here" },
+      },
+      status: "completed",
+      error: null,
+      createdAt: t(0),
+      finishedAt: t(10),
+    });
+    assert.deepEqual(
+      history.map((h) => h.text),
+      [
+        "Started: Message “Hi”",
+        "Asked “Hi Asha! How can we help?”",
+        "Replied “Book”",
+        "Sent a photo: “Book here”",
+        "Tapped “Talk” on an earlier message → Hand to a human",
+        "Handed the chat to a person",
+        "Finished",
+      ],
+    );
+    assert.deepEqual(
+      history.filter((h) => h.saved).map((h) => h.saved?.value),
+      ["Book", "Talk"],
+    );
   });
 });

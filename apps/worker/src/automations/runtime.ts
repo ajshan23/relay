@@ -430,7 +430,7 @@ export function createAutomations({
         // Started by a tap on a button from an earlier run: carry on from that choice.
         const t = input.startAt;
         if (t.saveAs) memory.answers[t.saveAs] = t.value;
-        memory.path.push(`${t.node}:${t.handle}`);
+        memory.path.push(`trigger:older_button`, `${t.node}:${t.handle}`);
         current = next.get(`${t.node}:${t.handle}`);
       }
       try {

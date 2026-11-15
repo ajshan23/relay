@@ -1,6 +1,6 @@
 "use client";
 
-import type { AutomationDefinition, Issue } from "@relay/core/automations";
+import type { AutomationDefinition, HistoryEntry, Issue } from "@relay/core/automations";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { inBranch } from "@/components/contacts/queries";
 import { useBranch } from "@/components/shell/branch-context";
@@ -64,6 +64,8 @@ export type RunSummary = {
   error: string | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Keyword “hi”, Earlier button “Talk to someone”, Run from chat by Priya… */
+  startedBy?: string;
 };
 
 export type RunDetail = {
@@ -84,6 +86,8 @@ export type RunDetail = {
     wakeAt: string | null;
   }[];
   version: { number: number; definition: AutomationDefinition } | null;
+  /** The run in plain words, oldest first. */
+  history: HistoryEntry[];
 };
 
 export const automationKeys = {

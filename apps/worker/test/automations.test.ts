@@ -743,7 +743,11 @@ describe("automations on Kairos", () => {
       const runs = await runsOf(chat.conversationId);
       return runs.length === 2 && runs[0]?.status === "completed" ? runs[0] : null;
     });
-    assert.deepEqual((second.output as { path: string[] }).path, ["menu:opt:a2", "human:end"]);
+    assert.deepEqual((second.output as { path: string[] }).path, [
+      "trigger:older_button",
+      "menu:opt:a2",
+      "human:end",
+    ]);
     assert.equal((second.input as { trigger: { kind: string } }).trigger.kind, "button");
 
     // A button whose option isn't in the live version any more: they get the current menu again.
