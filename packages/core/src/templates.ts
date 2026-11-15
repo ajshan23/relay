@@ -253,3 +253,30 @@ export function checkTemplate(
   }
   return issues;
 }
+
+/**
+ * The stored content of a template message: the filled-in text for the chat, and the values the
+ * channel needs. Used by the inbox and by automations. `values` must already hold every variable.
+ */
+export function templateMessageContent(
+  template: { id: string; name: string; slug: string; language: string; content: unknown },
+  values: Record<string, string>,
+): Record<string, unknown> {
+  const tc = template.content as TemplateContent;
+  return {
+    type: "template",
+    templateId: template.id,
+    templateName: template.name,
+    name: template.slug,
+    language: template.language,
+    values,
+    header:
+      tc.header?.kind === "text"
+        ? { kind: "text", text: fillVariables(tc.header.text, values) }
+        : (tc.header ?? null),
+    body: fillVariables(tc.body, values),
+    footer: tc.footer,
+    buttons: tc.buttons,
+    auth: !!tc.auth,
+  };
+}

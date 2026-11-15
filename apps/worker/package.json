@@ -14,7 +14,8 @@
     "s3:setup": "tsx --env-file=../../.env src/scripts/s3-setup.ts",
     "media:migrate": "tsx --env-file=../../.env src/scripts/migrate-media.ts",
     "previews:backfill": "tsx --env-file=../../.env src/scripts/backfill-previews.ts",
-    "storage:check": "tsx --env-file=../../.env src/scripts/check-storage.ts"
+    "storage:check": "tsx --env-file=../../.env src/scripts/check-storage.ts",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",
@@ -26,6 +27,7 @@
     "bullmq": "^6.7.5",
     "hono": "^4.13.18",
     "ioredis": "^6.0.0",
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "@relay/kairos": "workspace:*"
   }
 }

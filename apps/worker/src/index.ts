@@ -4,6 +4,7 @@ import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
@@ -31,11 +32,29 @@ const emails = new Worker<EmailJob>(queues.emails, createEmailSender({ db, provi
 });
 emails.on("ready", () => console.log(`emails worker ready (provider: ${emailProvider.name})`));
 
+/* Automations run on Kairos (Postgres only): durable steps, waits for replies, delays. */
+const automationOutbox = new Queue(queues.outbox, { connection });
+const automations = createAutomations({
+  db,
+  redis: connection,
+  outbox: automationOutbox,
+  outboxJobOptions,
+  databaseUrl: config.DATABASE_URL,
+  listenUrl: config.KAIROS_LISTEN_URL,
+});
+const automationWorker = automations.worker();
+void automations
+  .startWorker(automationWorker)
+  .then(() =>
+    console.log(`automations worker ready${config.KAIROS_LISTEN_URL ? " (instant wake-ups)" : " (polling)"}`),
+  )
+  .catch((err) => console.error("automations failed to start", err));
+
 /* Channel webhooks: stored raw by the API, turned into contacts, conversations and messages here. */
 const mediaQueue = new Queue<MediaJob>(queues.media, { connection });
 const webhooks = new Worker<WebhookJob>(
   queues.webhooks,
-  createWebhookProcessor({ db, mediaQueue, redis: connection }),
+  createWebhookProcessor({ db, mediaQueue, redis: connection, onInbound: automations.onInbound }),
   {
     connection,
     concurrency: 10,
@@ -267,6 +286,7 @@ const health = createServer((_req, res) => {
           previews: previews.isRunning(),
           broadcasts: broadcasts.isRunning(),
         },
+        automations: { busy: automationWorker.busy, ...automationWorker.stats },
       }),
     );
   })();
@@ -275,7 +295,10 @@ health.listen(port, config.HOST, () => console.log(`worker health on ${config.HO
 
 async function shutdown() {
   health.close();
+  // Automations first: running steps finish (up to 25 s) and the rest is handed back.
+  await automations.kairos.close();
   await Promise.all([
+    automationOutbox.close(),
     emails.close(),
     webhooks.close(),
     outbox.close(),

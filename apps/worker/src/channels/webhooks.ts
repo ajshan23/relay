@@ -1,7 +1,7 @@
 import { type Publisher, publishInboxEvent } from "@relay/core";
 import { type createDb, eq, schema, sql } from "@relay/db";
 import type { Job, Queue } from "bullmq";
-import { createIngest } from "./ingest";
+import { createIngest, type InboundHook } from "./ingest";
 import { channels } from "./registry";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -16,12 +16,14 @@ export function createWebhookProcessor({
   db,
   mediaQueue,
   redis,
+  onInbound,
 }: {
   db: Db;
   mediaQueue: Queue<MediaJob>;
   redis: Publisher;
+  onInbound?: InboundHook;
 }) {
-  const { ingest } = createIngest(db, channels());
+  const { ingest } = createIngest(db, channels(), { onInbound });
 
   return async function processWebhook(job: Job<WebhookJob>) {
     const [event] = await db

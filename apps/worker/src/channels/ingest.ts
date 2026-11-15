@@ -23,6 +23,7 @@ import {
   windowExpiresAt,
 } from "@relay/channels";
 import { type InboxEvent, messagePreview, newId } from "@relay/core";
+import type { InboundEventPayload } from "@relay/core/automations";
 import { optOutReply } from "@relay/core/contacts";
 import { type AnyColumn, and, type createDb, eq, inArray, or, schema, sql } from "@relay/db";
 
@@ -53,7 +54,13 @@ export type IngestResult = {
   changed: { organizationId: string; event: InboxEvent }[];
 };
 
-export function createIngest(db: Db, registry: ChannelRegistry) {
+/** Called inside the transaction that stores a new customer message in a one-to-one chat. */
+export type InboundHook = (
+  tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+  event: InboundEventPayload,
+) => Promise<void>;
+
+export function createIngest(db: Db, registry: ChannelRegistry, hooks: { onInbound?: InboundHook } = {}) {
   /** Changes made while ingesting the current webhook; reset per ingest() call. */
   let changed: IngestResult["changed"] = [];
   const touched = (c: { id: string; organizationId: string; branchId: string | null }, messageId?: string) =>
@@ -452,6 +459,45 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
           updatedAt: new Date(),
         })
         .where(eq(schema.conversation.id, conversation.id));
+
+      // Automations hear about the message in the same transaction (Kairos rows commit with it).
+      if (hooks.onInbound && !isReaction && event.conversation.kind !== "group" && conversation.contactId) {
+        const c = event.content as {
+          type: string;
+          text?: string;
+          caption?: string;
+          title?: string;
+          id?: string;
+          kind?: string;
+          payload?: string;
+        };
+        const said =
+          c.type === "text"
+            ? (c.text ?? "")
+            : c.type === "button"
+              ? (c.text ?? "")
+              : c.type === "interactive"
+                ? (c.title ?? "")
+                : (c.caption ?? "");
+        await hooks.onInbound(tx, {
+          messageId: id,
+          organizationId: account.organizationId,
+          branchId: conversation.branchId,
+          channelAccountId: account.id,
+          conversationId: conversation.id,
+          contactId: conversation.contactId,
+          type: c.type,
+          text: said,
+          reply:
+            c.type === "interactive" && (c.kind === "button_reply" || c.kind === "list_reply") && c.id
+              ? { id: c.id, title: c.title ?? "" }
+              : c.type === "button" && c.payload
+                ? { id: c.payload, title: c.text ?? "" }
+                : null,
+          adId: adIdOf(event.context.adReferral),
+          optOut: optOutReply(said),
+        });
+      }
 
       if (!media || !("media" in media)) return [];
       const attachmentId = newId("attachment");
@@ -1153,4 +1199,10 @@ export function createIngest(db: Db, registry: ChannelRegistry) {
   }
 
   return { ingest };
+}
+
+/** The ad id of a click-to-WhatsApp referral (Meta's source_id). */
+function adIdOf(referral: Record<string, unknown> | null): string | null {
+  const id = referral?.source_id;
+  return typeof id === "string" && id ? id : null;
 }

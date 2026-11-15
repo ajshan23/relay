@@ -262,6 +262,9 @@ importers:
       '@relay/email':
         specifier: workspace:*
         version: link:../../packages/email
+      '@relay/kairos':
+        specifier: workspace:*
+        version: link:../../packages/kairos
       bullmq:
         specifier: ^6.7.5
         version: 6.7.5(ioredis@6.0.0)

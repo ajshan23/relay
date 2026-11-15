@@ -4,6 +4,8 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
+  /** Optional direct (non-pooled) Postgres URL so automation workers wake within milliseconds (LISTEN). */
+  KAIROS_LISTEN_URL: z.string().url().optional(),
   API_PORT: z.coerce.number().default(3201),
   /** Live updates (/api/events) run in their own process: apps/api/src/realtime.ts. */
   REALTIME_PORT: z.coerce.number().default(3203),

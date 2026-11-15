@@ -255,7 +255,7 @@ export function createKairos(options: KairosOptions) {
     if (filter.workflow) add("workflow = ?", filter.workflow);
     if (filter.status?.length) add("status = any(?::text[])", filter.status);
     if (filter.serialKey) add("serial_key = ?", filter.serialKey);
-    if (filter.labels) add("labels @> ?::jsonb", JSON.stringify(filter.labels));
+    if (filter.labels) add("labels @> ?::text::jsonb", JSON.stringify(filter.labels));
     if (filter.before) add("created_at < ?", filter.before.toISOString());
     params.push(Math.min(Math.max(filter.limit ?? 50, 1), 500));
     return pool.query<RunRow>(

@@ -56,6 +56,18 @@ describe("runs and steps", () => {
     assert.equal(r.wakeup, null);
   });
 
+  it("finds runs by label", async () => {
+    const wf = k.workflow({ name: "labelled", version: 1 }, async () => 1);
+    const a = await k.start(wf, {}, { tenantId: "t9", labels: { automationId: "aut_1", contactId: "c1" } });
+    await k.start(wf, {}, { tenantId: "t9", labels: { automationId: "aut_2", contactId: "c1" } });
+    const found = await k.listRuns({ labels: { automationId: "aut_1" } });
+    assert.deepEqual(
+      found.map((r) => r.id),
+      [a.runId],
+    );
+    assert.equal((await k.listRuns({ labels: { contactId: "c1" }, tenantId: "t9" })).length, 2);
+  });
+
   it("returns the existing run for a repeated idempotency key", async () => {
     const wf = k.workflow({ name: "idem", version: 1 }, async () => 1);
     const a = await k.start(wf, {}, { tenantId: "t1", idempotencyKey: "same" });

@@ -1,5 +1,10 @@
 import { type InboxEvent, messagePreview, newId, publishInboxEvent, type SignalJob } from "@relay/core";
-import { fillVariables, type TemplateContent, templateVariables } from "@relay/core/templates";
+import {
+  fillVariables,
+  type TemplateContent,
+  templateMessageContent,
+  templateVariables,
+} from "@relay/core/templates";
 import {
   AttachmentTaken,
   and,
@@ -992,22 +997,7 @@ export function conversationRoutes(ctx: AppContext) {
         else missing.push(name.replace(/_/g, " "));
       }
       if (missing.length) return fail(c, 422, "missing_values", `Fill in: ${missing.join(", ")}.`);
-      templateContent = {
-        type: "template",
-        templateId: row.template.id,
-        templateName: row.template.name,
-        name: row.template.slug,
-        language: row.template.language,
-        values,
-        header:
-          tc.header?.kind === "text"
-            ? { kind: "text", text: fillVariables(tc.header.text, values) }
-            : (tc.header ?? null),
-        body: fillVariables(tc.body, values),
-        footer: tc.footer,
-        buttons: tc.buttons,
-        auth: !!tc.auth,
-      };
+      templateContent = templateMessageContent(row.template, values);
     }
 
     const type = templateContent ? "template" : upload ? upload.kind : "text";
