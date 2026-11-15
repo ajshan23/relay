@@ -25,6 +25,18 @@ grep -q '^maxmemory ' /etc/redis/redis.conf || echo 'maxmemory 128mb' >> /etc/re
 grep -q '^maxmemory-policy ' /etc/redis/redis.conf || echo 'maxmemory-policy noeviction' >> /etc/redis/redis.conf
 systemctl enable --now redis-server && systemctl restart redis-server && redis-cli ping
 ```
+Keep queued jobs across a Redis restart with the append-only file (rewritten in place, safe to run again):
+```bash
+sed -i -E 's/^#? ?appendonly .*/appendonly yes/; s/^#? ?appendfsync .*/appendfsync everysec/' /etc/redis/redis.conf
+grep -q '^appendonly ' /etc/redis/redis.conf || echo 'appendonly yes' >> /etc/redis/redis.conf
+systemctl restart redis-server
+redis-cli CONFIG GET maxmemory-policy && redis-cli CONFIG GET appendonly && redis-cli INFO memory | grep -E '^(used_memory_human|maxmemory_human):'
+```
+Expect `noeviction`, `yes`, and used memory well below the limit. Relay is built so Redis trouble slows
+it down rather than taking it down: pages and webhooks only need Postgres, every queue add gives up after a
+second, and the worker puts back unprocessed webhook events and stuck outgoing messages every minute from
+Postgres. `curl -s localhost:3202` (worker) and `curl -s localhost:3201/health/ready` (API) show Redis
+reachability and memory; the worker logs a warning above 80% of `maxmemory`.
 
 **2b. ffmpeg** (voice notes recorded in Relay are converted to WhatsApp's Ogg/Opus voice format; video previews use it too):
 ```bash

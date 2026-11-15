@@ -16,6 +16,7 @@ import { and, eq, schema, sql } from "@relay/db";
 import { z } from "zod";
 import { metaGraph } from "../../channels";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { saveWhatsAppChannel } from "./save";
 
 /*
@@ -398,13 +399,15 @@ export async function finishSetup(
     .where(eq(ca.id, channelId));
 
   // Follow-ups: import its approved templates; coexistence asks for contacts and history.
-  await ctx.queues.templates.add(
+  await enqueue(
+    ctx.queues.templates,
     "sync",
     { action: "sync", channelAccountId: channelId },
     { jobId: `sync_${channelId}_${Date.now()}` },
   );
   if (coexistence) {
-    await ctx.queues.onboarding.add(
+    await enqueue(
+      ctx.queues.onboarding,
       "coexistence-sync",
       { channelAccountId: channelId },
       {
@@ -414,7 +417,8 @@ export async function finishSetup(
         backoff: { type: "exponential", delay: 15_000 },
       },
     );
-    await ctx.queues.onboarding.add(
+    await enqueue(
+      ctx.queues.onboarding,
       "coexistence-expire",
       { channelAccountId: channelId },
       { jobId: `coexistence-expire_${channelId}_${Date.now()}`, delay: 24 * 3600 * 1000 },

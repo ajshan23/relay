@@ -11,6 +11,7 @@ import { and, desc, eq, schema } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -96,7 +97,7 @@ export function contactImportRoutes(ctx: AppContext) {
         status: "reading",
       })
       .returning();
-    await ctx.queues.contactFiles.add("read", { importId: id }, { jobId: `read_${id}`, attempts: 1 });
+    await enqueue(ctx.queues.contactFiles, "read", { importId: id }, { jobId: `read_${id}`, attempts: 1 });
     const fields = await activeFields(ctx.db, access.orgId);
     return c2.json(
       {
@@ -198,7 +199,7 @@ export function contactImportRoutes(ctx: AppContext) {
       })
       .where(eq(im.id, imp.id))
       .returning();
-    await ctx.queues.contacts.add("import", { importId: imp.id }, { jobId: imp.id, attempts: 1 });
+    await enqueue(ctx.queues.contacts, "import", { importId: imp.id }, { jobId: imp.id, attempts: 1 });
     return c2.json({ import: row && publicImport(row) });
   });
 

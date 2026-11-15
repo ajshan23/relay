@@ -26,6 +26,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { accountRef, channels } from "../../channels";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { type Access, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -929,7 +930,8 @@ export function broadcastRoutes(ctx: AppContext) {
           })
           .where(eq(cv.id, conversation.id));
       });
-      await ctx.queues.outbox.add(
+      await enqueue(
+        ctx.queues.outbox,
         "send",
         { messageId: id },
         { jobId: id, attempts: 3, backoff: { type: "exponential", delay: 3_000 }, removeOnComplete: true },

@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { accountRef, channels } from "../../channels";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -203,7 +204,8 @@ export function templateRoutes(ctx: AppContext) {
         });
     }
     for (const scope of scopes.keys()) {
-      await ctx.queues.templates.add(
+      await enqueue(
+        ctx.queues.templates,
         "publish",
         { action: "publish", templateId: template.id, scope },
         {
@@ -400,7 +402,8 @@ export function templateRoutes(ctx: AppContext) {
     for (const copy of copies) {
       if (!copy.externalId || seen.has(copy.externalId)) continue;
       seen.add(copy.externalId);
-      await ctx.queues.templates.add(
+      await enqueue(
+        ctx.queues.templates,
         "remove",
         {
           action: "remove",
@@ -427,7 +430,8 @@ export function templateRoutes(ctx: AppContext) {
     if (!(await canManage(access))) return fail(c, 403, "forbidden");
     const chans = (await orgChannels(access.orgId)).filter((x) => x.limits && x.account.status === "active");
     for (const { account } of chans)
-      await ctx.queues.templates.add(
+      await enqueue(
+        ctx.queues.templates,
         "sync",
         { action: "sync", channelAccountId: account.id },
         {

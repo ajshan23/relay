@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { channels } from "../../channels";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -514,7 +515,8 @@ export function conversationRoutes(ctx: AppContext) {
       kind === "read"
         ? `read_${newest.id}`
         : `typing_${conversation.id}_${Math.floor(Date.now() / TYPING_EVERY_MS)}`;
-    await ctx.queues.signals.add(
+    await enqueue(
+      ctx.queues.signals,
       kind,
       { kind, conversationId: conversation.id, messageId: newest.id } satisfies SignalJob,
       {
@@ -1075,7 +1077,7 @@ export function conversationRoutes(ctx: AppContext) {
         .where(eq(schema.conversation.id, conversation.id));
       return row;
     });
-    await ctx.queues.outbox.add("send", { messageId: id }, { jobId: id, ...outboxJobOptions });
+    await enqueue(ctx.queues.outbox, "send", { messageId: id }, { jobId: id, ...outboxJobOptions });
     await announce(conversation);
     return c.json({ message }, 201);
   });
@@ -1150,7 +1152,7 @@ export function conversationRoutes(ctx: AppContext) {
         sentAt: now,
       })
       .returning();
-    await ctx.queues.outbox.add("send", { messageId: id }, { jobId: id, ...outboxJobOptions });
+    await enqueue(ctx.queues.outbox, "send", { messageId: id }, { jobId: id, ...outboxJobOptions });
     await announce(conversation, {
       type: "message.updated",
       conversationId: conversation.id,
@@ -1194,7 +1196,8 @@ export function conversationRoutes(ctx: AppContext) {
       .set({ status: "queued", error: null, failedAt: null })
       .where(and(eq(schema.message.id, message.id), eq(schema.message.status, "failed")));
     // A new job id: the first job's id stays reserved by the queue for a week.
-    await ctx.queues.outbox.add(
+    await enqueue(
+      ctx.queues.outbox,
       "send",
       { messageId: message.id },
       { jobId: `${message.id}.retry.${Date.now()}`, ...outboxJobOptions },

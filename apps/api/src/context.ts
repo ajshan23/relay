@@ -7,15 +7,32 @@ import { Redis } from "ioredis";
 export function createContext() {
   const config = env();
   const { db, sql } = createDb(config.DATABASE_URL);
-  const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
-  const webhookQueue = new Queue(queues.webhooks, { connection: redis });
-  const outboxQueue = new Queue(queues.outbox, { connection: redis });
-  const templatesQueue = new Queue(queues.templates, { connection: redis });
-  const contactsQueue = new Queue(queues.contacts, { connection: redis });
-  const contactFilesQueue = new Queue(queues.contactFiles, { connection: redis });
-  const signalsQueue = new Queue(queues.signals, { connection: redis });
-  const previewsQueue = new Queue(queues.previews, { connection: redis });
-  const onboardingQueue = new Queue(queues.onboarding, { connection: redis });
+  // Queues keep their own connection: BullMQ needs one that waits for Redis rather than failing.
+  // Adds go through enqueue() (lib/enqueue.ts) so a request never waits on it.
+  const queueConnection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
+  // Everything else (caches, live inbox hints, presence) is best effort and must never hold up a
+  // request: while Redis is away these calls fail at once and the caller carries on without them.
+  const redis = new Redis(config.REDIS_URL, {
+    enableOfflineQueue: false,
+    commandTimeout: 500,
+    maxRetriesPerRequest: 1,
+  });
+  let lastRedisError = 0;
+  for (const client of [redis, queueConnection])
+    client.on("error", (err) => {
+      if (Date.now() - lastRedisError < 30_000) return;
+      lastRedisError = Date.now();
+      console.warn(`redis unavailable: ${err.message} (Postgres keeps working; queued work catches up)`);
+    });
+  const connection = queueConnection;
+  const webhookQueue = new Queue(queues.webhooks, { connection });
+  const outboxQueue = new Queue(queues.outbox, { connection });
+  const templatesQueue = new Queue(queues.templates, { connection });
+  const contactsQueue = new Queue(queues.contacts, { connection });
+  const contactFilesQueue = new Queue(queues.contactFiles, { connection });
+  const signalsQueue = new Queue(queues.signals, { connection });
+  const previewsQueue = new Queue(queues.previews, { connection });
+  const onboardingQueue = new Queue(queues.onboarding, { connection });
 
   return {
     config,
@@ -43,6 +60,7 @@ export function createContext() {
         onboardingQueue.close(),
       ]);
       redis.disconnect();
+      queueConnection.disconnect();
       await sql.end();
     },
   };

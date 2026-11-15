@@ -4,6 +4,7 @@ import { newId } from "@relay/core";
 import { schema } from "@relay/db";
 import { Hono } from "hono";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 
 /*
  * The single webhook endpoint for every Meta product (WhatsApp, Instagram, Messenger).
@@ -53,7 +54,7 @@ export function metaWebhookRoutes(ctx: AppContext) {
       .returning({ id: schema.webhookEvent.id });
 
     if (inserted.length) {
-      await ctx.queues.webhooks.add("meta", { eventId: id }, { jobId: id, ...webhookJobOptions });
+      await enqueue(ctx.queues.webhooks, "meta", { eventId: id }, { jobId: id, ...webhookJobOptions });
     }
     return c.text("OK", 200);
   });

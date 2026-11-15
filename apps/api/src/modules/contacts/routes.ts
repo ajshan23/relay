@@ -11,6 +11,7 @@ import { and, asc, desc, eq, inArray, isNull, or, schema, sql } from "@relay/db"
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
+import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -364,7 +365,7 @@ export function contactRoutes(ctx: AppContext) {
       columns: parsed.data.columns,
       format: parsed.data.format,
     };
-    await ctx.queues.contactFiles.add("export", job, {
+    await enqueue(ctx.queues.contactFiles, "export", job, {
       jobId: id,
       attempts: 1,
       removeOnComplete: { age: EXPORT_KEEP_S },

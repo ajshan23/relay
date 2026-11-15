@@ -238,6 +238,8 @@ export const message = pgTable(
     uniqueIndex("message_account_external_uidx").on(t.channelAccountId, t.externalId),
     index("message_conversation_idx").on(t.conversationId, t.sentAt),
     index("message_broadcast_idx").on(t.broadcastId),
+    // The worker's minute sweep for outgoing messages whose queue job went missing (Redis outage).
+    index("message_queued_idx").on(t.createdAt).where(sql`${t.status} = 'queued'`),
     // Search inside a conversation: message text and media captions.
     index("message_text_trgm").using(
       "gin",

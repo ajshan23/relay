@@ -4,7 +4,7 @@ import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
-import { createBroadcastEngine } from "./broadcasts/engine";
+import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
@@ -17,6 +17,7 @@ import { createReadProcessor, type ReadJob } from "./contacts/read";
 import { createSnoozeWaker } from "./conversations/snooze";
 import { createPreviewProcessor } from "./files/preview";
 import { createFileSweep } from "./files/sweep";
+import { createRequeue, redisMemory } from "./maintenance/requeue";
 
 const config = env();
 const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -94,6 +95,15 @@ void maintenanceQueue
     { name: "check-template-reviews", opts: { removeOnComplete: 10, removeOnFail: 50 } },
   )
   .catch((err) => console.error("maintenance scheduler", err));
+// Webhook events and outgoing messages whose queue job went missing (Redis was down or lost data) are
+// put back every minute from Postgres (maintenance/requeue.ts).
+void maintenanceQueue
+  .upsertJobScheduler(
+    "requeue-stuck",
+    { every: 60_000 },
+    { name: "requeue-stuck", opts: { removeOnComplete: 10, removeOnFail: 50 } },
+  )
+  .catch((err) => console.error("maintenance scheduler", err));
 const templatesQueue = new Queue(queues.templates, { connection });
 async function checkTemplateReviews() {
   const rows = await db
@@ -115,6 +125,15 @@ async function checkTemplateReviews() {
   return { accounts: rows.length };
 }
 const wakeSnoozed = createSnoozeWaker({ db, redis: connection });
+const webhookQueue = new Queue(queues.webhooks, { connection });
+const sweepOutbox = new Queue(queues.outbox, { connection });
+const requeueStuck = createRequeue({
+  db,
+  redis: connection,
+  webhooks: webhookQueue,
+  outbox: sweepOutbox,
+  outboxJobOptions,
+});
 const sweepFiles = createFileSweep({ db, storage: fileStorage() });
 const maintenance = new Worker(
   queues.maintenance,
@@ -122,6 +141,7 @@ const maintenance = new Worker(
     if (job.name === "wake-snoozed") return wakeSnoozed();
     if (job.name === "check-template-reviews") return checkTemplateReviews();
     if (job.name === "sweep-files") return sweepFiles();
+    if (job.name === "requeue-stuck") return requeueStuck();
   },
   { connection, concurrency: 1 },
 );
@@ -216,31 +236,40 @@ templates.on("failed", (job, err) =>
 /* Health check for the process manager (and the local launcher): 200 while the workers run. */
 const port = Number(process.env.WORKER_PORT ?? 3202);
 const health = createServer((_req, res) => {
-  const ok =
-    emails.isRunning() &&
-    webhooks.isRunning() &&
-    outbox.isRunning() &&
-    media.isRunning() &&
-    templates.isRunning();
-  res.writeHead(ok ? 200 : 503, { "content-type": "application/json" });
-  res.end(
-    JSON.stringify({
-      ok,
-      workers: {
-        emails: emails.isRunning(),
-        webhooks: webhooks.isRunning(),
-        outbox: outbox.isRunning(),
-        media: media.isRunning(),
-        templates: templates.isRunning(),
-        contacts: contactImports.isRunning(),
-        contactFiles: contactFiles.isRunning(),
-        signals: signals.isRunning(),
-        maintenance: maintenance.isRunning(),
-        previews: previews.isRunning(),
-        broadcasts: broadcasts.isRunning(),
-      },
-    }),
-  );
+  void (async () => {
+    const workersOk =
+      emails.isRunning() &&
+      webhooks.isRunning() &&
+      outbox.isRunning() &&
+      media.isRunning() &&
+      templates.isRunning();
+    // Redis: reachable, and how full (jobs fail once maxmemory is reached with noeviction).
+    const redis = await Promise.race([
+      redisMemory(connection).then((m) => ({ ok: true, ...m })),
+      new Promise<{ ok: false }>((r) => setTimeout(() => r({ ok: false }), 1000)),
+    ]).catch(() => ({ ok: false as const }));
+    const ok = workersOk && redis.ok;
+    res.writeHead(ok ? 200 : 503, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ok,
+        redis,
+        workers: {
+          emails: emails.isRunning(),
+          webhooks: webhooks.isRunning(),
+          outbox: outbox.isRunning(),
+          media: media.isRunning(),
+          templates: templates.isRunning(),
+          contacts: contactImports.isRunning(),
+          contactFiles: contactFiles.isRunning(),
+          signals: signals.isRunning(),
+          maintenance: maintenance.isRunning(),
+          previews: previews.isRunning(),
+          broadcasts: broadcasts.isRunning(),
+        },
+      }),
+    );
+  })();
 });
 health.listen(port, config.HOST, () => console.log(`worker health on ${config.HOST}:${port}`));
 
@@ -265,6 +294,8 @@ async function shutdown() {
     maintenanceQueue.close(),
     templatesQueue.close(),
     mediaQueue.close(),
+    webhookQueue.close(),
+    sweepOutbox.close(),
   ]);
   connection.disconnect();
   await sql.end();
