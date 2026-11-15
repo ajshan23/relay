@@ -300,6 +300,12 @@ importers:
         specifier: 6.11.12
         version: 6.11.12(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
 
+  packages/kairos:
+    dependencies:
+      postgres:
+        specifier: ^4.1.1
+        version: 4.1.1
+
   packages/ui:
     dependencies:
       '@hookform/resolvers':

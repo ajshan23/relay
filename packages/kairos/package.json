@@ -1,0 +1,17 @@
+{
+  "name": "@relay/kairos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kairos: durable runs on Postgres (steps, sleeps, waits for events) with no other infrastructure.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "postgres": "^4.1.1"
+  }
+}
