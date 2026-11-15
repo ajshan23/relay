@@ -19,8 +19,9 @@ export function db(): Sql {
     if (!url) throw new Error("Set KAIROS_DATABASE_URL (or DATABASE_URL) for the Kairos dashboard");
     g.kairosDashSql = postgres(url, {
       max: 4,
+      prepare: !/:6543(\/|$)/.test(url),
       onnotice: () => {},
-      connection: { application_name: "kairos-dashboard", statement_timeout: 8000 },
+      connection: { application_name: "kairos-dashboard" },
     });
   }
   return g.kairosDashSql;
@@ -35,7 +36,12 @@ export function kairos(): Kairos {
 /** Runs a query; a missing schema (Kairos never migrated here) reads as empty instead of crashing. */
 export async function q<T>(text: string, params: unknown[] = []): Promise<T[]> {
   try {
-    return (await db().unsafe(text, params as never[])) as unknown as T[];
+    // A statement timeout per query, so a heavy page can never hold the database. Set inside the
+    // transaction because poolers (Supabase, Neon) ignore it as a connection setting.
+    return (await db().begin(async (tx) => {
+      await tx.unsafe("set local statement_timeout = 8000");
+      return tx.unsafe(text, params as never[]);
+    })) as unknown as T[];
   } catch (err) {
     if ((err as { code?: string }).code === "3F000" || (err as { code?: string }).code === "42P01") return [];
     throw err;

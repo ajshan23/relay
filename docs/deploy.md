@@ -8,7 +8,7 @@ browser ──https──▶ nginx (app.relay.operium.pro)
                      ├─ /api/, /webhooks/, /health ─▶ relay-api 127.0.0.1:3201
                      └─ everything else ─▶ relay-web 127.0.0.1:3200 (Next.js)
 relay-worker (sending, broadcasts, media, Embedded Signup follow-ups) ─ health on 127.0.0.1:3202
-Redis 127.0.0.1:6379 (queues) · Postgres + files on Neon
+Redis 127.0.0.1:6379 (queues) · Postgres on Supabase (Mumbai, same region as the server) · files on Neon storage
 ```
 
 Everything listens on 127.0.0.1 (`HOST=127.0.0.1` in `ecosystem.config.cjs`), so nginx is the only way in.
@@ -129,8 +129,9 @@ In the app's Webhooks settings (WhatsApp Business Account object) subscribe to: 
 
 **9. Automations (Kairos).** Automations run on Kairos, a Postgres-only engine inside `relay-worker`: no extra
 service, and the worker creates and migrates its `kairos` schema itself when it starts.
-- Optional, for instant wake-ups when a customer replies (otherwise within about a second):
-  `KAIROS_LISTEN_URL` = the Neon **direct** URL (the `DATABASE_URL` without `-pooler` in the host).
+- For instant wake-ups when a customer replies (otherwise within about a second): `KAIROS_LISTEN_URL` = a
+  connection that keeps its session, so LISTEN works. On Supabase that's the **session pooler** (port 5432);
+  `DATABASE_URL` is the **transaction pooler** (port 6543), which can't LISTEN. (On Neon: the direct host.)
 - The Kairos dashboard (runs, waits, failures, workers, engine health) is its own small app on 127.0.0.1:3204.
   Set `KAIROS_ADMIN_PASSWORD` in `.env` (a long random one; it is the only login), add an A record `kairos.relay`
   under `operium.pro`, then this site file and `certbot --nginx -d kairos.relay.operium.pro`:
@@ -153,9 +154,15 @@ server {
 cd /var/www/relay && git pull && pnpm install --frozen-lockfile && pnpm --filter @relay/web build && pnpm --filter @relay/kairos-dashboard build && pm2 reload ecosystem.config.cjs
 ```
 When a commit adds a migration: `DATABASE_URL="$(grep ^DATABASE_URL= .env | cut -d= -f2-)" pnpm --filter @relay/db migrate` before the reload.
-(Up to 0022, automations, is already applied to the shared Neon database.)
+(drizzle-kit runs over the session port by itself: a 6543 URL becomes 5432. Up to 0022 is applied on Supabase.)
+
+### Database: Supabase
+`DATABASE_URL` = Supabase's **transaction pooler** (`aws-1-ap-south-1.pooler.supabase.com:6543`); with port 6543
+the app turns prepared statements off by itself. `KAIROS_LISTEN_URL` = the **session pooler** (same host, 5432).
+Every table in `public` has RLS on and no access for `anon`/`authenticated`, so Supabase's Data API and the
+publishable key can't read Relay's data; Relay connects as `postgres`, which owns the tables.
 
 ## Rules
 
-- **Only one worker per database.** The server and a laptop both pointing at the same Neon database must not both run `relay-worker`, or webhooks and sends get split between them (and automation runs would execute on whichever code version claims them).
+- **Only one worker per database.** The server and a laptop both pointing at the same database must not both run `relay-worker`, or webhooks and sends get split between them (and automation runs would execute on whichever code version claims them).
 - Logs: `pm2 logs relay-api` (pm2-logrotate caps them).

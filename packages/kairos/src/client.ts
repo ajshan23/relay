@@ -47,6 +47,8 @@ export function createKairos(options: KairosOptions) {
     options.sql ??
     postgres(options.databaseUrl ?? "", {
       max: options.maxConnections ?? 10,
+      // Through a transaction-mode pooler (port 6543), prepared statements can't follow the session.
+      prepare: !/:6543(\/|$)/.test(options.databaseUrl ?? ""),
       onnotice: () => {},
       connection: { application_name: "kairos" },
     });
