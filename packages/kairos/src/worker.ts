@@ -62,7 +62,6 @@ type Claim = { run_id: string; attempt: number; workflow: string; version: numbe
 
 const MAINTENANCE_EVERY_MS = 5_000;
 const RETENTION_EVERY_MS = 60_000;
-const HEARTBEAT_EVERY_MS = 10_000;
 
 /**
  * A worker process: claims due runs (any tenant, fairly), replays them until they finish, sleep or wait,
@@ -98,6 +97,7 @@ export class Worker {
     wakesByNotify: 0,
     wakesByPoll: 0,
     reclaimedByReaper: 0,
+    infraRetries: 0,
   };
 
   constructor(private readonly opts: WorkerOptions) {
@@ -131,7 +131,8 @@ export class Worker {
         this.listener = null;
       }
     }
-    this.timers.push(setInterval(() => void this.heartbeat(), HEARTBEAT_EVERY_MS));
+    // Three heartbeats per lease, at most every 10 s, so a claim never lapses while its worker is alive.
+    this.timers.push(setInterval(() => void this.heartbeat(), Math.min(10_000, this.leaseMs / 3)));
     if (!this.opts.noMaintenance)
       this.timers.push(setInterval(() => void this.maintenance(), MAINTENANCE_EVERY_MS));
     void this.loop();
@@ -480,12 +481,15 @@ class Execution implements WorkflowContext {
    * holds this exact claim, and honours a cancel request. Anything else means another worker owns the
    * run now, so nothing is written.
    */
-  private async tx<T>(fn: (ex: Executor) => Promise<T>): Promise<T> {
+  private async tx<T>(fn: (ex: Executor) => Promise<T>, lock?: string): Promise<T> {
     if (this.stopped) throw new KairosControl(this.stopped);
     const { S } = this;
     try {
       return (await this.w.sql.begin(async (t) => {
         const ex = fromPostgres(t);
+        // An event lock always comes before the run's row lock (the order publish() uses), or the two
+        // could deadlock.
+        if (lock) await ex.query("select pg_advisory_xact_lock($1::bigint)", [lockKey(lock)]);
         const [fence] = await ex.query<{ cancel_requested_at: Date | null }>(
           `select r.cancel_requested_at from ${S}.wakeup w join ${S}.run r on r.id = w.run_id
            where w.run_id = $1 and w.claimed_by = $2 and w.attempt = $3 for update of w`,
@@ -500,8 +504,23 @@ class Execution implements WorkflowContext {
         return fn(ex);
       })) as T;
     } catch (err) {
-      if (isKairosControl(err)) this.stop(err.kind);
-      throw err;
+      if (isKairosControl(err)) {
+        this.stop(err.kind);
+        throw err;
+      }
+      // Kairos's own write failed (deadlock, connection lost, …): that is not the workflow's fault, so
+      // the run is not failed. Hand it back to run again shortly; if even that fails the lease expires.
+      this.w.stats.infraRetries++;
+      this.w.log("warn", "write failed, the run will retry", { runId: this.runId, ...serializeError(err) });
+      await this.w.pool
+        .query(
+          `update ${S}.wakeup set claimed_by = null, claimed_until = null, wake_at = now() + interval '1 second'
+           where run_id = $1 and claimed_by = $2 and attempt = $3`,
+          [this.runId, this.w.id, this.claim.attempt],
+        )
+        .catch(() => {});
+      this.stop("lost");
+      throw new KairosControl("lost");
     }
   }
 
@@ -514,8 +533,8 @@ class Execution implements WorkflowContext {
   }
 
   /** Runs a fenced write; a cancellation discovered there stops the run. */
-  private async write<T>(fn: (ex: Executor) => Promise<T>): Promise<T> {
-    const out = await this.tx(fn);
+  private async write<T>(fn: (ex: Executor) => Promise<T>, lock?: string): Promise<T> {
+    const out = await this.tx(fn, lock);
     if (out && typeof out === "object" && "__cancelled" in (out as object)) {
       this.stop("cancelled");
       throw new KairosControl("cancelled");
@@ -725,65 +744,87 @@ class Execution implements WorkflowContext {
     }
     const { S } = this;
     const since = this.lastStartedAt ?? this.runCreatedAt;
-    const result = await this.write(async (ex): Promise<WaitResult<P> | null> => {
-      // Same lock as publish(): an event is either seen here or matches the wait we register.
-      await ex.query("select pg_advisory_xact_lock($1::bigint)", [
-        lockKey(`${this.w.S.replaceAll('"', "")}:${this.tenantId}:${o.key}:${scope}`),
-      ]);
-      let event: { id: string; key: string; scope: string; payload: P; created_at: Date } | undefined;
-      if (!row) {
-        // Lookback: an event published since the previous step began (e.g. a reply that arrived while the
-        // question was being sent) counts, unless this run already used it.
-        [event] = await ex.query(
-          `select id, key, scope, payload, created_at from ${S}.event e
+    const result = await this.write(
+      async (ex): Promise<WaitResult<P> | null> => {
+        // publish() takes the same lock, so an event is either seen here or matches the wait we register.
+        let event: { id: string; key: string; scope: string; payload: P; created_at: Date } | undefined;
+        if (!row) {
+          // Lookback: an event published since the previous step began (e.g. a reply that arrived while the
+          // question was being sent) counts, unless this run already used it.
+          [event] = await ex.query(
+            `select id, key, scope, payload, created_at from ${S}.event e
            where e.tenant_id = $1 and e.key = $2 and e.scope = $3 and e.created_at > $4::timestamptz
              and ($5::text::jsonb is null or coalesce(e.payload, 'null'::jsonb) @> $5::text::jsonb)
              and not exists (select 1 from ${S}.wait w where w.run_id = $6 and w.event_id = e.id)
            order by e.created_at, e.id limit 1`,
-          [
-            this.tenantId,
-            o.key,
-            scope,
-            since?.toISOString() ?? new Date(0).toISOString(),
-            json(o.filter),
-            this.runId,
-          ],
-        );
-        await ex.query(
-          `insert into ${S}.wait (id, run_id, seq, tenant_id, event_key, scope, filter, deadline, status, event_id, resolved_at)
+            [
+              this.tenantId,
+              o.key,
+              scope,
+              since?.toISOString() ?? new Date(0).toISOString(),
+              json(o.filter),
+              this.runId,
+            ],
+          );
+          await ex.query(
+            `insert into ${S}.wait (id, run_id, seq, tenant_id, event_key, scope, filter, deadline, status, event_id, resolved_at)
            values ($1, $2, $3, $4, $5, $6, $7::text::jsonb,
              case when $8::double precision is null then null else now() + ($8::double precision * interval '1 millisecond') end,
              $9, $10, case when $10::text is null then null else now() end)`,
-          [
-            newId("wait"),
-            this.runId,
-            seq,
-            this.tenantId,
-            o.key,
-            scope,
-            json(o.filter),
-            o.timeoutMs ?? null,
-            event ? "matched" : "open",
-            event?.id ?? null,
-          ],
-        );
-      } else {
-        const [w] = await ex.query<{ status: string; event_id: string | null; due: boolean }>(
-          `select status, event_id, (deadline is not null and deadline <= now()) as due
-           from ${S}.wait where run_id = $1 and seq = $2 for update`,
-          [this.runId, seq],
-        );
-        if (w?.status === "matched" && w.event_id) {
-          [event] = await ex.query(
-            `select id, key, scope, payload, created_at from ${S}.event where id = $1`,
-            [w.event_id],
+            [
+              newId("wait"),
+              this.runId,
+              seq,
+              this.tenantId,
+              o.key,
+              scope,
+              json(o.filter),
+              o.timeoutMs ?? null,
+              event ? "matched" : "open",
+              event?.id ?? null,
+            ],
           );
-        } else if (w?.status === "open" && w.due) {
-          await ex.query(
-            `update ${S}.wait set status = 'timed_out', resolved_at = now() where run_id = $1 and seq = $2`,
+        } else {
+          const [w] = await ex.query<{ status: string; event_id: string | null; due: boolean }>(
+            `select status, event_id, (deadline is not null and deadline <= now()) as due
+           from ${S}.wait where run_id = $1 and seq = $2 for update`,
             [this.runId, seq],
           );
-          const out: WaitResult<P> = { timedOut: true };
+          if (w?.status === "matched" && w.event_id) {
+            [event] = await ex.query(
+              `select id, key, scope, payload, created_at from ${S}.event where id = $1`,
+              [w.event_id],
+            );
+          } else if (w?.status === "open" && w.due) {
+            await ex.query(
+              `update ${S}.wait set status = 'timed_out', resolved_at = now() where run_id = $1 and seq = $2`,
+              [this.runId, seq],
+            );
+            const out: WaitResult<P> = { timedOut: true };
+            const saved = await this.saveStep(ex, {
+              seq,
+              kind: "wait",
+              name,
+              idem,
+              status: "completed",
+              result: out,
+              attempt: 1,
+            });
+            this.done(saved);
+            return out;
+          }
+        }
+        if (event) {
+          const out: WaitResult<P> = {
+            timedOut: false,
+            event: {
+              id: event.id,
+              key: event.key,
+              scope: event.scope,
+              payload: event.payload,
+              createdAt: new Date(event.created_at).toISOString(),
+            },
+          };
           const saved = await this.saveStep(ex, {
             seq,
             kind: "wait",
@@ -796,39 +837,17 @@ class Execution implements WorkflowContext {
           this.done(saved);
           return out;
         }
-      }
-      if (event) {
-        const out: WaitResult<P> = {
-          timedOut: false,
-          event: {
-            id: event.id,
-            key: event.key,
-            scope: event.scope,
-            payload: event.payload,
-            createdAt: new Date(event.created_at).toISOString(),
-          },
-        };
-        const saved = await this.saveStep(ex, {
-          seq,
-          kind: "wait",
-          name,
-          idem,
-          status: "completed",
-          result: out,
-          attempt: 1,
-        });
-        this.done(saved);
-        return out;
-      }
-      if (!row) await this.saveStep(ex, { seq, kind: "wait", name, idem, status: "waiting", attempt: 1 });
-      await this.suspendIn(
-        ex,
-        `coalesce((select deadline from ${S}.wait where run_id = $1 and seq = $2), 'infinity'::timestamptz)`,
-        [seq],
-        "waiting",
-      );
-      return null;
-    });
+        if (!row) await this.saveStep(ex, { seq, kind: "wait", name, idem, status: "waiting", attempt: 1 });
+        await this.suspendIn(
+          ex,
+          `coalesce((select deadline from ${S}.wait where run_id = $1 and seq = $2), 'infinity'::timestamptz)`,
+          [seq],
+          "waiting",
+        );
+        return null;
+      },
+      `${this.w.S.replaceAll('"', "")}:${this.tenantId}:${o.key}:${scope}`,
+    );
     if (result) return roundTrip(result);
     this.stop("suspended");
     throw new KairosControl("suspended");

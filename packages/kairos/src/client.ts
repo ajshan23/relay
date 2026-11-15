@@ -169,6 +169,8 @@ export function createKairos(options: KairosOptions) {
    */
   async function cancel(runId: string, opts: { executor?: Executor } = {}): Promise<boolean> {
     return inTx(opts.executor, async (ex) => {
+      // Lock order everywhere: wakeup row, then run row.
+      await ex.query(`select run_id from ${S}.wakeup where run_id = $1 for update`, [runId]);
       const req = await ex.query<{ id: string }>(
         `update ${S}.run set cancel_requested_at = coalesce(cancel_requested_at, now()), updated_at = now()
          where id = $1 and status not in ('completed','failed','cancelled') returning id`,

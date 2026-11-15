@@ -9,7 +9,9 @@
   },
   "scripts": {
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "chaos": "tsx scripts/chaos.ts",
+    "load": "tsx scripts/load.ts"
   },
   "dependencies": {
     "postgres": "^4.1.1"
