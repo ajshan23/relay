@@ -73,3 +73,35 @@ export const automationVersion = pgTable(
   },
   (t) => [uniqueIndex("automation_version_number_uidx").on(t.automationId, t.number)],
 );
+
+/**
+ * A "Send link button" link: the button opens WEB_URL/l/<code>, which counts the tap and forwards to
+ * `url`. One row per sent message, so a tap is tied to the run and step that sent it.
+ */
+export const trackedLink = pgTable(
+  "tracked_link",
+  {
+    id: text("id").primaryKey(),
+    /** The short, unguessable part of the link. */
+    code: text("code").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    messageId: text("message_id"),
+    automationId: text("automation_id").references(() => automation.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    /** "runId:node#visit": the step that sent it (the scope of its link.tapped event). */
+    stepKey: text("step_key").notNull(),
+    /** Where a tap goes (variables already filled in). */
+    url: text("url").notNull(),
+    firstTappedAt: timestamp("first_tapped_at"),
+    tapCount: integer("tap_count").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("tracked_link_code_uidx").on(t.code),
+    // One link per sent message: a retried step finds the link it already made.
+    uniqueIndex("tracked_link_step_uidx").on(t.stepKey),
+    index("tracked_link_run_idx").on(t.runId),
+  ],
+);

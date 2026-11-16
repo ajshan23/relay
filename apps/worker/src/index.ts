@@ -43,6 +43,7 @@ const automations = createAutomations({
   databaseUrl: config.DATABASE_URL,
   listenUrl: config.KAIROS_LISTEN_URL,
   signals: automationSignals,
+  linkBase: config.WEB_URL,
 });
 const automationWorker = automations.worker();
 void automations

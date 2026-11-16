@@ -360,6 +360,20 @@ export type OutboundMessage = (
       buttonText?: string;
       footer?: string;
     }
+  /** A message with one button that opens a web page. Taps aren't reported by the channel. */
+  | {
+      type: "interactive";
+      kind: "cta_url";
+      body: string;
+      button: { text: string; url: string };
+      /** A picture, video or file on top, handed to the channel first. */
+      headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string };
+      footer?: string;
+    }
+  /** Asks the customer to share their location: a "Send location" button under the text. */
+  | { type: "interactive"; kind: "location_request"; body: string }
+  /** A map pin. */
+  | { type: "location"; latitude: number; longitude: number; name?: string; address?: string }
 ) & {
   /** Provider id of the message being replied to. */
   replyToExternalId?: string;

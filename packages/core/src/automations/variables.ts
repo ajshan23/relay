@@ -6,6 +6,7 @@
  *   contact.name, contact.first_name, contact.phone, contact.email, contact.<custom field key>
  *   trigger.text        the message that started the run (never a later reply)
  *   answers.<name>      an answer saved by an "Ask a question" step
+ *   answers.<name>.map_link (.latitude .longitude .name .address)  a location shared with "Ask for location"
  *   chat.assignee       the assigned team member's name
  *   business.name       the business's name
  */
@@ -27,11 +28,16 @@ export function variablesUsed(text: string): string[] {
   return [...text.matchAll(pattern)].map((m) => m[1] ?? "").filter(Boolean);
 }
 
-export function resolveText(text: string, scope: VariableScope): string {
+/**
+ * Fills a text's variables. `encode` is applied to each filled value (not to fallbacks), e.g.
+ * encodeURIComponent for a link, so a value can't break out of its place in the URL.
+ */
+export function resolveText(text: string, scope: VariableScope, encode?: (value: string) => string): string {
   return text.replace(pattern, (_, path: string, fallback?: string) => {
     const value = lookup(scope, path);
     const s = value === null || value === undefined ? "" : String(value);
-    return s.trim() ? s : (fallback?.trim() ?? "");
+    if (s.trim()) return encode ? encode(s) : s;
+    return fallback?.trim() ?? "";
   });
 }
 
@@ -47,5 +53,10 @@ function lookup(scope: VariableScope, path: string): unknown {
     const name = String(scope.contact.name ?? "").trim();
     return name ? name.split(/\s+/)[0] : undefined;
   }
-  return typeof value === "object" ? undefined : value;
+  // An answer with parts (a shared location) reads as its text: {{answers.pickup}}.
+  if (value !== null && typeof value === "object") {
+    const text = (value as { text?: unknown }).text;
+    return typeof text === "string" ? text : undefined;
+  }
+  return value;
 }

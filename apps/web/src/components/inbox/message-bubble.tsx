@@ -433,6 +433,41 @@ function Body({
       );
     }
     case "interactive":
+      if (c.kind === "cta_url") {
+        // A link button from an automation: the button shows the page it opens (not our tracked link).
+        const h = c.header as { kind?: string; attachmentId?: string | null } | null | undefined;
+        const button = (c.button as { text?: string; url?: string } | undefined) ?? {};
+        return (
+          <TemplateBubble
+            {...common}
+            label={m.senderType === "bot" ? "Automation" : undefined}
+            header={
+              !h
+                ? undefined
+                : h.kind === "image"
+                  ? {
+                      type: "image",
+                      imageUrl: h.attachmentId ? `/api/attachments/${h.attachmentId}` : undefined,
+                    }
+                  : h.kind === "video"
+                    ? { type: "video" }
+                    : { type: "document", documentName: "Document" }
+            }
+            body={str(c.body) ?? ""}
+            footer={str(c.footer) ?? undefined}
+            buttons={[{ type: "url", label: button.text ?? "Open", url: str(c.linkUrl) ?? button.url }]}
+          />
+        );
+      }
+      if (c.kind === "location_request")
+        return (
+          <TemplateBubble
+            {...common}
+            label={m.senderType === "bot" ? "Automation" : undefined}
+            body={str(c.body) ?? ""}
+            buttons={[{ type: "quick_reply", label: "📍 Send location" }]}
+          />
+        );
       if (c.kind === "buttons" || c.kind === "list") {
         // A question we sent: reply buttons, or a list behind one button.
         const options = (c.options as { id: string; title: string }[] | undefined) ?? [];

@@ -328,15 +328,18 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
     let headerMedia: Extract<OutboundMessage, { type: "template" }>["headerMedia"];
     const header = (message.content as { header?: { kind: string; attachmentId?: string | null } | null })
       .header;
-    if (isTemplate && header && header.kind !== "text" && header.attachmentId) {
+    // So does a link button with a picture, video or file on top.
+    const isLinkButton =
+      message.type === "interactive" && (message.content as { kind?: string }).kind === "cta_url";
+    if ((isTemplate || isLinkButton) && header && header.kind !== "text" && header.attachmentId) {
       const [file] = await db
         .select()
         .from(schema.attachment)
         .where(eq(schema.attachment.id, header.attachmentId))
         .limit(1);
       if (!file?.storageKey) {
-        await fail(message.id, { reason: "error", message: "The template's header file is missing." });
-        throw new UnrecoverableError("template header file missing");
+        await fail(message.id, { reason: "error", message: "The file on top of this message is missing." });
+        throw new UnrecoverableError("header file missing");
       }
       const providerMediaId = await uploadOnce(
         { ...file, storageKey: file.storageKey },
@@ -413,30 +416,32 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
           emoji: (message.content as { emoji?: string }).emoji ?? "",
         }
       : message.type === "interactive"
-        ? interactiveOutbound(message.content, replyToExternalId)
-        : isTemplate
-          ? {
-              type: "template",
-              name: content.name ?? "",
-              language: content.language ?? "en",
-              values: content.values ?? {},
-              auth: !!content.auth,
-              headerMedia,
-              quickReplyPayloads: (
-                message.content as { quickReplyPayloads?: { index: number; payload: string }[] }
-              ).quickReplyPayloads,
-              replyToExternalId,
-            }
-          : media
+        ? interactiveOutbound(message.content, replyToExternalId, headerMedia)
+        : message.type === "location"
+          ? locationOutbound(message.content, replyToExternalId)
+          : isTemplate
             ? {
-                type: message.type as "image" | "video" | "audio" | "document" | "sticker",
-                providerMediaId: media.id,
-                caption: content.caption ?? undefined,
-                fileName: media.file.fileName ?? undefined,
-                voice: message.type === "audio" && (message.content as { voice?: boolean }).voice === true,
+                type: "template",
+                name: content.name ?? "",
+                language: content.language ?? "en",
+                values: content.values ?? {},
+                auth: !!content.auth,
+                headerMedia,
+                quickReplyPayloads: (
+                  message.content as { quickReplyPayloads?: { index: number; payload: string }[] }
+                ).quickReplyPayloads,
                 replyToExternalId,
               }
-            : { type: "text", text: content.text ?? "", replyToExternalId };
+            : media
+              ? {
+                  type: message.type as "image" | "video" | "audio" | "document" | "sticker",
+                  providerMediaId: media.id,
+                  caption: content.caption ?? undefined,
+                  fileName: media.file.fileName ?? undefined,
+                  voice: message.type === "audio" && (message.content as { voice?: boolean }).voice === true,
+                  replyToExternalId,
+                }
+              : { type: "text", text: content.text ?? "", replyToExternalId };
 
     try {
       const { externalId } = await adapter.send(accountRef(account), to, outbound, message.id);
@@ -493,22 +498,60 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
   }
 }
 
-/** A stored question with choices (see packages/channels OutboundMessage "interactive"). */
-function interactiveOutbound(content: Record<string, unknown>, replyToExternalId?: string): OutboundMessage {
+/**
+ * A stored interactive message (see packages/channels OutboundMessage "interactive"): a question with
+ * choices, a link button, or a location request.
+ */
+function interactiveOutbound(
+  content: Record<string, unknown>,
+  replyToExternalId?: string,
+  headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string },
+): OutboundMessage {
   const c = content as {
     kind?: string;
     body?: string;
     buttonText?: string;
-    footer?: string;
+    footer?: string | null;
     options?: { id: string; title: string; description?: string }[];
+    button?: { text: string; url: string };
   };
+  if (c.kind === "location_request")
+    return { type: "interactive", kind: "location_request", body: c.body ?? "", replyToExternalId };
+  if (c.kind === "cta_url")
+    return {
+      type: "interactive",
+      kind: "cta_url",
+      body: c.body ?? "",
+      button: c.button ?? { text: "Open", url: "" },
+      headerMedia,
+      footer: c.footer ?? undefined,
+      replyToExternalId,
+    };
   return {
     type: "interactive",
     kind: c.kind === "list" ? "list" : "buttons",
     body: c.body ?? "",
     options: c.options ?? [],
     buttonText: c.buttonText,
-    footer: c.footer,
+    footer: c.footer ?? undefined,
+    replyToExternalId,
+  };
+}
+
+/** A stored map pin. */
+function locationOutbound(content: Record<string, unknown>, replyToExternalId?: string): OutboundMessage {
+  const c = content as {
+    latitude?: number;
+    longitude?: number;
+    name?: string | null;
+    address?: string | null;
+  };
+  return {
+    type: "location",
+    latitude: Number(c.latitude),
+    longitude: Number(c.longitude),
+    name: c.name ?? undefined,
+    address: c.address ?? undefined,
     replyToExternalId,
   };
 }

@@ -40,6 +40,7 @@ export const idPrefixes = {
   broadcastRecipient: "bcr",
   automation: "aut",
   automationVersion: "autv",
+  trackedLink: "lnk",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

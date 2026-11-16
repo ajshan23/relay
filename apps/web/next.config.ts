@@ -11,6 +11,8 @@ const nextConfig: NextConfig = {
       { source: "/api/events", destination: `${realtime}/api/events` },
       { source: "/api/events/:path*", destination: `${realtime}/api/events/:path*` },
       { source: "/api/:path*", destination: `${api}/api/:path*` },
+      // Automations' tracked links (link buttons): counted by the API, which forwards to the page.
+      { source: "/l/:code", destination: `${api}/l/:code` },
     ];
   },
   // Uploads pass through the /api rewrite: allow the biggest file a channel takes (WhatsApp documents

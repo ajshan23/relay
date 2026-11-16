@@ -6,6 +6,7 @@ import {
   askLayout,
   describeRun,
   emptyDefinition,
+  locationAnswer,
   migrateDefinition,
   nodeSpecs,
   optionOfReply,
@@ -533,6 +534,156 @@ describe("history of a stopped run", () => {
         "Started: Message “Hi”",
         "Was waiting for a reply to “How can we help?” when it was stopped",
         "Stopped",
+      ],
+    );
+  });
+});
+
+describe("link buttons and locations", () => {
+  const steps = () => {
+    const def = emptyDefinition({ type: "message_received", mode: "any" });
+    def.nodes = [
+      node("where", "ask_location", {
+        text: "Where should we pick you up?",
+        saveAs: "pickup",
+        acceptTyped: false,
+        retries: 1,
+        retryText: "Please tap Send location.",
+        timeoutMinutes: 60,
+      }),
+      node("book", "send_link", {
+        text: "Pickup at {{answers.pickup}}. Book here:",
+        buttonText: "Book now",
+        url: "https://example.com/book?map={{answers.pickup.map_link}}",
+        media: null,
+        footer: "",
+        waitForTap: true,
+        timeoutMinutes: 120,
+      }),
+      node("pin", "send_location", { latitude: 25.08, longitude: 55.14, name: "Lumen Marina", address: "" }),
+      node("bye", "end", {}),
+    ];
+    def.edges = [
+      edge("trigger", "next", "where"),
+      edge("where", "next", "book"),
+      edge("where", "invalid", "bye"),
+      edge("where", "no_reply", "bye"),
+      edge("book", "tapped", "pin"),
+      edge("book", "not_tapped", "bye"),
+    ];
+    return def;
+  };
+  it("accepts a complete location and link flow", () => {
+    assert.deepEqual(codes(steps()), []);
+  });
+  it("needs the No reply, Didn't share and Not tapped exits", () => {
+    const def = steps();
+    def.edges = def.edges.filter((e) => !["no_reply", "invalid", "not_tapped"].includes(e.sourceHandle));
+    const c = codes(def);
+    assert.ok(c.includes("error:NO_REPLY_PATH"));
+    assert.ok(c.includes("error:INVALID_PATH"));
+    assert.ok(c.includes("error:NO_TAP_PATH"));
+  });
+  it("checks the link, the button text and that a place was chosen", () => {
+    const def = steps();
+    const book = def.nodes.find((n) => n.id === "book");
+    const pin = def.nodes.find((n) => n.id === "pin");
+    if (!book || !pin) throw new Error("missing steps");
+    book.config = { ...book.config, url: "http://example.com", buttonText: "A button text that is too long" };
+    pin.config = { latitude: 0, longitude: 0, name: "", address: "" };
+    const issues = validateDefinition(def, {});
+    assert.ok(issues.some((i) => i.nodeId === "book" && /https:\/\//.test(i.message)));
+    assert.ok(issues.some((i) => i.nodeId === "book" && /20 characters/.test(i.message)));
+    assert.ok(issues.some((i) => i.nodeId === "pin" && /Choose the location/.test(i.message)));
+  });
+  it("allows parts only on a location answer, and only the known ones", () => {
+    const def = steps();
+    const book = def.nodes.find((n) => n.id === "book");
+    if (!book) throw new Error("missing step");
+    book.config = { ...book.config, text: "{{answers.pickup.city}}" };
+    assert.ok(codes(def).includes("error:ANSWER_PART"));
+  });
+  it("reads a location answer as its text, its parts by name, and encodes link values", () => {
+    const pickup = locationAnswer({
+      latitude: 25.08,
+      longitude: 55.14,
+      name: "Marina Mall",
+      address: "Dubai",
+    });
+    assert.equal(pickup.text, "Marina Mall, Dubai");
+    assert.equal(pickup.map_link, "https://www.google.com/maps?q=25.08,55.14");
+    const scope = { contact: {}, trigger: {}, answers: { pickup, name: "A & B" }, chat: {}, business: {} };
+    assert.equal(
+      resolveText("At {{answers.pickup}} ({{answers.pickup.latitude}})", scope),
+      "At Marina Mall, Dubai (25.08)",
+    );
+    assert.equal(
+      resolveText("https://x.com/?n={{answers.name}}&f={{answers.none|a b}}", scope, encodeURIComponent),
+      "https://x.com/?n=A%20%26%20B&f=a b",
+    );
+    assert.equal(locationAnswer({ latitude: 1, longitude: 2 }).text, "1,2");
+    assert.equal(locationAnswer(null, " 12 Palm St ").address, "12 Palm St");
+  });
+  it("tells the history: asked, shared, sent with a button, tapped, sent a pin", () => {
+    const def = steps();
+    const t = (m: number) => new Date(Date.UTC(2026, 10, 16, 10, m)).toISOString();
+    const step = (name: string, kind: string, result: unknown, m: number) => ({
+      name,
+      kind,
+      status: "completed",
+      result,
+      error: null,
+      startedAt: t(m),
+      completedAt: t(m),
+      wakeAt: null,
+    });
+    const history = describeRun({
+      def,
+      input: {
+        automationId: "a",
+        versionId: "v",
+        organizationId: "o",
+        branchId: "b",
+        channelAccountId: "c",
+        conversationId: "cv",
+        contactId: "ct",
+        trigger: { kind: "message", text: "Hi" },
+      },
+      steps: [
+        step("ask_location:where#1:ask", "step", { ok: true, messageId: "m1" }, 1),
+        step(
+          "ask_location:where#1:answer0",
+          "wait",
+          {
+            event: {
+              payload: {
+                text: "",
+                location: { latitude: 25, longitude: 55, name: "Marina Mall", address: null },
+              },
+            },
+          },
+          2,
+        ),
+        step("send_link:book#1", "step", { ok: true, messageId: "m2" }, 3),
+        step("send_link:book#1:tap", "wait", { event: { payload: {} } }, 4),
+        step("send_location:pin#1", "step", { ok: true, messageId: "m3" }, 5),
+      ],
+      messages: {},
+      status: "completed",
+      error: null,
+      createdAt: t(0),
+      finishedAt: t(6),
+    });
+    assert.deepEqual(
+      history.map((h) => h.text),
+      [
+        "Started: Message “Hi”",
+        "Asked for their location “Where should we pick you up?”",
+        "Shared a location “Marina Mall”",
+        "Sent “Pickup at {{answers.pickup}}. Book here:” with the button “Book now”",
+        "Tapped “Book now”",
+        "Sent the location “Lumen Marina”",
+        "Finished",
       ],
     );
   });

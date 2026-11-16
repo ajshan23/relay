@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type AskLocationConfig,
   type AskQuestionConfig,
   type AutomationDefinition,
   type ConditionRule,
@@ -29,6 +30,7 @@ import { Textarea } from "@relay/ui/ui/textarea";
 import { useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
 import { stepIcons, stepSummary } from "./canvas";
+import { type ChosenLocation, LocationPicker } from "./location-picker";
 import { handlesOf, nodeById } from "./ops";
 import type { EditorOptions } from "./queries";
 import { triggerLabels } from "./words";
@@ -110,6 +112,17 @@ export function StepPanel(p: StepPanelProps) {
               def={p.def}
               options={p.options}
             />
+          ) : node?.type === "send_link" ? (
+            <LinkForm config={config} set={set} def={p.def} options={p.options} />
+          ) : node?.type === "ask_location" ? (
+            <AskLocationForm
+              config={config as unknown as AskLocationConfig}
+              set={set}
+              def={p.def}
+              options={p.options}
+            />
+          ) : node?.type === "send_location" ? (
+            <SendLocationForm config={config} set={set} />
           ) : node?.type === "condition" ? (
             <ConditionForm config={config} set={set} def={p.def} options={p.options} />
           ) : node?.type === "wait" ? (
@@ -375,8 +388,20 @@ type FormProps = {
   options?: EditorOptions;
 };
 
-function SendMessageForm({ config, set, def, options }: FormProps) {
-  const media = config.media as { kind: string; fileId: string; name?: string } | null;
+/** A photo, video or file for a send step: upload one, or remove it. */
+function MediaPicker({
+  media,
+  onChange,
+  label,
+  accept,
+  hint,
+}: {
+  media: { kind: string; fileId: string; name?: string } | null;
+  onChange: (media: { kind: string; fileId: string; name?: string } | null) => void;
+  label: string;
+  accept: string;
+  hint?: string;
+}) {
   const [uploading, setUploading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const upload = async (file: File) => {
@@ -392,13 +417,69 @@ function SendMessageForm({ config, set, def, options }: FormProps) {
           body: form,
         },
       );
-      set({ media: { kind: upload.kind, fileId: upload.fileId, name: upload.fileName } });
+      onChange({ kind: upload.kind, fileId: upload.fileId, name: upload.fileName });
     } catch (err) {
       notify.error("File not added", { description: err instanceof ApiError ? err.message : undefined });
     } finally {
       setUploading(false);
     }
   };
+  return (
+    <Field label={label} optional hint={hint}>
+      {() =>
+        media ? (
+          <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+            <Icon
+              name={media.kind === "image" ? "image" : media.kind === "video" ? "video" : "file"}
+              size="sm"
+            />
+            <span className="min-w-0 flex-1 truncate">{media.name ?? media.kind}</span>
+            <Button variant="ghost" size="xs" onClick={() => onChange(null)}>
+              Remove
+            </Button>
+          </div>
+        ) : (
+          <div>
+            <input
+              ref={input}
+              type="file"
+              className="hidden"
+              accept={accept}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void upload(f);
+                e.target.value = "";
+              }}
+            />
+            <Button variant="outline" size="sm" disabled={uploading} onClick={() => input.current?.click()}>
+              <Icon
+                name={uploading ? "loading" : "attach"}
+                className={uploading ? "animate-spin" : undefined}
+              />
+              {uploading ? "Uploading…" : "Add a file"}
+            </Button>
+          </div>
+        )
+      }
+    </Field>
+  );
+}
+
+const fileTypes = "image/jpeg,image/png,video/mp4,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt";
+
+const waitTimes = [
+  [5, "5 minutes"],
+  [15, "15 minutes"],
+  [60, "1 hour"],
+  [180, "3 hours"],
+  [720, "12 hours"],
+  [1440, "1 day"],
+  [4320, "3 days"],
+  [10080, "7 days"],
+].map(([v, l]) => ({ value: String(v), label: String(l) }));
+
+function SendMessageForm({ config, set, def, options }: FormProps) {
+  const media = config.media as { kind: string; fileId: string; name?: string } | null;
   return (
     <>
       <TextWithVariables
@@ -409,48 +490,236 @@ function SendMessageForm({ config, set, def, options }: FormProps) {
         options={options}
         max={media ? 1024 : 4096}
       />
-      <Field label="Photo, video or file" optional>
-        {() =>
-          media ? (
-            <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-              <Icon
-                name={media.kind === "image" ? "image" : media.kind === "video" ? "video" : "file"}
-                size="sm"
-              />
-              <span className="min-w-0 flex-1 truncate">{media.name ?? media.kind}</span>
-              <Button variant="ghost" size="xs" onClick={() => set({ media: null })}>
-                Remove
-              </Button>
-            </div>
-          ) : (
-            <div>
-              <input
-                ref={input}
-                type="file"
-                className="hidden"
-                accept="image/jpeg,image/png,video/mp4,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void upload(f);
-                  e.target.value = "";
-                }}
-              />
-              <Button variant="outline" size="sm" disabled={uploading} onClick={() => input.current?.click()}>
-                <Icon
-                  name={uploading ? "loading" : "attach"}
-                  className={uploading ? "animate-spin" : undefined}
-                />
-                {uploading ? "Uploading…" : "Add a file"}
-              </Button>
-            </div>
-          )
-        }
-      </Field>
+      <MediaPicker
+        label="Photo, video or file"
+        media={media}
+        onChange={(media) => set({ media })}
+        accept={fileTypes}
+      />
       <WaitForReply config={config} set={set} buttons={[]} />
       <p className="text-xs text-muted-foreground">
         Free-form messages only go out within 24 hours of the customer's last message. Use a template
         otherwise.
       </p>
+    </>
+  );
+}
+
+/** "Send link button": text, the button and its link, an optional file on top, and waiting for a tap. */
+function LinkForm({ config, set, def, options }: FormProps) {
+  const media = config.media as { kind: string; fileId: string; name?: string } | null;
+  const buttonText = String(config.buttonText ?? "");
+  const waiting = !!config.waitForTap;
+  return (
+    <>
+      <TextWithVariables
+        label="Message"
+        value={String(config.text ?? "")}
+        onChange={(text) => set({ text })}
+        def={def}
+        options={options}
+        max={1024}
+      />
+      <Field label="Button text" hint={`${buttonText.length}/20 · What the button says, like “Book now”.`}>
+        <TextInput value={buttonText} maxLength={20} onChange={(e) => set({ buttonText: e.target.value })} />
+      </Field>
+      <TextWithVariables
+        label="Link"
+        hint="Starts with https://. Details you insert are made safe for links."
+        value={String(config.url ?? "")}
+        onChange={(url) => set({ url: url.replace(/\s+/g, "") })}
+        def={def}
+        options={options}
+        rows={2}
+      />
+      <MediaPicker
+        label="Picture, video or file on top"
+        media={media}
+        onChange={(media) => set({ media })}
+        accept="image/jpeg,image/png,video/mp4,application/pdf"
+      />
+      <Field label="Footer" optional hint="Small grey text under the message.">
+        <TextInput
+          value={String(config.footer ?? "")}
+          maxLength={60}
+          onChange={(e) => set({ footer: e.target.value })}
+        />
+      </Field>
+      <section className="flex flex-col gap-3 rounded-md border p-3">
+        <SwitchRow
+          label="Wait for a tap"
+          description={
+            waiting
+              ? "Takes “Tapped” when they open the link, or “Not tapped” after the time below."
+              : "Off: the automation goes straight on. Taps still show in the run's history."
+          }
+          checked={waiting}
+          onCheckedChange={(waitForTap) => set({ waitForTap, timeoutMinutes: config.timeoutMinutes ?? 1440 })}
+        />
+        {waiting ? (
+          <Field label="Wait up to">
+            <SelectField
+              value={String(config.timeoutMinutes ?? 1440)}
+              onValueChange={(v) => set({ timeoutMinutes: Number(v) })}
+              options={waitTimes}
+            />
+          </Field>
+        ) : null}
+      </section>
+      <p className="text-xs text-muted-foreground">
+        The button opens a short Relay link that counts the tap and goes straight on to your page.
+      </p>
+    </>
+  );
+}
+
+/** "Ask for location": the question, where the pin is saved, and what a typed answer does. */
+function AskLocationForm({
+  config,
+  set,
+  def,
+  options,
+}: Omit<FormProps, "config"> & { config: AskLocationConfig }) {
+  const name = config.saveAs || "location";
+  return (
+    <>
+      <TextWithVariables
+        label="Question"
+        hint="WhatsApp shows a “Send location” button under it."
+        value={config.text}
+        onChange={(text) => set({ text })}
+        def={def}
+        options={options}
+        max={1024}
+      />
+      <Field
+        label="Save the location as"
+        hint={`{{answers.${name}}} is the address; {{answers.${name}.map_link}} opens it in Maps.`}
+      >
+        <TextInput
+          value={config.saveAs}
+          onChange={(e) =>
+            set({
+              saveAs: e.target.value
+                .toLowerCase()
+                .replace(/[^a-z0-9_]/g, "_")
+                .slice(0, 40),
+            })
+          }
+        />
+      </Field>
+      <section className="rounded-md border p-3">
+        <SwitchRow
+          label="Also accept a typed address"
+          description={
+            config.acceptTyped
+              ? "A typed address counts as their answer (saved without a map pin)."
+              : "Only a shared pin counts. Typed text gets the message below, then “Didn't share”."
+          }
+          checked={config.acceptTyped}
+          onCheckedChange={(acceptTyped) => set({ acceptTyped })}
+        />
+      </section>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Ask again" hint="Times, when they don't share it.">
+          <SelectField
+            value={String(config.retries)}
+            onValueChange={(v) => set({ retries: Number(v) })}
+            options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `${n}×` }))}
+          />
+        </Field>
+        <Field label="Wait for a reply" hint="Then “No reply”.">
+          <SelectField
+            value={String(config.timeoutMinutes)}
+            onValueChange={(v) => set({ timeoutMinutes: Number(v) })}
+            options={waitTimes}
+          />
+        </Field>
+      </div>
+      <TextWithVariables
+        label="When they don't share it"
+        value={config.retryText}
+        onChange={(retryText) => set({ retryText })}
+        def={def}
+        options={options}
+        rows={2}
+      />
+    </>
+  );
+}
+
+/** "Send location": the pin, chosen on a map, with its name and address. */
+function SendLocationForm({ config, set }: Pick<FormProps, "config" | "set">) {
+  const [picking, setPicking] = useState(false);
+  const latitude = Number(config.latitude ?? 0);
+  const longitude = Number(config.longitude ?? 0);
+  const chosen = !(latitude === 0 && longitude === 0);
+  const value: ChosenLocation | null = chosen
+    ? { latitude, longitude, name: String(config.name ?? ""), address: String(config.address ?? "") }
+    : null;
+  return (
+    <>
+      <Field label="Location">
+        {() =>
+          chosen ? (
+            <div className="flex items-start gap-3 rounded-md border px-3 py-2.5">
+              <Icon name="location" size="sm" className="mt-0.5 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{value?.name || "Pin without a name"}</p>
+                {value?.address ? (
+                  <p className="line-clamp-2 text-xs text-muted-foreground">{value.address}</p>
+                ) : null}
+                <a
+                  href={`https://www.google.com/maps?q=${latitude},${longitude}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums underline-offset-2 hover:underline"
+                >
+                  {latitude}, {longitude}
+                  <Icon name="external" size="xs" />
+                </a>
+              </div>
+              <Button variant="outline" size="xs" onClick={() => setPicking(true)}>
+                Change
+              </Button>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
+              <Icon name="location" />
+              Choose on map
+            </Button>
+          )
+        }
+      </Field>
+      {chosen ? (
+        <>
+          <Field label="Name" optional hint="Shown in bold on the pin.">
+            <TextInput
+              value={String(config.name ?? "")}
+              maxLength={100}
+              onChange={(e) => set({ name: e.target.value })}
+            />
+          </Field>
+          <Field label="Address" optional>
+            <TextInput
+              value={String(config.address ?? "")}
+              maxLength={300}
+              onChange={(e) => set({ address: e.target.value })}
+            />
+          </Field>
+        </>
+      ) : null}
+      <p className="text-xs text-muted-foreground">
+        They get a map pin they can open in their maps app for directions.
+      </p>
+      <LocationPicker
+        open={picking}
+        onOpenChange={setPicking}
+        value={value}
+        onChoose={(l) =>
+          set({ latitude: l.latitude, longitude: l.longitude, name: l.name, address: l.address })
+        }
+      />
     </>
   );
 }
@@ -632,16 +901,7 @@ function AskForm({ config, set, def, options }: Omit<FormProps, "config"> & { co
           <SelectField
             value={String(config.timeoutMinutes)}
             onValueChange={(v) => set({ timeoutMinutes: Number(v) })}
-            options={[
-              [5, "5 minutes"],
-              [15, "15 minutes"],
-              [60, "1 hour"],
-              [180, "3 hours"],
-              [720, "12 hours"],
-              [1440, "1 day"],
-              [4320, "3 days"],
-              [10080, "7 days"],
-            ].map(([v, l]) => ({ value: String(v), label: String(l) }))}
+            options={waitTimes}
           />
         </Field>
       </div>
@@ -690,16 +950,7 @@ function WaitForReply({
             <SelectField
               value={String(config.timeoutMinutes ?? 1440)}
               onValueChange={(v) => set({ timeoutMinutes: Number(v) })}
-              options={[
-                [5, "5 minutes"],
-                [15, "15 minutes"],
-                [60, "1 hour"],
-                [180, "3 hours"],
-                [720, "12 hours"],
-                [1440, "1 day"],
-                [4320, "3 days"],
-                [10080, "7 days"],
-              ].map(([v, l]) => ({ value: String(v), label: String(l) }))}
+              options={waitTimes}
             />
           </Field>
           <Field label="Save the reply as" optional>
@@ -729,7 +980,12 @@ const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function ConditionForm({ config, set, def, options }: FormProps) {
   const rules = (config.rules ?? []) as ConditionRule[];
   const answers = def.nodes
-    .filter((n) => n.type === "ask_question" || (n.config as { waitForReply?: boolean }).waitForReply)
+    .filter(
+      (n) =>
+        n.type === "ask_question" ||
+        n.type === "ask_location" ||
+        (n.config as { waitForReply?: boolean }).waitForReply,
+    )
     .map((n) => String((n.config as { saveAs?: string }).saveAs ?? ""))
     .filter(Boolean);
   const update = (i: number, rule: ConditionRule) =>
@@ -1014,9 +1270,25 @@ function TextWithVariables({
     });
   };
   const answers = def.nodes
-    .filter((n) => n.type === "ask_question" || (n.config as { waitForReply?: boolean }).waitForReply)
-    .map((n) => String((n.config as { saveAs?: string }).saveAs ?? ""))
-    .filter(Boolean);
+    .filter(
+      (n) =>
+        n.type === "ask_question" ||
+        n.type === "ask_location" ||
+        (n.config as { waitForReply?: boolean }).waitForReply,
+    )
+    .flatMap((n) => {
+      const name = String((n.config as { saveAs?: string }).saveAs ?? "");
+      if (!name) return [];
+      // A shared location also has parts: its map link, coordinates, name and address.
+      if (n.type === "ask_location")
+        return [
+          { path: name, label: `${name} (address)` },
+          { path: `${name}.map_link`, label: `${name}: map link` },
+          { path: `${name}.latitude`, label: `${name}: latitude` },
+          { path: `${name}.longitude`, label: `${name}: longitude` },
+        ];
+      return [{ path: name, label: name }];
+    });
   return (
     <Field label={label} hint={hint} optional={optional}>
       {(control) => (
@@ -1055,8 +1327,8 @@ function TextWithVariables({
                     <DropdownMenuSeparator />
                     <DropdownMenuLabel>Answers</DropdownMenuLabel>
                     {answers.map((a) => (
-                      <DropdownMenuItem key={a} onSelect={() => insert(`{{answers.${a}}}`)}>
-                        {a}
+                      <DropdownMenuItem key={a.path} onSelect={() => insert(`{{answers.${a.path}}}`)}>
+                        {a.label}
                       </DropdownMenuItem>
                     ))}
                   </>

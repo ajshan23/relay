@@ -1,6 +1,8 @@
+import { randomBytes } from "node:crypto";
 import type { ChannelType } from "@relay/channels";
 import { newId, type Publisher, publishInboxEvent, type SignalJob } from "@relay/core";
 import {
+  type AskLocationConfig,
   type AskQuestionConfig,
   type AutomationDefinition,
   type AutomationNode,
@@ -12,6 +14,8 @@ import {
   type ConditionConfig,
   type InboundEventPayload,
   LIMITS,
+  type LinkTappedPayload,
+  type LocationAnswer,
   migrateDefinition,
   nodeSpec,
   optionFromReply,
@@ -20,6 +24,8 @@ import {
   parseStepKey,
   pickAutomation,
   resolveText,
+  type SendLinkConfig,
+  type SendLocationConfig,
   type SendMessageConfig,
   type SendTemplateConfig,
   type TapTarget,
@@ -52,7 +58,7 @@ import {
 import type { Queue } from "bullmq";
 import type { InboundHook } from "../channels/ingest";
 import { channels } from "../channels/registry";
-import { nextTimeOfDay, readAnswer, withinBusinessHours } from "./helpers";
+import { nextTimeOfDay, readAnswer, readLocation, withinBusinessHours } from "./helpers";
 
 /*
  * Automations on Kairos.
@@ -91,6 +97,7 @@ export function createAutomations({
   databaseUrl,
   listenUrl,
   signals,
+  linkBase = "http://localhost:3200",
   canType = (type) => {
     const adapter = channels().get(type as ChannelType);
     return !!adapter?.markRead && !!adapter.capabilities.readReceipts;
@@ -106,6 +113,8 @@ export function createAutomations({
   signals?: Pick<Queue, "add">;
   /** Whether a channel type can show "typing…" (WhatsApp can). */
   canType?: (channelType: string) => boolean;
+  /** Where tracked links live: the web app's address (WEB_URL), which forwards /l/<code> to the API. */
+  linkBase?: string;
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
 
@@ -477,7 +486,9 @@ export function createAutomations({
     },
   );
 
-  type RunMemory = { answers: Record<string, string>; path: string[] };
+  /** Answers by name: text, or a shared location (which reads as its text in {{answers.x}}). */
+  type RunMemory = { answers: Record<string, string | LocationAnswer>; path: string[] };
+  const answerText = (v: string | LocationAnswer | undefined) => (typeof v === "object" ? v.text : (v ?? ""));
   /** An exit, the end (null), or a jump to where an older button of this automation leads. */
   type Exit = string | null | { jump: TapTarget };
 
@@ -513,8 +524,69 @@ export function createAutomations({
           ? waitForReply(ctx, input, def, memory, name, stepKey, t, t.replyButtons)
           : "next";
       }
-      case "ask_question":
-        return ask(ctx, input, def, memory, name, stepKey, config as AskQuestionConfig);
+      case "ask_question": {
+        const q = config as AskQuestionConfig;
+        return ask(
+          ctx,
+          input,
+          def,
+          memory,
+          name,
+          stepKey,
+          q,
+          (sendKey, text, questionKey) => sendQuestion(input, memory, sendKey, q, text, questionKey),
+          (p) => readAnswer(q, p, (id) => optionFromReply(stepKey, id)),
+        );
+      }
+      case "ask_location": {
+        const q = config as AskLocationConfig;
+        return ask(
+          ctx,
+          input,
+          def,
+          memory,
+          name,
+          stepKey,
+          q,
+          async (sendKey, text) =>
+            queueSend(input, sendKey, "interactive", {
+              type: "interactive",
+              kind: "location_request",
+              body: resolveText(text, await scopeOf(input, memory)),
+            }),
+          (p) => readLocation(q, p),
+        );
+      }
+      case "send_link": {
+        const l = config as SendLinkConfig;
+        await typeFirst(ctx, input, name, l.text);
+        const r = await ctx.step(name, () => sendLink(input, memory, ctx.runId, stepKey, l));
+        if (!r.ok) return "failed";
+        if (!l.waitForTap) return "next";
+        const tap = await ctx.waitForEvent<LinkTappedPayload>(`${name}:tap`, {
+          key: automationEvents.linkTapped,
+          scope: stepKey,
+          timeoutMs: l.timeoutMinutes * 60_000,
+          // A tap that came between the send and this wait counts too.
+          lookbackFrom: name,
+        });
+        return tap.timedOut ? "not_tapped" : "tapped";
+      }
+      case "send_location": {
+        const l = config as SendLocationConfig;
+        await typeFirst(ctx, input, name, l.name || l.address);
+        const r = await ctx.step(name, () =>
+          queueSend(input, stepKey, "location", {
+            type: "location",
+            latitude: l.latitude,
+            longitude: l.longitude,
+            name: l.name || null,
+            address: l.address || null,
+            url: null,
+          }),
+        );
+        return r.ok ? "next" : "failed";
+      }
       case "condition": {
         const yes = await ctx.step(name, () => evaluate(input, memory, config as ConditionConfig));
         return yes ? "yes" : "no";
@@ -636,7 +708,10 @@ export function createAutomations({
     return handle;
   }
 
-  /** Ask, then wait for an answer that fits; re-ask up to `retries` times, all within one deadline. */
+  /**
+   * Ask, then wait for an answer that fits; re-ask up to `retries` times, all within one deadline.
+   * `send` sends the question (or the re-ask) under a key; `read` says whether a reply answers it.
+   */
   async function ask(
     ctx: WorkflowContext,
     input: AutomationRunInput,
@@ -644,10 +719,12 @@ export function createAutomations({
     memory: RunMemory,
     name: string,
     stepKey: string,
-    q: AskQuestionConfig,
+    q: { text: string; retryText: string; retries: number; timeoutMinutes: number; saveAs: string },
+    send: (sendKey: string, text: string, questionKey: string) => Promise<Sent>,
+    read: (p: InboundEventPayload) => { handle: string; value: string | LocationAnswer } | null,
   ): Promise<Exit> {
     await typeFirst(ctx, input, name, q.text);
-    const sent = await ctx.step(`${name}:ask`, () => sendQuestion(input, memory, stepKey, q, q.text));
+    const sent = await ctx.step(`${name}:ask`, () => send(stepKey, q.text, stepKey));
     if (!sent.ok) return "failed";
     const deadline = await ctx.step(`${name}:deadline`, () => Date.now() + q.timeoutMinutes * 60_000);
     for (let attempt = 0; ; attempt++) {
@@ -659,7 +736,7 @@ export function createAutomations({
         lookbackFrom: input.typing ? (attempt ? `${name}:re${attempt}:typing` : `${name}:typing`) : undefined,
       });
       if (reply.timedOut) return "no_reply";
-      const answer = readAnswer(q, reply.event.payload, (id) => optionFromReply(stepKey, id));
+      const answer = read(reply.event.payload);
       if (answer) {
         memory.answers[q.saveAs] = answer.value;
         return answer.handle;
@@ -673,7 +750,7 @@ export function createAutomations({
       if (attempt >= q.retries) return "invalid";
       await typeFirst(ctx, input, `${name}:re${attempt + 1}`, q.retryText);
       const again = await ctx.step(`${name}:reask${attempt + 1}`, () =>
-        sendQuestion(input, memory, `${stepKey}:re${attempt + 1}`, q, q.retryText, stepKey),
+        send(`${stepKey}:re${attempt + 1}`, q.retryText, stepKey),
       );
       if (!again.ok) return "failed";
     }
@@ -841,6 +918,42 @@ export function createAutomations({
     return { ok: true, messageId: message.id };
   }
 
+  /**
+   * A stored upload as a new attachment row for one send (the outbox hands it to the channel). Null
+   * when the file is gone.
+   */
+  async function attachStoredFile(
+    input: AutomationRunInput,
+    media: { kind: string; fileId: string; name?: string },
+  ) {
+    const [file] = await db
+      .select()
+      .from(schema.storedFile)
+      .where(
+        and(
+          eq(schema.storedFile.id, media.fileId),
+          eq(schema.storedFile.organizationId, input.organizationId),
+        ),
+      )
+      .limit(1);
+    if (!file) return null;
+    const attachmentId = newId("attachment");
+    await db.insert(schema.attachment).values({
+      id: attachmentId,
+      organizationId: input.organizationId,
+      kind: media.kind,
+      mimeType: file.mimeType,
+      fileName: media.name ?? null,
+      sizeBytes: file.sizeBytes,
+      sha256: file.sha256,
+      fileId: file.id,
+      storageKey: file.storageKey,
+      // Already in our storage: the chat shows it straight away (nothing to download from Meta).
+      status: "stored",
+    });
+    return { attachmentId, file };
+  }
+
   async function sendMessage(
     input: AutomationRunInput,
     memory: RunMemory,
@@ -849,32 +962,10 @@ export function createAutomations({
   ): Promise<Sent> {
     const text = resolveText(m.text, await scopeOf(input, memory));
     if (!m.media) return queueSend(input, stepKey, "text", { type: "text", text });
-    const [file] = await db
-      .select()
-      .from(schema.storedFile)
-      .where(
-        and(
-          eq(schema.storedFile.id, m.media.fileId),
-          eq(schema.storedFile.organizationId, input.organizationId),
-        ),
-      )
-      .limit(1);
-    if (!file) return { ok: false, reason: "file_missing" };
     // Each send gets its own attachment row pointing at the stored file; the outbox uploads it.
-    const attachmentId = newId("attachment");
-    await db.insert(schema.attachment).values({
-      id: attachmentId,
-      organizationId: input.organizationId,
-      kind: m.media.kind,
-      mimeType: file.mimeType,
-      fileName: m.media.name ?? null,
-      sizeBytes: file.sizeBytes,
-      sha256: file.sha256,
-      fileId: file.id,
-      storageKey: file.storageKey,
-      // Already in our storage: the chat shows it straight away (nothing to download from Meta).
-      status: "stored",
-    });
+    const stored = await attachStoredFile(input, m.media);
+    if (!stored) return { ok: false, reason: "file_missing" };
+    const { attachmentId, file } = stored;
     return queueSend(
       input,
       stepKey,
@@ -892,6 +983,68 @@ export function createAutomations({
       },
       attachmentId,
     );
+  }
+
+  /**
+   * A message with a link button. The button opens our tracked link (one per send, made once even if
+   * the step is retried), which counts the tap and forwards to the page.
+   */
+  async function sendLink(
+    input: AutomationRunInput,
+    memory: RunMemory,
+    runId: string,
+    stepKey: string,
+    l: SendLinkConfig,
+  ): Promise<Sent> {
+    const scope = await scopeOf(input, memory);
+    // Values are URL-encoded so they can't break the link, except a value that is a whole link itself.
+    const url = resolveText(l.url, scope, (v) =>
+      /^https?:\/\//i.test(v.trim()) ? v.trim() : encodeURIComponent(v),
+    ).trim();
+    if (!/^https:\/\/[^\s/]+\.[^\s]+$/i.test(url)) return { ok: false, reason: "bad_link" };
+    await db
+      .insert(schema.trackedLink)
+      .values({
+        id: newId("trackedLink"),
+        code: randomBytes(9).toString("base64url"),
+        organizationId: input.organizationId,
+        automationId: input.automationId,
+        runId,
+        stepKey,
+        url,
+      })
+      .onConflictDoNothing({ target: schema.trackedLink.stepKey });
+    const [link] = await db
+      .select({ code: schema.trackedLink.code })
+      .from(schema.trackedLink)
+      .where(eq(schema.trackedLink.stepKey, stepKey))
+      .limit(1);
+    if (!link) return { ok: false, reason: "link_missing" };
+    const stored = l.media ? await attachStoredFile(input, l.media) : null;
+    if (l.media && !stored) return { ok: false, reason: "file_missing" };
+    const footer = resolveText(l.footer, scope).trim();
+    const sent = await queueSend(
+      input,
+      stepKey,
+      "interactive",
+      {
+        type: "interactive",
+        kind: "cta_url",
+        body: resolveText(l.text, scope),
+        button: { text: l.buttonText, url: `${linkBase.replace(/\/+$/, "")}/l/${link.code}` },
+        /** Where the button really goes, for the inbox (the button itself opens the tracked link). */
+        linkUrl: url,
+        footer: footer || null,
+        header: l.media && stored ? { kind: l.media.kind, attachmentId: stored.attachmentId } : null,
+      },
+      stored?.attachmentId,
+    );
+    if (sent.ok)
+      await db
+        .update(schema.trackedLink)
+        .set({ messageId: sent.messageId })
+        .where(eq(schema.trackedLink.stepKey, stepKey));
+    return sent;
   }
 
   async function sendTemplate(
@@ -1022,7 +1175,7 @@ export function createAutomations({
       } else {
         const value =
           rule.kind === "answer"
-            ? (memory.answers[rule.name] ?? "")
+            ? answerText(memory.answers[rule.name])
             : resolveText(`{{${rule.name}}}`, await scopeOf(input, memory));
         results.push(compare(value, rule.op, rule.value ?? ""));
       }

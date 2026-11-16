@@ -1,5 +1,5 @@
 import type { AutomationDefinition } from "./definition";
-import { nodeSpec, type TapTarget } from "./nodes";
+import { locationAnswer, nodeSpec, type TapTarget } from "./nodes";
 import type { AutomationRunInput } from "./runtime";
 
 /*
@@ -45,7 +45,7 @@ const quote = (s: string, max = 80) => {
 /** "send_message:book#2:reply" → type, node, visit, part. */
 function parseName(name: string) {
   const m = /^([a-z_]+):([^#:]+)#(\d+)(?::(.+))?$/.exec(name);
-  return m ? { type: m[1] ?? "", node: m[2] ?? "", part: m[4] ?? "" } : null;
+  return m ? { type: m[1] ?? "", node: m[2] ?? "", visit: m[3] ?? "", part: m[4] ?? "" } : null;
 }
 
 /** What a run's trigger was, in a few words: Keyword “hi”, Earlier button “Talk to someone”… */
@@ -106,6 +106,8 @@ export function describeRun(o: {
   createdAt: string | Date;
   finishedAt: string | Date | null;
   names?: { user?: string | null; tag?: string | null };
+  /** First taps on this run's link buttons, by "node#visit". */
+  linkTaps?: Record<string, string | Date>;
 }): HistoryEntry[] {
   const { def, input, steps, messages } = o;
   const next = new Map(def.edges.map((e) => [`${e.source}:${e.sourceHandle}`, e.target]));
@@ -165,9 +167,8 @@ export function describeRun(o: {
 
     // Sends: the message itself, quoted from what was really sent.
     const isSend =
-      (type === "send_message" && !part) ||
-      (type === "send_template" && !part) ||
-      (type === "ask_question" && (part === "ask" || part.startsWith("reask")));
+      (["send_message", "send_template", "send_link", "send_location"].includes(type) && !part) ||
+      ((type === "ask_question" || type === "ask_location") && (part === "ask" || part.startsWith("reask")));
     if (isSend) {
       const bad = failed(result);
       if (bad) {
@@ -175,22 +176,69 @@ export function describeRun(o: {
         return;
       }
       const preview = messages[String(result?.messageId ?? "")];
-      const fallback = String((part.startsWith("reask") ? cfg.retryText : cfg.text) ?? "");
+      const fallback = String(
+        (part.startsWith("reask")
+          ? cfg.retryText
+          : type === "send_location"
+            ? cfg.name || cfg.address || "a pin"
+            : cfg.text) ?? "",
+      );
       const m = messageText(preview, fallback);
+      if (type === "send_location") {
+        out.push({ at, tone: "normal", text: `Sent the location ${quote(m.text)}`, nodeId: node });
+        return;
+      }
       const verb =
         type === "send_template"
           ? "Sent the template"
-          : type === "ask_question"
+          : type === "ask_question" || type === "ask_location"
             ? part.startsWith("reask")
               ? "Asked again"
-              : "Asked"
+              : type === "ask_location"
+                ? "Asked for their location"
+                : "Asked"
             : "Sent";
+      const said = m.kind === "media" ? `${verb} ${m.text}` : `${verb} ${quote(m.text)}`;
       out.push({
         at,
         tone: "normal",
-        text: m.kind === "media" ? `${verb} ${m.text}` : `${verb} ${quote(m.text)}`,
+        text:
+          type === "send_link" ? `${said} with the button ${quote(String(cfg.buttonText ?? ""), 24)}` : said,
         nodeId: node,
       });
+      // A tap on the link when the step didn't wait for it (a waiting step tells it below).
+      const tapped = type === "send_link" && !cfg.waitForTap ? o.linkTaps?.[`${node}#${p.visit}`] : undefined;
+      if (tapped)
+        out.push({
+          at: iso(tapped),
+          tone: "customer",
+          text: `Tapped ${quote(String(cfg.buttonText ?? ""), 24)}`,
+          nodeId: node,
+        });
+      return;
+    }
+
+    // Waiting for a tap on a link button.
+    if (s.kind === "wait" && type === "send_link") {
+      const button = quote(String(cfg.buttonText ?? ""), 24);
+      if (s.status === "waiting") {
+        out.push({
+          at: iso(s.startedAt),
+          tone: "muted",
+          text: ended
+            ? `Was waiting for a tap on ${button} when it ${o.status === "cancelled" ? "was stopped" : "ended"}`
+            : `Waiting for a tap on ${button}`,
+          nodeId: node,
+          ...(s.wakeAt && !ended ? { until: iso(s.wakeAt) ?? undefined } : {}),
+        });
+        return;
+      }
+      const r = result as { timedOut?: boolean } | null;
+      out.push(
+        r?.timedOut
+          ? { at, tone: "warn", text: `Didn't tap ${button} in time`, nodeId: node }
+          : { at, tone: "customer", text: `Tapped ${button}`, nodeId: node },
+      );
       return;
     }
 
@@ -209,12 +257,16 @@ export function describeRun(o: {
         });
         return;
       }
-      const r = result as { timedOut?: boolean; event?: { payload?: { text?: string } } } | null;
+      const r = result as {
+        timedOut?: boolean;
+        event?: { payload?: { text?: string; location?: Parameters<typeof locationAnswer>[0] } };
+      } | null;
       if (r?.timedOut) {
         out.push({ at, tone: "warn", text: "No reply in time", nodeId: node });
         return;
       }
-      const said = r?.event?.payload?.text ?? "";
+      const pin = r?.event?.payload?.location;
+      const said = pin ? locationAnswer(pin).text : (r?.event?.payload?.text ?? "");
       // What happened next with this answer: asked again (it didn't fit), or a jump (older button).
       const after = steps[i + 1] ? parseName(steps[i + 1]?.name ?? "") : null;
       const sameNode = after?.node === node;
@@ -230,7 +282,9 @@ export function describeRun(o: {
         tone: retried ? "warn" : "customer",
         text: retried
           ? `Replied ${quote(said || "(nothing)")}, which didn't fit`
-          : `Replied ${quote(said || "(nothing)")}`,
+          : pin
+            ? `Shared a location ${quote(said)}`
+            : `Replied ${quote(said || "(nothing)")}`,
         nodeId: node,
         ...(saveAs && !retried ? { saved: { name: saveAs, value: said } } : {}),
       });

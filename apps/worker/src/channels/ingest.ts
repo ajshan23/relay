@@ -506,6 +506,15 @@ export function createIngest(
                 : null,
           adId: adIdOf(event.context.adReferral),
           optOut: optOutReply(said),
+          location:
+            event.content.type === "location"
+              ? {
+                  latitude: event.content.latitude,
+                  longitude: event.content.longitude,
+                  name: event.content.name,
+                  address: event.content.address,
+                }
+              : null,
         });
       }
 

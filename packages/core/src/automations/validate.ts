@@ -1,5 +1,13 @@
 import { type AutomationDefinition, TRIGGER_NODE_ID } from "./definition";
-import { type AskQuestionConfig, askLayout, type ConditionConfig, nodeSpec, type WaitConfig } from "./nodes";
+import {
+  type AskLocationConfig,
+  type AskQuestionConfig,
+  askLayout,
+  type ConditionConfig,
+  type LocationAnswer,
+  nodeSpec,
+  type WaitConfig,
+} from "./nodes";
 import { variableRoots, variablesUsed } from "./variables";
 
 /*
@@ -125,6 +133,7 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
 
   // Exits that must be connected, and step-specific rules
   const saved = new Map<string, string>(); // answer name → node id
+  const locations = new Set<string>(); // answers that are shared locations (they have parts)
   for (const n of def.nodes) {
     const c = configs.get(n.id);
     if (!c) continue;
@@ -166,6 +175,35 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
           n.id,
         );
       saved.set(q.saveAs, n.id);
+    }
+    if (n.type === "ask_location") {
+      const q = c as AskLocationConfig;
+      if (!wired.has("no_reply"))
+        err(
+          "NO_REPLY_PATH",
+          "Connect “No reply”: what happens if they never answer? (Use an End step to stop.)",
+          n.id,
+        );
+      if (!wired.has("invalid"))
+        err("INVALID_PATH", "Connect “Didn't share”: what happens after the last retry?", n.id);
+      if (!wired.has("next")) warn("ANSWER_UNWIRED", "Nothing happens after they share it.", n.id);
+      if (saved.has(q.saveAs) && saved.get(q.saveAs) !== n.id)
+        warn(
+          "ANSWER_NAME_REUSED",
+          `Another step also saves an answer as “${q.saveAs}”; the later one wins.`,
+          n.id,
+        );
+      saved.set(q.saveAs, n.id);
+      locations.add(q.saveAs);
+    }
+    if (n.type === "send_link" && c.waitForTap) {
+      if (!wired.has("not_tapped"))
+        err(
+          "NO_TAP_PATH",
+          "Connect “Not tapped”: what happens if they never open the link? (Use an End step to stop.)",
+          n.id,
+        );
+      if (!wired.has("tapped")) warn("TAP_UNWIRED", "Nothing happens after they tap the link.", n.id);
     }
     if ((n.type === "send_message" || n.type === "send_template") && c.waitForReply) {
       if (!wired.has("no_reply"))
@@ -243,7 +281,17 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
         err("VARIABLE_UNKNOWN", `{{${path}}} isn't a variable Relay knows.`, n.id);
       else if (root === "answers" && (!key || !saved.has(key)))
         err("ANSWER_MISSING", `No question saves an answer called “${key ?? ""}”.`, n.id);
-      else if (root === "contact" && key && !coreContactVars.has(key) && ctx.fields && !ctx.fields.has(key))
+      else if (root === "answers" && key && path.split(".").length > 2) {
+        const part = path.split(".").slice(2).join(".");
+        if (!locations.has(key))
+          err("ANSWER_PART", `{{${path}}}: only a shared location has parts like .${part}.`, n.id);
+        else if (!locationParts.includes(part))
+          err(
+            "ANSWER_PART",
+            `{{${path}}}: a location has ${locationParts.map((p) => `.${p}`).join(", ")}.`,
+            n.id,
+          );
+      } else if (root === "contact" && key && !coreContactVars.has(key) && ctx.fields && !ctx.fields.has(key))
         warn("FIELD_MISSING", `The contact field “${key}” doesn't exist; {{${path}}} will be empty.`, n.id);
     }
   }
@@ -251,7 +299,12 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
   // A loop must pause somewhere (a question or a wait), or one message would spin it to the limit.
   const pauses = (id: string) => {
     const t = nodes.get(id)?.type;
-    return t === "ask_question" || t === "wait";
+    return (
+      t === "ask_question" ||
+      t === "ask_location" ||
+      t === "wait" ||
+      (t === "send_link" && !!configs.get(id)?.waitForTap)
+    );
   };
   const state = new Map<string, 1 | 2>();
   const visit = (id: string): string | null => {
@@ -285,10 +338,21 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
   return issues;
 }
 
+/** The parts of a shared location answer: {{answers.x.map_link}}… */
+const locationParts: readonly string[] = [
+  "latitude",
+  "longitude",
+  "name",
+  "address",
+  "map_link",
+] satisfies (keyof LocationAnswer)[];
+
 /** Every text a step sends or saves, for the variable check. */
 function textsOf(type: string, c: Record<string, unknown>): string[] {
   if (type === "send_message" || type === "add_note") return [String(c.text ?? "")];
-  if (type === "ask_question") return [String(c.text ?? ""), String(c.retryText ?? "")];
+  if (type === "ask_question" || type === "ask_location")
+    return [String(c.text ?? ""), String(c.retryText ?? "")];
+  if (type === "send_link") return [String(c.text ?? ""), String(c.url ?? ""), String(c.footer ?? "")];
   if (type === "send_template") return Object.values((c.values ?? {}) as Record<string, string>);
   if (type === "set_field") return [String(c.value ?? "")];
   if (type === "handoff") return [String(c.note ?? "")];
@@ -326,9 +390,12 @@ function windowRisks(
       if (type === "wait" && c) {
         const w = c as WaitConfig;
         next += w.mode === "delay" ? toHours(w.amount, w.unit) : 24;
-      } else if (type === "ask_question" && c) {
-        if (handle === "no_reply") next += (c as AskQuestionConfig).timeoutMinutes / 60;
+      } else if ((type === "ask_question" || type === "ask_location") && c) {
+        if (handle === "no_reply") next += Number(c.timeoutMinutes ?? 0) / 60;
         else if (handle !== "failed") next = 0;
+      } else if (type === "send_link" && c?.waitForTap) {
+        // A tap doesn't reopen the window (it isn't a message), and can come any time before the timeout.
+        if (handle !== "failed") next += Number(c.timeoutMinutes ?? 0) / 60;
       } else if ((type === "send_message" || type === "send_template") && c?.waitForReply) {
         // They replied: the window is open again. No reply: the wait adds its time.
         if (handle === "no_reply") next += Number(c.timeoutMinutes ?? 0) / 60;

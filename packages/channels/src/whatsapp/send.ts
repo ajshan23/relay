@@ -33,6 +33,14 @@ export function buildWhatsAppSendBody(to: Recipient, message: OutboundMessage, o
   } else if (message.type === "interactive") {
     body.type = "interactive";
     body.interactive = buildWhatsAppInteractive(message);
+  } else if (message.type === "location") {
+    body.type = "location";
+    body.location = {
+      latitude: message.latitude,
+      longitude: message.longitude,
+      ...(message.name ? { name: message.name } : {}),
+      ...(message.address ? { address: message.address } : {}),
+    };
   } else {
     body.type = message.type;
     body[message.type] = {
@@ -102,12 +110,38 @@ export async function subscribeWhatsAppAccount(graph: GraphClient, wabaId: strin
 
 /**
  * Reply buttons (at most 3, titles ≤ 20) or a list (at most 10 rows, titles ≤ 24, descriptions ≤ 72,
- * button ≤ 20). Longer titles are cut rather than refused: Meta rejects the whole message otherwise.
+ * button ≤ 20); a link button (text ≤ 20); or a location request. Longer texts are cut rather than
+ * refused: Meta rejects the whole message otherwise.
  */
 export function buildWhatsAppInteractive(message: Extract<OutboundMessage, { type: "interactive" }>) {
   const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
   const body = { text: cut(message.body, 1024) };
+  if (message.kind === "location_request")
+    return { type: "location_request_message", body, action: { name: "send_location" } };
   const footer = message.footer ? { footer: { text: cut(message.footer, 60) } } : {};
+  if (message.kind === "cta_url") {
+    const h = message.headerMedia;
+    return {
+      type: "cta_url",
+      ...(h
+        ? {
+            header: {
+              type: h.kind,
+              [h.kind]: {
+                id: h.providerMediaId,
+                ...(h.kind === "document" && h.fileName ? { filename: h.fileName } : {}),
+              },
+            },
+          }
+        : {}),
+      body,
+      ...footer,
+      action: {
+        name: "cta_url",
+        parameters: { display_text: cut(message.button.text, 20), url: message.button.url },
+      },
+    };
+  }
   if (message.kind === "buttons")
     return {
       type: "button",

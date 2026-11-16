@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import {
   type AutomationDefinition,
+  automationEvents,
   emptyDefinition,
   type InboundEventPayload,
 } from "@relay/core/automations";
-import { createDb, eq, schema, sql } from "@relay/db";
+import { createDb, eq, recordLinkTap, schema, sql, sqlExecutor } from "@relay/db";
 import { createAutomations } from "../src/automations/runtime";
 
 /*
@@ -128,6 +129,64 @@ async function customerSays(
     await automations.onInbound(tx as never, ev);
   });
   return messageId;
+}
+
+/** The customer shares a pin (WhatsApp's "Send location"). */
+async function customerSharesLocation(
+  chat: { contactId: string; conversationId: string },
+  pin: { latitude: number; longitude: number; name: string | null; address: string | null },
+) {
+  const messageId = `msg_t${T}_${++msgSeq}`;
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.message).values({
+      id: messageId,
+      organizationId: ids.org,
+      conversationId: chat.conversationId,
+      channelAccountId: ids.channel,
+      direction: "inbound",
+      senderType: "contact",
+      type: "location",
+      content: { type: "location", ...pin, url: null },
+      status: "received",
+      sentAt: new Date(),
+    });
+    await automations.onInbound(tx as never, {
+      messageId,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      channelAccountId: ids.channel,
+      conversationId: chat.conversationId,
+      contactId: chat.contactId,
+      type: "location",
+      text: "",
+      reply: null,
+      adId: null,
+      optOut: null,
+      location: pin,
+    });
+  });
+}
+
+/** A tap on a tracked link, as GET /l/<code> records it. */
+const tapLink = (code: string) =>
+  recordLinkTap(db, code, async (tx, link) => {
+    await automations.kairos.publish(
+      {
+        tenantId: link.organizationId,
+        key: automationEvents.linkTapped,
+        scope: link.stepKey,
+        payload: { linkId: link.id, at: new Date().toISOString() },
+        dedupeKey: `link:${link.code}`,
+      },
+      { executor: sqlExecutor(tx) },
+    );
+  });
+
+/** Makes a run's open wait time out now (instead of waiting minutes in a test). */
+async function timeOutWait(runId: string) {
+  await db.execute(sql`update kairos.wait set deadline = now() where run_id = ${runId} and status = 'open'`);
+  await db.execute(sql`update kairos.wakeup set wake_at = now() where run_id = ${runId}`);
+  automations.kairos.nudge();
 }
 
 async function botMessages(conversationId: string) {
@@ -935,5 +994,238 @@ describe("automations on Kairos", () => {
     assert.deepEqual((run.output as { path: string[] }).path, ["tpl:btn:2", "no:next"]);
     const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
     assert.equal((note?.content as { text?: string } | undefined)?.text, "Declined (No thanks)");
+  });
+  it("asks for a location, re-asks on text, saves the shared pin and uses its parts", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["pickup"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "where",
+        type: "ask_location",
+        version: 1,
+        config: {
+          text: "Where should we pick you up, {{contact.first_name}}?",
+          saveAs: "pickup",
+          acceptTyped: false,
+          retries: 1,
+          retryText: "Please tap Send location.",
+          timeoutMinutes: 60,
+        },
+      },
+      {
+        id: "ok",
+        type: "add_note",
+        version: 1,
+        config: { text: "Pickup {{answers.pickup}} {{answers.pickup.map_link}}" },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "where" },
+      { id: "2", source: "where", sourceHandle: "next", target: "ok" },
+      { id: "3", source: "where", sourceHandle: "invalid", target: "bye" },
+      { id: "4", source: "where", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("pickup", def);
+    const chat = await newChat();
+    await customerSays(chat, "pickup");
+    const [ask] = await until("the location request", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "interactive");
+      return m.length ? m : null;
+    });
+    assert.deepEqual(
+      {
+        kind: (ask?.content as { kind?: string } | undefined)?.kind,
+        body: (ask?.content as { body?: string } | undefined)?.body,
+      },
+      { kind: "location_request", body: "Where should we pick you up, Asha?" },
+    );
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    // Typed instead of shared: asked again (accepting typed addresses is off).
+    await customerSays(chat, "Near the mall");
+    await until("the re-ask", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "interactive");
+      return m.length === 2 ? m : null;
+    });
+    await customerSharesLocation(chat, {
+      latitude: 25.08,
+      longitude: 55.14,
+      name: "Marina Mall",
+      address: null,
+    });
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["where:next", "ok:next"]);
+    const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
+    assert.equal(
+      (note?.content as { text?: string } | undefined)?.text,
+      "Pickup Marina Mall https://www.google.com/maps?q=25.08,55.14",
+    );
+  });
+
+  it("takes a typed address when the step accepts one, and sends a map pin", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["visit"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "where",
+        type: "ask_location",
+        version: 1,
+        config: { text: "Where are you?", saveAs: "home", acceptTyped: true, retries: 1, timeoutMinutes: 60 },
+      },
+      {
+        id: "pin",
+        type: "send_location",
+        version: 1,
+        config: { latitude: 25.0806, longitude: 55.1403, name: "Lumen Marina", address: "Dubai Marina" },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "where" },
+      { id: "2", source: "where", sourceHandle: "next", target: "pin" },
+      { id: "3", source: "where", sourceHandle: "invalid", target: "bye" },
+      { id: "4", source: "where", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("visit", def);
+    const chat = await newChat();
+    await customerSays(chat, "visit");
+    await until("the run to wait", async () => (await runOf(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, "12 Palm Street");
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual(
+      (run.output as { answers: Record<string, { address?: string }> }).answers.home?.address,
+      "12 Palm Street",
+    );
+    const pin = (await botMessages(chat.conversationId)).find((m) => m.type === "location");
+    assert.deepEqual(pin?.content, {
+      type: "location",
+      latitude: 25.0806,
+      longitude: 55.1403,
+      name: "Lumen Marina",
+      address: "Dubai Marina",
+      url: null,
+      automationId: `${ids.automation}_visit`,
+    });
+  });
+
+  it("sends a link button through a tracked link; the first real tap takes Tapped", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["book"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "link",
+        type: "send_link",
+        version: 1,
+        config: {
+          text: "Pick a time, {{contact.first_name}}",
+          buttonText: "Book now",
+          url: "https://example.com/book?name={{contact.name}}",
+          waitForTap: true,
+          timeoutMinutes: 60,
+        },
+      },
+      { id: "yes", type: "add_note", version: 1, config: { text: "Opened the booking page" } },
+      { id: "no", type: "add_note", version: 1, config: { text: "Never opened it" } },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "link" },
+      { id: "2", source: "link", sourceHandle: "tapped", target: "yes" },
+      { id: "3", source: "link", sourceHandle: "not_tapped", target: "no" },
+    ];
+    await liveAutomation("book", def);
+    const chat = await newChat();
+    await customerSays(chat, "book");
+    const [sent] = await until("the link button", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "interactive");
+      return m.length ? m : null;
+    });
+    const content = sent?.content as {
+      kind?: string;
+      body?: string;
+      button?: { text: string; url: string };
+      linkUrl?: string;
+    };
+    assert.equal(content.kind, "cta_url");
+    assert.equal(content.body, "Pick a time, Asha");
+    assert.equal(content.linkUrl, "https://example.com/book?name=Asha%20Rao");
+    const code = /\/l\/([\w-]+)$/.exec(content.button?.url ?? "")?.[1] ?? "";
+    assert.ok(code.length >= 10, content.button?.url ?? "no link");
+    const [link] = await db.select().from(schema.trackedLink).where(eq(schema.trackedLink.code, code));
+    assert.equal(link?.messageId, sent?.id);
+    assert.equal(link?.url, "https://example.com/book?name=Asha%20Rao");
+    // Tapped (twice): forwards to the page both times, wakes the run once.
+    assert.deepEqual(await tapLink(code), { url: "https://example.com/book?name=Asha%20Rao" });
+    assert.deepEqual(await tapLink(code), { url: "https://example.com/book?name=Asha%20Rao" });
+    assert.equal(await tapLink("nope"), null);
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["link:tapped", "yes:next"]);
+    const [after] = await db.select().from(schema.trackedLink).where(eq(schema.trackedLink.code, code));
+    assert.equal(after?.tapCount, 2);
+  });
+
+  it("takes Not tapped when nobody opens the link in time", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["menu"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    def.nodes = [
+      {
+        id: "link",
+        type: "send_link",
+        version: 1,
+        config: {
+          text: "Our menu",
+          buttonText: "Open",
+          url: "https://example.com/menu",
+          waitForTap: true,
+          timeoutMinutes: 5,
+        },
+      },
+      { id: "no", type: "add_note", version: 1, config: { text: "Never opened it" } },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "link" },
+      { id: "3", source: "link", sourceHandle: "not_tapped", target: "no" },
+    ];
+    await liveAutomation("menu", def);
+    const chat = await newChat();
+    await customerSays(chat, "menu");
+    const waiting = await until("the run to wait for a tap", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "waiting" ? r : null;
+    });
+    await timeOutWait(waiting.id);
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["link:not_tapped", "no:next"]);
   });
 });

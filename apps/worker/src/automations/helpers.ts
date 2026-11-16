@@ -1,4 +1,11 @@
-import type { AskQuestionConfig, ConditionRule, InboundEventPayload } from "@relay/core/automations";
+import {
+  type AskLocationConfig,
+  type AskQuestionConfig,
+  type ConditionRule,
+  type InboundEventPayload,
+  type LocationAnswer,
+  locationAnswer,
+} from "@relay/core/automations";
 
 /*
  * Pure helpers for the automation runtime: reading an answer, business hours, and the next time of day
@@ -49,6 +56,20 @@ export function readAnswer(
     default:
       return { handle: "next", value: text };
   }
+}
+
+/**
+ * A shared location answers "Ask for location"; with acceptTyped, so does a typed address (at least a
+ * few characters, saved without a pin). Anything else doesn't fit.
+ */
+export function readLocation(
+  q: Pick<AskLocationConfig, "acceptTyped">,
+  event: Pick<InboundEventPayload, "type" | "text" | "location">,
+): { handle: string; value: LocationAnswer } | null {
+  if (event.location) return { handle: "next", value: locationAnswer(event.location) };
+  if (q.acceptTyped && event.type === "text" && event.text.trim().length >= 3)
+    return { handle: "next", value: locationAnswer(null, event.text) };
+  return null;
 }
 
 /** 2026-11-15, 15/11/2026, 15-11-2026 or 15 Nov 2026 → "2026-11-15". Day first, as customers write. */

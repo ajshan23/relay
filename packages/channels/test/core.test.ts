@@ -105,6 +105,65 @@ describe("WhatsApp send body", () => {
   });
 });
 
+describe("WhatsApp link buttons and locations", () => {
+  const to = { kind: "direct" as const, phone: "919847000101", userId: null };
+  it("sends a map pin", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      { type: "location", latitude: 25.08, longitude: 55.14, name: "Lumen Marina", address: "Dubai Marina" },
+      "m1",
+    );
+    assert.equal(body.type, "location");
+    assert.deepEqual(body.location, {
+      latitude: 25.08,
+      longitude: 55.14,
+      name: "Lumen Marina",
+      address: "Dubai Marina",
+    });
+  });
+  it("leaves out an empty name and address", () => {
+    const body = buildWhatsAppSendBody(to, { type: "location", latitude: 1, longitude: 2 }, "m2");
+    assert.deepEqual(body.location, { latitude: 1, longitude: 2 });
+  });
+  it("builds a link button, with a picture on top and the button text cut to 20", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      {
+        type: "interactive",
+        kind: "cta_url",
+        body: "Pick a time that suits you",
+        button: { text: "Book your visit right now", url: "https://example.com/l/abc" },
+        headerMedia: { kind: "image", providerMediaId: "IMG1" },
+        footer: "Lumen Clinics",
+      },
+      "m3",
+    );
+    assert.equal(body.type, "interactive");
+    assert.deepEqual(body.interactive, {
+      type: "cta_url",
+      header: { type: "image", image: { id: "IMG1" } },
+      body: { text: "Pick a time that suits you" },
+      footer: { text: "Lumen Clinics" },
+      action: {
+        name: "cta_url",
+        parameters: { display_text: "Book your visit rig…", url: "https://example.com/l/abc" },
+      },
+    });
+  });
+  it("asks for the customer's location", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      { type: "interactive", kind: "location_request", body: "Where should we pick you up?" },
+      "m4",
+    );
+    assert.deepEqual(body.interactive, {
+      type: "location_request_message",
+      body: { text: "Where should we pick you up?" },
+      action: { name: "send_location" },
+    });
+  });
+});
+
 describe("WhatsApp reactions we send", async () => {
   const { buildWhatsAppSendBody } = await import("../src/whatsapp/send");
   it("sends a reaction to the message's id, never as a reply", () => {

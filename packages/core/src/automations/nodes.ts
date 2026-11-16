@@ -82,6 +82,57 @@ const waitExits = (c: { waitForReply: boolean; timeoutMinutes: number }, replied
       ]
     : [{ id: "next", label: "Sent" }];
 
+/*
+ * "Send link button": a message with one button that opens a page. The page is reached through a
+ * short tracked link of ours, so a tap is seen; "Wait for a tap" turns that into Tapped / Not tapped.
+ */
+const sendLink = z.object({
+  text: z.string().trim().min(1, "Write the message").max(1024, "At most 1024 characters"),
+  buttonText: z
+    .string()
+    .trim()
+    .min(1, "Write the button text")
+    .max(20, "WhatsApp allows at most 20 characters on the button"),
+  url: z
+    .string()
+    .trim()
+    .min(1, "Add the link")
+    .max(2000)
+    .refine((u) => /^https:\/\/\S+$/i.test(u) || /^\{\{/.test(u), "Links start with https://"),
+  media: z
+    .object({
+      kind: z.enum(["image", "video", "document"]),
+      fileId: z.string().min(1),
+      name: z.string().max(200).optional(),
+    })
+    .nullable()
+    .default(null),
+  footer: z.string().trim().max(60, "At most 60 characters").default(""),
+  waitForTap: z.boolean().default(false),
+  timeoutMinutes: z.number().int().min(5).max(10080).default(1440),
+});
+
+/** "Ask for location": WhatsApp's "Send location" request; the pin is saved under saveAs. */
+const askLocation = z.object({
+  text: z.string().trim().min(1, "Write the question").max(1024, "At most 1024 characters"),
+  saveAs: variableName,
+  /** A typed address counts too (saved without a pin), instead of asking again. */
+  acceptTyped: z.boolean().default(false),
+  retries: z.number().int().min(1).max(5).default(1),
+  retryText: z.string().max(1024).default("Please tap “Send location” below to share where you are."),
+  timeoutMinutes: z.number().int().min(5).max(10080).default(1440),
+});
+
+/** "Send location": a map pin chosen in the editor. */
+const sendLocation = z
+  .object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    name: z.string().trim().max(100, "At most 100 characters").default(""),
+    address: z.string().trim().max(300, "At most 300 characters").default(""),
+  })
+  .refine((c) => !(c.latitude === 0 && c.longitude === 0), "Choose the location");
+
 export const answerFormats = ["any", "number", "email", "phone", "date"] as const;
 const askQuestion = z.object({
   text: z.string().min(1, "Write the question").max(1024),
@@ -211,6 +262,81 @@ export const nodeSpecs = {
     summary: (c) => c.text || "Write the question",
     sendsFreeText: true,
   } satisfies NodeSpec<z.infer<typeof askQuestion>>,
+
+  send_link: {
+    type: "send_link",
+    version: 1,
+    category: "message",
+    label: "Send link button",
+    description: "A message with a button that opens a page; see who tapped it.",
+    config: sendLink,
+    defaults: () => ({
+      text: "",
+      buttonText: "",
+      url: "",
+      media: null,
+      footer: "",
+      waitForTap: false,
+      timeoutMinutes: 1440,
+    }),
+    handles: (c) => [
+      ...(c.waitForTap
+        ? [
+            { id: "tapped", label: "Tapped" },
+            { id: "not_tapped", label: "Not tapped" },
+          ]
+        : [{ id: "next", label: "Sent" }]),
+      { id: "failed", label: "Couldn't send" },
+    ],
+    summary: (c) => (c.buttonText ? `${c.buttonText}: ${c.text}` : c.text || "Write the message"),
+    sendsFreeText: true,
+  } satisfies NodeSpec<z.infer<typeof sendLink>>,
+
+  ask_location: {
+    type: "ask_location",
+    version: 1,
+    category: "message",
+    label: "Ask for location",
+    description: "Ask them to share their location and save the pin.",
+    config: askLocation,
+    defaults: () => ({
+      text: "",
+      saveAs: "location",
+      acceptTyped: false,
+      retries: 1,
+      retryText: "Please tap “Send location” below to share where you are.",
+      timeoutMinutes: 1440,
+    }),
+    handles: () => [
+      { id: "next", label: "Shared" },
+      { id: "invalid", label: "Didn't share" },
+      { id: "no_reply", label: "No reply" },
+      { id: "failed", label: "Couldn't send" },
+    ],
+    summary: (c) => c.text || "Write the question",
+    sendsFreeText: true,
+  } satisfies NodeSpec<z.infer<typeof askLocation>>,
+
+  send_location: {
+    type: "send_location",
+    version: 1,
+    category: "message",
+    label: "Send location",
+    description: "A map pin they can open in their maps app.",
+    config: sendLocation,
+    defaults: () => ({ latitude: 0, longitude: 0, name: "", address: "" }),
+    handles: () => [
+      { id: "next", label: "Sent" },
+      { id: "failed", label: "Couldn't send" },
+    ],
+    summary: (c) =>
+      c.name ||
+      c.address ||
+      (c.latitude || c.longitude
+        ? `${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}`
+        : "Choose the location"),
+    sendsFreeText: true,
+  } satisfies NodeSpec<z.infer<typeof sendLocation>>,
 
   condition: {
     type: "condition",
@@ -346,6 +472,48 @@ export function nodeSpec(type: string): NodeSpec<any> | null {
 export type SendMessageConfig = z.infer<typeof sendMessage>;
 export type SendTemplateConfig = z.infer<typeof sendTemplate>;
 export type AskQuestionConfig = z.infer<typeof askQuestion>;
+export type SendLinkConfig = z.infer<typeof sendLink>;
+export type AskLocationConfig = z.infer<typeof askLocation>;
+export type SendLocationConfig = z.infer<typeof sendLocation>;
+
+/** A shared location as an answer: {{answers.x}} reads `text`; the rest are {{answers.x.latitude}}… */
+export type LocationAnswer = {
+  text: string;
+  latitude: number | null;
+  longitude: number | null;
+  name: string;
+  address: string;
+  map_link: string;
+};
+
+/** The answer for a shared pin, or for a typed address (no pin). */
+export function locationAnswer(
+  pin: { latitude: number; longitude: number; name?: string | null; address?: string | null } | null,
+  typed = "",
+): LocationAnswer {
+  if (!pin) {
+    const t = typed.trim();
+    return {
+      text: t,
+      latitude: null,
+      longitude: null,
+      name: "",
+      address: t,
+      map_link: t ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(t)}` : "",
+    };
+  }
+  const name = pin.name?.trim() ?? "";
+  const address = pin.address?.trim() ?? "";
+  const coords = `${pin.latitude},${pin.longitude}`;
+  return {
+    text: [name, address].filter(Boolean).join(", ") || coords,
+    latitude: pin.latitude,
+    longitude: pin.longitude,
+    name,
+    address,
+    map_link: `https://www.google.com/maps?q=${coords}`,
+  };
+}
 export type ConditionConfig = z.infer<typeof condition>;
 export type WaitConfig = z.infer<typeof wait>;
 export type ContactRule = FilterRule;

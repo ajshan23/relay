@@ -8,7 +8,7 @@ import type { Db } from "./client";
 
 type Unsafe = { unsafe: (text: string, params: unknown[]) => Promise<unknown[]> };
 // biome-ignore lint/suspicious/noExplicitAny: a Drizzle transaction or database of any schema
-type DbOrTx = Db | any;
+export type DbOrTx = Db | any;
 
 export function sqlExecutor(dbOrTx: DbOrTx) {
   const client =

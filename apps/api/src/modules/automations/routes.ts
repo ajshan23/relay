@@ -30,6 +30,7 @@ import { type Access, fail, isOrgAdmin, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
 import { assignableUsers, type Conversation, canWork } from "../conversations/access";
+import { resolveMapLink, reversePlace, searchPlaces } from "./places";
 import { isLiveRun, startRunInChat, stopRun } from "./runs";
 
 /*
@@ -295,6 +296,31 @@ export function automationRoutes(ctx: AppContext) {
   app.get("/starters", (c) =>
     c.json({ starters: starters.map(({ id, name, description }) => ({ id, name, description })) }),
   );
+
+  // ---- places, for the "Send location" step's map picker
+
+  app.get("/places", async (c) => {
+    try {
+      return c.json({ places: await searchPlaces(c.req.query("q") ?? "") });
+    } catch {
+      return fail(c, 502, "place_search_failed");
+    }
+  });
+
+  app.get("/places/reverse", async (c) => {
+    try {
+      return c.json({ place: await reversePlace(Number(c.req.query("lat")), Number(c.req.query("lon"))) });
+    } catch {
+      return fail(c, 502, "place_search_failed");
+    }
+  });
+
+  app.post("/map-link", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { text?: unknown };
+    const text = typeof body.text === "string" ? body.text.slice(0, 2000) : "";
+    const pin = await resolveMapLink(text).catch(() => null);
+    return pin ? c.json({ pin }) : fail(c, 422, "map_link_unreadable");
+  });
 
   app.post("/", async (c) => {
     const access = c.var.access;
@@ -645,9 +671,26 @@ export function automationRoutes(ctx: AppContext) {
       .where(and(eq(schema.message.organizationId, orgId), inArray(schema.message.id, ids)));
     const out: Record<string, MessagePreview> = {};
     for (const r of rows) {
-      const c = (r.content ?? {}) as { text?: string; body?: string; caption?: string | null };
-      out[r.id] = { type: r.type, text: c.text ?? c.body ?? c.caption ?? "" };
+      const c = (r.content ?? {}) as {
+        text?: string;
+        body?: string;
+        caption?: string | null;
+        name?: string | null;
+        address?: string | null;
+      };
+      out[r.id] = { type: r.type, text: c.text ?? c.body ?? c.caption ?? c.name ?? c.address ?? "" };
     }
+    return out;
+  }
+
+  /** First taps on a run's link buttons, by "node#visit" (from the step key "runId:node#visit"). */
+  async function linkTaps(runId: string) {
+    const rows = await ctx.db
+      .select({ stepKey: schema.trackedLink.stepKey, at: schema.trackedLink.firstTappedAt })
+      .from(schema.trackedLink)
+      .where(eq(schema.trackedLink.runId, runId));
+    const out: Record<string, Date> = {};
+    for (const r of rows) if (r.at) out[r.stepKey.slice(r.stepKey.indexOf(":") + 1)] = r.at;
     return out;
   }
 
@@ -724,6 +767,7 @@ export function automationRoutes(ctx: AppContext) {
           createdAt: found.run.created_at,
           finishedAt: found.run.finished_at,
           names: started.names,
+          linkTaps: await linkTaps(found.run.id),
         })
       : [];
     return c.json({

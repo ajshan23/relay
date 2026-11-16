@@ -13,6 +13,8 @@ export const automationWorkflows = {
 /** Kairos event keys. */
 export const automationEvents = {
   messageReceived: "message.received",
+  /** A tap on a "Send link button" link (scope: the step's key; only the first tap counts). */
+  linkTapped: "link.tapped",
 } as const;
 
 /** What an automation run starts with. */
@@ -82,4 +84,9 @@ export type InboundEventPayload = {
   reply: { id: string; title: string } | null;
   adId: string | null;
   optOut: "stop" | "start" | null;
+  /** A shared location (missing on events from before locations were read). */
+  location?: { latitude: number; longitude: number; name: string | null; address: string | null } | null;
 };
+
+/** The payload of a link.tapped event. */
+export type LinkTappedPayload = { linkId: string; at: string };
