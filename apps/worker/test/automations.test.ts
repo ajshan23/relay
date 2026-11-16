@@ -1541,4 +1541,174 @@ describe("automations on Kairos", () => {
       assert.equal((note?.content as { text?: string })?.text, `₹800 ${values.ref?.text} ${expect}`);
     }
   });
+
+  it("checks a Condition saved in the older format, then dates on contact fields and worked-out values", async () => {
+    const tz = "Asia/Kolkata";
+    const dayIn = (n: number) => {
+      const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: tz })
+        .format(new Date())
+        .split("-")
+        .map(Number);
+      return new Date(Date.UTC(y as number, (m as number) - 1, (d as number) + n));
+    };
+    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["renew"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    const util = (
+      id: string,
+      fn: Parameters<typeof utilityDefaults>[0],
+      name: string,
+      cfg: Record<string, unknown>,
+    ) => ({
+      id,
+      type: "utility",
+      version: 1,
+      config: { ...utilityDefaults(fn, name), ...cfg },
+    });
+    def.nodes = [
+      {
+        id: "city",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "Which city?",
+          answer: { type: "text", format: "any" },
+          saveAs: "city",
+          retries: 1,
+          timeoutMinutes: 60,
+        },
+      },
+      {
+        id: "vip",
+        type: "condition",
+        version: 1,
+        // The shape saved before this change: an answer by name, a tag, and the 24-hour window.
+        config: {
+          match: "all",
+          rules: [
+            { kind: "answer", name: "city", op: "is", value: "dubai" },
+            { kind: "contact", rule: { field: "tags", op: "has_any", value: ["tag_vip"] } },
+            { kind: "window_open" },
+          ],
+        },
+      },
+      util("phone", "lookup", "phone", {
+        key: "{{answers.city}}",
+        rows: [
+          { key: "Dubai", value: "+971 4 123 4567" },
+          { key: "Kochi", value: "+91 484 000 000" },
+        ],
+      }),
+      util("next", "date_time", "next", {
+        start: "contact.renewal",
+        change: "add",
+        amount: 1,
+        unit: "days",
+        timezone: tz,
+      }),
+      util("gap", "date_diff", "gap", { from: "today", to: "contact.renewal", timezone: tz }),
+      util("shout", "change_text", "shout", { text: "{{contact.name}}", mode: "upper" }),
+      util("digits", "find_in_text", "digits", { text: "call {{values.phone}}", find: "phone" }),
+      {
+        id: "when",
+        type: "branch",
+        version: 1,
+        config: {
+          paths: [
+            {
+              id: "tomorrow",
+              name: "Tomorrow",
+              match: "all",
+              rules: [{ kind: "date", source: "values.next", op: "is_tomorrow", timezone: tz }],
+            },
+            {
+              id: "soon",
+              name: "Renewal soon",
+              match: "all",
+              rules: [
+                { kind: "date", source: "contact.renewal", op: "in_next_days", days: 5, timezone: tz },
+                { kind: "date", source: "contact.added_on", op: "is_today", timezone: tz },
+                { kind: "variable", name: "values.gap.days", op: "is_one_of", value: "1, 2, 3" },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: "soon",
+        type: "add_note",
+        version: 1,
+        config: {
+          text: "{{values.phone}} | {{values.next}} {{values.next.weekday}} | {{values.gap}} | {{values.shout}} | {{values.digits}}",
+        },
+      },
+      { id: "no", type: "add_note", version: 1, config: { text: "not vip" } },
+      { id: "other", type: "add_note", version: 1, config: { text: "other path" } },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "city" },
+      { id: "2", source: "city", sourceHandle: "next", target: "vip" },
+      { id: "3", source: "city", sourceHandle: "invalid", target: "bye" },
+      { id: "4", source: "city", sourceHandle: "no_reply", target: "bye" },
+      { id: "5", source: "vip", sourceHandle: "yes", target: "phone" },
+      { id: "6", source: "vip", sourceHandle: "no", target: "no" },
+      { id: "7", source: "phone", sourceHandle: "next", target: "next" },
+      { id: "8", source: "phone", sourceHandle: "failed", target: "other" },
+      { id: "9", source: "next", sourceHandle: "next", target: "gap" },
+      { id: "10", source: "gap", sourceHandle: "next", target: "shout" },
+      { id: "11", source: "shout", sourceHandle: "next", target: "digits" },
+      { id: "12", source: "digits", sourceHandle: "next", target: "when" },
+      { id: "13", source: "when", sourceHandle: "path:soon", target: "soon" },
+      { id: "14", source: "when", sourceHandle: "path:tomorrow", target: "other" },
+      { id: "15", source: "when", sourceHandle: "else", target: "other" },
+    ];
+    await liveAutomation("renew", def);
+    const renewal = dayIn(2);
+    const run = async (tagged: boolean, city: string) => {
+      const chat = await newChat();
+      await db
+        .update(schema.contact)
+        .set({ tagIds: tagged ? ["tag_vip"] : [], attributes: { renewal: iso(renewal) } })
+        .where(eq(schema.contact.id, chat.contactId));
+      await customerSays(chat, "renew");
+      await until("the question", async () => (await runOf(chat.conversationId))?.status === "waiting");
+      await customerSays(chat, city);
+      const r = await until("the run to finish", async () => {
+        const x = await runOf(chat.conversationId);
+        return x?.status === "completed" ? x : null;
+      });
+      const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
+      return {
+        path: (r.output as { path: string[] }).path,
+        note: (note?.content as { text?: string })?.text,
+      };
+    };
+
+    const yes = await run(true, " DUBAI ");
+    assert.deepEqual(yes.path, [
+      "city:next",
+      "vip:yes",
+      "phone:next",
+      "next:next",
+      "gap:next",
+      "shout:next",
+      "digits:next",
+      "when:path:soon",
+      "soon:next",
+    ]);
+    const next = dayIn(3);
+    const weekday = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(next);
+    const short = `${weekday.slice(0, 3)}, ${next.getUTCDate()} ${new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" }).format(next)} ${next.getUTCFullYear()}`;
+    assert.equal(yes.note, `+971 4 123 4567 | ${short} ${weekday} | 2 days | ASHA RAO | +97141234567`);
+
+    // No tag: the Condition goes "No".
+    const no = await run(false, "Dubai");
+    assert.deepEqual(no.path, ["city:next", "vip:no", "no:next"]);
+  });
 });

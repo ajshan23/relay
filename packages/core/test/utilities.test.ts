@@ -73,6 +73,10 @@ describe("dates and comparing", () => {
     assert.equal(readDate("2026-11-16T20:30:00.000Z", "Asia/Kolkata"), "2026-11-17");
     assert.equal(readDate("2026-11-16T20:30:00.000Z", "UTC"), "2026-11-16");
     assert.equal(readDate("soon", "UTC"), null);
+    assert.equal(readDate("3", "UTC"), null);
+    // A worked-out date ({{values.next}}) is read by its day, other results by their text.
+    assert.equal(readDate({ text: "Tue, 17 Nov 2026", date: "2026-11-17" }, "UTC"), "2026-11-17");
+    assert.equal(readDate({ text: "17/11/2026" }, "UTC"), "2026-11-17");
   });
 
   it("matches date rules against today", () => {
