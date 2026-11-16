@@ -4,7 +4,6 @@ import {
   type AskLocationConfig,
   type AskQuestionConfig,
   type AutomationDefinition,
-  type ConditionRule,
   type Issue,
   nodeSpec,
   TRIGGER_NODE_ID,
@@ -18,21 +17,15 @@ import { SelectField } from "@relay/ui/components/select-field";
 import { TextInput } from "@relay/ui/components/text-input";
 import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@relay/ui/ui/dropdown-menu";
-import { Textarea } from "@relay/ui/ui/textarea";
 import { useRef, useState } from "react";
 import { ApiError, api } from "@/lib/api";
-import { stepIcons, stepSummary } from "./canvas";
+import { stepLook, stepSummary } from "./canvas";
 import { type ChosenLocation, LocationPicker } from "./location-picker";
 import { handlesOf, nodeById } from "./ops";
 import type { EditorOptions } from "./queries";
+import { BranchForm, ConditionForm } from "./rules-editor";
+import { TextWithVariables } from "./text-with-variables";
+import { UtilityForm } from "./utility-form";
 import { triggerLabels } from "./words";
 
 /*
@@ -59,7 +52,6 @@ export function StepPanel(p: StepPanelProps) {
   const isTrigger = p.nodeId === TRIGGER_NODE_ID;
   const node = nodeById(p.def, p.nodeId);
   if (!isTrigger && !node) return null;
-  const spec = node ? nodeSpec(node.type) : null;
   const mine = p.issues.filter((i) => i.nodeId === p.nodeId);
   const config = (node?.config ?? {}) as Config;
   const set = (patch: Config) => p.onConfig({ ...config, ...patch });
@@ -68,12 +60,14 @@ export function StepPanel(p: StepPanelProps) {
     <aside className="flex h-full w-full flex-col border-l bg-background" aria-label="Step settings">
       <header className="flex items-center gap-2 border-b px-4 py-3">
         <span className="inline-flex size-7 items-center justify-center rounded-md bg-muted">
-          <Icon name={isTrigger ? "zap" : (stepIcons[node?.type ?? ""] ?? "automation")} size="sm" />
+          <Icon name={isTrigger ? "zap" : stepLook(node ?? null).icon} size="sm" />
         </span>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-sm font-semibold">{isTrigger ? "Trigger" : spec?.label}</h2>
+          <h2 className="truncate text-sm font-semibold">
+            {isTrigger ? "Trigger" : stepLook(node ?? null).title}
+          </h2>
           <p className="truncate text-xs text-muted-foreground">
-            {isTrigger ? "What starts this automation" : spec?.description}
+            {isTrigger ? "What starts this automation" : stepLook(node ?? null).description}
           </p>
         </div>
         {!isTrigger && !p.readOnly ? (
@@ -125,6 +119,10 @@ export function StepPanel(p: StepPanelProps) {
             <SendLocationForm config={config} set={set} />
           ) : node?.type === "condition" ? (
             <ConditionForm config={config} set={set} def={p.def} options={p.options} />
+          ) : node?.type === "branch" ? (
+            <BranchForm config={config} set={set} def={p.def} options={p.options} />
+          ) : node?.type === "utility" ? (
+            <UtilityForm config={config} set={set} def={p.def} options={p.options} />
           ) : node?.type === "wait" ? (
             <WaitForm config={config as unknown as WaitConfig} onChange={p.onConfig} />
           ) : node?.type === "add_tag" || node?.type === "remove_tag" ? (
@@ -975,208 +973,6 @@ function WaitForReply({
 
 // ---------------------------------------------------------------- logic
 
-const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function ConditionForm({ config, set, def, options }: FormProps) {
-  const rules = (config.rules ?? []) as ConditionRule[];
-  const answers = def.nodes
-    .filter(
-      (n) =>
-        n.type === "ask_question" ||
-        n.type === "ask_location" ||
-        (n.config as { waitForReply?: boolean }).waitForReply,
-    )
-    .map((n) => String((n.config as { saveAs?: string }).saveAs ?? ""))
-    .filter(Boolean);
-  const update = (i: number, rule: ConditionRule) =>
-    set({ rules: rules.map((r, j) => (j === i ? rule : r)) });
-  return (
-    <>
-      <Field label="Go “Yes” when">
-        <Segmented
-          aria-label="Match"
-          value={String(config.match ?? "all")}
-          onChange={(match) => set({ match })}
-          options={[
-            { value: "all", label: "All rules match" },
-            { value: "any", label: "Any rule matches" },
-          ]}
-        />
-      </Field>
-      {rules.map((r, i) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: rules have no ids; their order is their identity
-        <div key={i} className="flex flex-col gap-2 rounded-md border p-3">
-          <div className="flex items-center gap-2">
-            <SelectField
-              size="sm"
-              className="flex-1"
-              aria-label="Rule"
-              value={r.kind}
-              onValueChange={(kind) =>
-                update(
-                  i,
-                  kind === "window_open"
-                    ? { kind }
-                    : kind === "business_hours"
-                      ? {
-                          kind,
-                          days: [1, 2, 3, 4, 5],
-                          from: "09:00",
-                          to: "18:00",
-                          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                        }
-                      : kind === "answer"
-                        ? { kind, name: answers[0] ?? "", op: "is", value: "" }
-                        : { kind: "contact", rule: { field: "tags", op: "has_any", value: [] } },
-                )
-              }
-              options={[
-                { value: "answer", label: "An answer" },
-                { value: "business_hours", label: "Within business hours" },
-                { value: "window_open", label: "They wrote in the last 24 h" },
-                { value: "contact", label: "The contact has a tag" },
-              ]}
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Remove the rule"
-              disabled={rules.length <= 1}
-              onClick={() => set({ rules: rules.filter((_, j) => j !== i) })}
-            >
-              <Icon name="close" />
-            </Button>
-          </div>
-          {r.kind === "answer" || r.kind === "variable" ? (
-            <div className="grid grid-cols-[1fr_auto_1fr] gap-2">
-              <SelectField
-                size="sm"
-                aria-label="Answer"
-                value={r.name}
-                onValueChange={(name) => update(i, { ...r, name })}
-                placeholder="Answer"
-                options={answers.map((a) => ({ value: a, label: a }))}
-              />
-              <SelectField
-                size="sm"
-                aria-label="Is"
-                value={r.op}
-                onValueChange={(op) => update(i, { ...r, op })}
-                options={[
-                  { value: "is", label: "is" },
-                  { value: "is_not", label: "is not" },
-                  { value: "contains", label: "contains" },
-                  { value: "gt", label: "more than" },
-                  { value: "lt", label: "less than" },
-                  { value: "is_empty", label: "is empty" },
-                ]}
-              />
-              <TextInput
-                size="sm"
-                aria-label="Value"
-                value={r.value ?? ""}
-                onChange={(e) => update(i, { ...r, value: e.target.value })}
-              />
-            </div>
-          ) : r.kind === "business_hours" ? (
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap gap-1">
-                {weekdays.map((d, n) => (
-                  <Button
-                    key={d}
-                    size="xs"
-                    variant={r.days.includes(n) ? "default" : "outline"}
-                    aria-pressed={r.days.includes(n)}
-                    onClick={() =>
-                      update(i, {
-                        ...r,
-                        days: r.days.includes(n) ? r.days.filter((x) => x !== n) : [...r.days, n].sort(),
-                      })
-                    }
-                  >
-                    {d}
-                  </Button>
-                ))}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <TextInput
-                  size="sm"
-                  type="time"
-                  aria-label="From"
-                  value={r.from}
-                  onChange={(e) => update(i, { ...r, from: e.target.value })}
-                />
-                <TextInput
-                  size="sm"
-                  type="time"
-                  aria-label="To"
-                  value={r.to}
-                  onChange={(e) => update(i, { ...r, to: e.target.value })}
-                />
-              </div>
-              <span className="text-xs text-muted-foreground">Time zone {r.timezone}</span>
-            </div>
-          ) : r.kind === "contact" ? (
-            <ContactTagRule rule={r} tags={options?.tags ?? []} onChange={(rule) => update(i, rule)} />
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              True when they wrote in the last 24 hours, so free-form messages can still go out.
-            </p>
-          )}
-        </div>
-      ))}
-      <Button
-        variant="outline"
-        size="sm"
-        className="self-start"
-        onClick={() =>
-          set({ rules: [...rules, { kind: "answer", name: answers[0] ?? "", op: "is", value: "" }] })
-        }
-      >
-        <Icon name="add" />
-        Add rule
-      </Button>
-    </>
-  );
-}
-
-function ContactTagRule({
-  rule,
-  tags,
-  onChange,
-}: {
-  rule: Extract<ConditionRule, { kind: "contact" }>;
-  tags: { id: string; name: string }[];
-  onChange: (r: ConditionRule) => void;
-}) {
-  const options = tags.map((t) => ({ value: t.id, label: t.name }));
-  const value = Array.isArray(rule.rule.value) ? (rule.rule.value as string[]) : [];
-  return (
-    <div className="grid grid-cols-2 gap-2">
-      <SelectField
-        size="sm"
-        aria-label="Has"
-        value={rule.rule.op}
-        onValueChange={(op) => onChange({ kind: "contact", rule: { field: "tags", op, value } })}
-        options={[
-          { value: "has_any", label: "has the tag" },
-          { value: "has_none", label: "doesn't have it" },
-        ]}
-      />
-      <SelectField
-        size="sm"
-        aria-label="Tag"
-        value={value[0] ?? ""}
-        placeholder="Pick a tag"
-        onValueChange={(tag) =>
-          onChange({ kind: "contact", rule: { field: "tags", op: rule.rule.op, value: [tag] } })
-        }
-        options={options}
-      />
-    </div>
-  );
-}
-
 function WaitForm({ config, onChange }: { config: WaitConfig; onChange: (c: Config) => void }) {
   return (
     <>
@@ -1236,123 +1032,3 @@ function WaitForm({ config, onChange }: { config: WaitConfig; onChange: (c: Conf
 }
 
 // ---------------------------------------------------------------- texts with {{variables}}
-
-function TextWithVariables({
-  label,
-  hint,
-  value,
-  onChange,
-  def,
-  options,
-  rows = 4,
-  max,
-  optional,
-}: {
-  label: string;
-  hint?: string;
-  value: string;
-  onChange: (v: string) => void;
-  def: AutomationDefinition;
-  options?: EditorOptions;
-  rows?: number;
-  max?: number;
-  optional?: boolean;
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const insert = (token: string) => {
-    const el = ref.current;
-    const at = el?.selectionStart ?? value.length;
-    const next = `${value.slice(0, at)}${token}${value.slice(el?.selectionEnd ?? at)}`;
-    onChange(next);
-    requestAnimationFrame(() => {
-      el?.focus();
-      el?.setSelectionRange(at + token.length, at + token.length);
-    });
-  };
-  const answers = def.nodes
-    .filter(
-      (n) =>
-        n.type === "ask_question" ||
-        n.type === "ask_location" ||
-        (n.config as { waitForReply?: boolean }).waitForReply,
-    )
-    .flatMap((n) => {
-      const name = String((n.config as { saveAs?: string }).saveAs ?? "");
-      if (!name) return [];
-      // A shared location also has parts: its map link, coordinates, name and address.
-      if (n.type === "ask_location")
-        return [
-          { path: name, label: `${name} (address)` },
-          { path: `${name}.map_link`, label: `${name}: map link` },
-          { path: `${name}.latitude`, label: `${name}: latitude` },
-          { path: `${name}.longitude`, label: `${name}: longitude` },
-        ];
-      return [{ path: name, label: name }];
-    });
-  return (
-    <Field label={label} hint={hint} optional={optional}>
-      {(control) => (
-        <div className="flex flex-col gap-1">
-          <Textarea
-            {...control}
-            ref={ref}
-            rows={rows}
-            value={value}
-            maxLength={max}
-            onChange={(e) => onChange(e.target.value)}
-          />
-          <div className="flex items-center justify-between">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="xs" className="-ml-2 text-muted-foreground">
-                  <Icon name="add" />
-                  Insert detail
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
-                <DropdownMenuLabel>Contact</DropdownMenuLabel>
-                {[
-                  ["contact.first_name", "First name"],
-                  ["contact.name", "Name"],
-                  ["contact.phone", "Phone"],
-                  ["contact.email", "Email"],
-                  ...(options?.fields ?? []).map((f) => [`contact.${f.key}`, f.label]),
-                ].map(([path, name]) => (
-                  <DropdownMenuItem key={path} onSelect={() => insert(`{{${path}}}`)}>
-                    {name}
-                  </DropdownMenuItem>
-                ))}
-                {answers.length ? (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>Answers</DropdownMenuLabel>
-                    {answers.map((a) => (
-                      <DropdownMenuItem key={a.path} onSelect={() => insert(`{{answers.${a.path}}}`)}>
-                        {a.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </>
-                ) : null}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => insert("{{trigger.text}}")}>
-                  Message that started it
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => insert("{{business.name}}")}>
-                  Business name
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => insert("{{chat.assignee}}")}>
-                  Assigned team member
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            {max ? (
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {value.length}/{max}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      )}
-    </Field>
-  );
-}

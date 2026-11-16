@@ -41,6 +41,7 @@ import { AutomationRuns } from "./runs";
 import { AutomationSettings } from "./settings";
 import { StepPanel } from "./step-panel";
 import { StepPicker } from "./step-picker";
+import { newUtilityConfig } from "./utility-form";
 import { statusLabel, statusTone, when } from "./words";
 
 /*
@@ -501,9 +502,10 @@ export function AutomationEditor({ id }: { id: string }) {
       <StepPicker
         open={!!picker}
         onOpenChange={(o) => !o && setPicker(null)}
-        onPick={(type) => {
+        onPick={(type, utility) => {
           if (!picker) return;
-          const { def: next, nodeId } = insertStep(def, picker.source, picker.handle, type);
+          const seed = utility ? newUtilityConfig(utility, def) : undefined;
+          const { def: next, nodeId } = insertStep(def, picker.source, picker.handle, type, seed);
           change(next);
           setSelected(nodeId);
           setPicker(null);

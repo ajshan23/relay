@@ -7,6 +7,7 @@
  *   trigger.text        the message that started the run (never a later reply)
  *   answers.<name>      an answer saved by an "Ask a question" step
  *   answers.<name>.map_link (.latitude .longitude .name .address)  a location shared with "Ask for location"
+ *   values.<name>       what a Utility step worked out (values.dist reads "4.2 km"; values.dist.km is 4.2)
  *   chat.assignee       the assigned team member's name
  *   business.name       the business's name
  */
@@ -15,13 +16,15 @@ export type VariableScope = {
   contact: Record<string, unknown>;
   trigger: Record<string, unknown>;
   answers: Record<string, unknown>;
+  /** Utility results; empty before any ran. */
+  values?: Record<string, unknown>;
   chat: Record<string, unknown>;
   business: Record<string, unknown>;
 };
 
 const pattern = /\{\{\s*([a-zA-Z][\w]*(?:\.[\w-]+)*)\s*(?:\|([^}]*))?\}\}/g;
 
-export const variableRoots = ["contact", "trigger", "answers", "chat", "business"] as const;
+export const variableRoots = ["contact", "trigger", "answers", "values", "chat", "business"] as const;
 
 /** Every variable path a text uses, like ["contact.first_name", "answers.city"]. */
 export function variablesUsed(text: string): string[] {
@@ -41,7 +44,8 @@ export function resolveText(text: string, scope: VariableScope, encode?: (value:
   });
 }
 
-function lookup(scope: VariableScope, path: string): unknown {
+/** A saved value as stored: a shared location or a utility's result stays an object. */
+export function lookupRaw(scope: VariableScope, path: string): unknown {
   const [root, ...rest] = path.split(".");
   if (!root || !(variableRoots as readonly string[]).includes(root)) return undefined;
   let value: unknown = (scope as Record<string, unknown>)[root];
@@ -53,7 +57,18 @@ function lookup(scope: VariableScope, path: string): unknown {
     const name = String(scope.contact.name ?? "").trim();
     return name ? name.split(/\s+/)[0] : undefined;
   }
-  // An answer with parts (a shared location) reads as its text: {{answers.pickup}}.
+  return value;
+}
+
+/** A saved value as text: {{answers.pickup}} and {{values.dist}} read as their text. */
+export function lookupText(scope: VariableScope, path: string): string {
+  const v = lookup(scope, path);
+  return v === null || v === undefined ? "" : String(v);
+}
+
+function lookup(scope: VariableScope, path: string): unknown {
+  const value = lookupRaw(scope, path);
+  // A value with parts (a shared location, a utility's result) reads as its text: {{answers.pickup}}.
   if (value !== null && typeof value === "object") {
     const text = (value as { text?: unknown }).text;
     return typeof text === "string" ? text : undefined;

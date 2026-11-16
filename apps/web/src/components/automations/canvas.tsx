@@ -6,6 +6,7 @@ import {
   type Issue,
   nodeSpec,
   TRIGGER_NODE_ID,
+  utilityDef,
 } from "@relay/core/automations";
 import { Icon, type IconName } from "@relay/ui/components/icon";
 import {
@@ -44,6 +45,8 @@ export const stepIcons: Record<string, IconName> = {
   ask_location: "locate",
   send_location: "location",
   condition: "split",
+  branch: "split",
+  utility: "calculator",
   wait: "clock",
   add_tag: "tag",
   remove_tag: "tag",
@@ -54,6 +57,24 @@ export const stepIcons: Record<string, IconName> = {
   handoff: "handoff",
   end: "check",
 };
+
+/** A step's title and icon: a Utility step shows its function ("Distance between places"). */
+export function stepLook(step: AutomationNode | null): {
+  title: string;
+  icon: IconName;
+  description: string;
+} {
+  const spec = nodeSpec(step?.type ?? "");
+  if (step?.type === "utility") {
+    const d = utilityDef(String((step.config as { fn?: unknown }).fn ?? ""));
+    if (d) return { title: d.label, icon: d.icon as IconName, description: d.description };
+  }
+  return {
+    title: spec?.label ?? step?.type ?? "Step",
+    icon: stepIcons[step?.type ?? ""] ?? "automation",
+    description: spec?.description ?? "",
+  };
+}
 
 type CardData = {
   title: string;
@@ -244,9 +265,9 @@ function CanvasInner({ def, issues, options, selectedId, onSelect, onAdd, readOn
         const step = n.kind === "step" ? (def.nodes.find((x) => x.id === n.id) ?? null) : null;
         const mine = issues.filter((i) => i.nodeId === n.id);
         const data: CardData = {
-          title: n.kind === "trigger" ? "When" : (nodeSpec(step?.type ?? "")?.label ?? step?.type ?? "Step"),
+          title: n.kind === "trigger" ? "When" : stepLook(step).title,
           summary: n.kind === "trigger" ? triggerSummary(def, options) : stepSummary(step, options),
-          icon: n.kind === "trigger" ? "zap" : (stepIcons[step?.type ?? ""] ?? "automation"),
+          icon: n.kind === "trigger" ? "zap" : stepLook(step).icon,
           errors: mine.filter((i) => i.level === "error").length,
           warnings: mine.filter((i) => i.level === "warning").length,
           selected: selectedId === n.id,

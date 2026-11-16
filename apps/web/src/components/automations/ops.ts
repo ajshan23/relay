@@ -18,6 +18,8 @@ const prefix: Partial<Record<NodeType, string>> = {
   send_template: "tpl",
   ask_question: "ask",
   condition: "if",
+  branch: "split",
+  utility: "calc",
   wait: "wait",
   add_tag: "tag",
   remove_tag: "untag",
@@ -47,8 +49,13 @@ export function handlesOf(node: AutomationNode | null): Handle[] {
   try {
     return spec.handles(spec.config.parse(node.config));
   } catch {
-    // Unfinished settings: fall back to the exits of the defaults, plus any option exits still wired.
-    return spec.handles(spec.defaults());
+    // Unfinished settings: the exits they already describe (a Branch's paths, a utility's function),
+    // else those of the defaults.
+    try {
+      return spec.handles(node.config as never);
+    } catch {
+      return spec.handles(spec.defaults());
+    }
   }
 }
 
@@ -66,10 +73,11 @@ export function insertStep(
   source: string,
   handle: string,
   type: NodeType,
+  seed?: Record<string, unknown>,
 ): { def: AutomationDefinition; nodeId: string } {
   const spec = nodeSpecs[type];
   const id = newNodeId(def, type);
-  const config = spec.defaults() as Record<string, unknown>;
+  const config = (seed ?? spec.defaults()) as Record<string, unknown>;
   const node: AutomationNode = { id, type, version: spec.version, config };
   const existing = def.edges.find((e) => e.source === source && e.sourceHandle === handle);
   const edges = def.edges.filter((e) => e !== existing);

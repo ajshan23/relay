@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import type { ChannelType } from "@relay/channels";
 import { newId, type Publisher, publishInboxEvent, type SignalJob } from "@relay/core";
 import {
@@ -11,11 +11,15 @@ import {
   askLayout,
   automationEvents,
   automationWorkflows,
+  type BranchConfig,
   type ConditionConfig,
+  compare,
+  dateMatches,
   type InboundEventPayload,
   LIMITS,
   type LinkTappedPayload,
   type LocationAnswer,
+  lookupRaw,
   migrateDefinition,
   nodeSpec,
   optionFromReply,
@@ -23,7 +27,9 @@ import {
   optionReplyId,
   parseStepKey,
   pickAutomation,
+  readDate,
   resolveText,
+  runUtility,
   type SendLinkConfig,
   type SendLocationConfig,
   type SendMessageConfig,
@@ -31,8 +37,11 @@ import {
   type TapTarget,
   tapTarget,
   typingPauseMs,
+  type UtilityConfig,
+  type UtilityValue,
   type VariableScope,
   type WaitConfig,
+  zonedDate,
 } from "@relay/core/automations";
 import { type TemplateContent, templateMessageContent, templateVariables } from "@relay/core/templates";
 import {
@@ -442,7 +451,7 @@ export function createAutomations({
       const def = migrateDefinition(version.definition);
       const nodes = new Map(def.nodes.map((n) => [n.id, n]));
       const next = new Map(def.edges.map((e) => [`${e.source}:${e.sourceHandle}`, e.target]));
-      const memory: RunMemory = { answers: {}, path: [] };
+      const memory: RunMemory = { answers: {}, values: {}, path: [] };
       const visits = new Map<string, number>();
       let executed = 0;
       let current = next.get("trigger:next");
@@ -482,12 +491,19 @@ export function createAutomations({
         throw err;
       }
       await ctx.step("release chat", () => release(input.conversationId, ctx.runId));
-      return { answers: memory.answers, path: memory.path };
+      return { answers: memory.answers, values: memory.values, path: memory.path };
     },
   );
 
-  /** Answers by name: text, or a shared location (which reads as its text in {{answers.x}}). */
-  type RunMemory = { answers: Record<string, string | LocationAnswer>; path: string[] };
+  /**
+   * Answers by name: text, or a shared location (which reads as its text in {{answers.x}}); and what
+   * Utility steps worked out, by name ({{values.x}}). Both are rebuilt from recorded steps on replay.
+   */
+  type RunMemory = {
+    answers: Record<string, string | LocationAnswer>;
+    values: Record<string, UtilityValue>;
+    path: string[];
+  };
   const answerText = (v: string | LocationAnswer | undefined) => (typeof v === "object" ? v.text : (v ?? ""));
   /** An exit, the end (null), or a jump to where an older button of this automation leads. */
   type Exit = string | null | { jump: TapTarget };
@@ -590,6 +606,30 @@ export function createAutomations({
       case "condition": {
         const yes = await ctx.step(name, () => evaluate(input, memory, config as ConditionConfig));
         return yes ? "yes" : "no";
+      }
+      case "branch": {
+        // Paths are checked top to bottom; the first that matches is taken.
+        const b = config as BranchConfig;
+        return ctx.step(name, async () => {
+          for (const p of b.paths) if (await evaluate(input, memory, p)) return `path:${p.id}`;
+          return "else";
+        });
+      }
+      case "utility": {
+        const u = config as UtilityConfig;
+        // Worked out once and recorded: "now" and random codes stay the same if the run is replayed.
+        const r = await ctx.step(name, async () => {
+          const scope = await scopeOf(input, memory);
+          return runUtility(u, {
+            read: (path) => lookupRaw(scope, path),
+            fill: (text) => resolveText(text, scope),
+            now: new Date(),
+            randomInt: (n) => randomInt(n),
+          });
+        });
+        // A lookup that found nothing still saves its fallback.
+        if (r.value) memory.values[u.saveAs] = r.value;
+        return r.ok ? "next" : "failed";
       }
       case "wait": {
         const w = config as WaitConfig;
@@ -910,9 +950,11 @@ export function createAutomations({
         name: contact?.name ?? "",
         phone: contact?.phone ?? "",
         email: contact?.email ?? "",
+        added_on: contact?.createdAt ? contact.createdAt.toISOString() : "",
       },
       trigger: { text: input.trigger.text ?? "" },
       answers: memory.answers,
+      values: memory.values,
       chat: { assignee: assignee?.name ?? "" },
       business: { name: org?.name ?? "" },
     };
@@ -1187,9 +1229,18 @@ export function createAutomations({
     if (c) await announce(c);
   }
 
-  async function evaluate(input: AutomationRunInput, memory: RunMemory, cond: ConditionConfig) {
+  async function evaluate(
+    input: AutomationRunInput,
+    memory: RunMemory,
+    cond: Pick<ConditionConfig, "match" | "rules">,
+  ) {
     const results: boolean[] = [];
     let fields: Awaited<ReturnType<typeof activeFields>> | null = null;
+    let scope: VariableScope | null = null;
+    const scoped = async () => {
+      scope ??= await scopeOf(input, memory);
+      return scope;
+    };
     for (const rule of cond.rules) {
       if (rule.kind === "window_open") {
         const conv = await conversationOf(input.conversationId);
@@ -1212,11 +1263,17 @@ export function createAutomations({
           )
           .limit(1);
         results.push(rows.length > 0);
+      } else if (rule.kind === "date") {
+        const now = new Date();
+        const today = zonedDate(now, rule.timezone);
+        const date =
+          rule.source === "today" ? today : readDate(lookupRaw(await scoped(), rule.source), rule.timezone);
+        results.push(dateMatches(date, rule, today));
       } else {
         const value =
           rule.kind === "answer"
             ? answerText(memory.answers[rule.name])
-            : resolveText(`{{${rule.name}}}`, await scopeOf(input, memory));
+            : resolveText(`{{${rule.name}}}`, await scoped());
         results.push(compare(value, rule.op, rule.value ?? ""));
       }
     }
@@ -1279,27 +1336,4 @@ export function createAutomations({
     worker: () => kairos.worker({ workflows: [router, run], concurrency: 20, tenantCap: 10 }),
     startWorker,
   };
-}
-
-function compare(value: string, op: string, expected: string): boolean {
-  const v = value.trim().toLowerCase();
-  const e = expected.trim().toLowerCase();
-  switch (op) {
-    case "is":
-      return v === e;
-    case "is_not":
-      return v !== e;
-    case "contains":
-      return !!e && v.includes(e);
-    case "is_empty":
-      return !v;
-    case "is_not_empty":
-      return !!v;
-    case "gt":
-      return Number(v) > Number(e);
-    case "lt":
-      return Number(v) < Number(e);
-    default:
-      return false;
-  }
 }

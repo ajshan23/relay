@@ -29,8 +29,11 @@ export type LaidOutEdge = {
   stub: boolean;
 };
 
-/** Exits shown as "add" stubs when open. "Couldn't send" stays in the step's settings to keep things calm. */
-const hiddenWhenOpen = new Set(["failed"]);
+/**
+ * Exits not shown as "add" stubs when open: "Couldn't send" stays in the step's settings to keep things
+ * calm. A utility's second exit ("No pin shared", "Not found") is an everyday outcome, so it shows.
+ */
+const hiddenWhenOpen = (type: string | undefined, handle: string) => handle === "failed" && type !== "utility";
 
 export function layout(def: AutomationDefinition): { nodes: LaidOutNode[]; edges: LaidOutEdge[] } {
   const g = new dagre.graphlib.Graph({ multigraph: true });
@@ -50,7 +53,7 @@ export function layout(def: AutomationDefinition): { nodes: LaidOutNode[]; edges
       const label = id === TRIGGER_NODE_ID ? "" : handles.length > 1 ? h.label : "";
       if (e && g.hasNode(e.target)) {
         edges.push({ id: e.id, source: id, target: e.target, handle: h.id, label, back: false, stub: false });
-      } else if (!hiddenWhenOpen.has(h.id)) {
+      } else if (!hiddenWhenOpen(node?.type, h.id)) {
         const stubId = `add:${id}:${h.id}`;
         g.setNode(stubId, { ...STUB });
         stubs.push({ kind: "add", id: stubId, x: 0, y: 0, source: id, handle: h.id, label: h.label });

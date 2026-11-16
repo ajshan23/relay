@@ -5,6 +5,7 @@ import {
   automationEvents,
   emptyDefinition,
   type InboundEventPayload,
+  utilityDefaults,
 } from "@relay/core/automations";
 import { createDb, eq, recordLinkTap, schema, sql, sqlExecutor } from "@relay/db";
 import { createAutomations } from "../src/automations/runtime";
@@ -1309,5 +1310,235 @@ describe("automations on Kairos", () => {
       return r?.status === "completed" ? r : null;
     });
     assert.deepEqual((run.output as { path: string[] }).path, ["link:not_tapped", "no:next"]);
+  });
+
+  it("works out the distance to a shared pin and branches on it; no pin takes its own way", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["howfar"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    const note = (id: string, text: string) => ({ id, type: "add_note", version: 1, config: { text } });
+    def.nodes = [
+      {
+        id: "where",
+        type: "ask_location",
+        version: 1,
+        config: { text: "Where are you?", saveAs: "spot", acceptTyped: true, retries: 1, timeoutMinutes: 60 },
+      },
+      {
+        id: "dist",
+        type: "utility",
+        version: 1,
+        config: {
+          ...utilityDefaults("distance", "dist"),
+          from: "answers.spot",
+          to: {
+            kind: "place",
+            place: { name: "Burj Al Arab", address: "", latitude: 25.1412, longitude: 55.1853 },
+          },
+        },
+      },
+      {
+        id: "split",
+        type: "branch",
+        version: 1,
+        config: {
+          paths: [
+            {
+              id: "near",
+              name: "Near",
+              match: "all",
+              rules: [{ kind: "variable", name: "values.dist.km", op: "lt", value: "5" }],
+            },
+            {
+              id: "mid",
+              name: "Drive",
+              match: "all",
+              rules: [{ kind: "variable", name: "values.dist.km", op: "lt", value: "50" }],
+            },
+          ],
+        },
+      },
+      note("near", "near {{values.dist}}"),
+      note("mid", "drive {{values.dist}} ({{values.dist.km}})"),
+      note("far", "far"),
+      note("nopin", "no pin for {{answers.spot}}"),
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "where" },
+      { id: "2", source: "where", sourceHandle: "next", target: "dist" },
+      { id: "3", source: "where", sourceHandle: "invalid", target: "bye" },
+      { id: "4", source: "where", sourceHandle: "no_reply", target: "bye" },
+      { id: "5", source: "dist", sourceHandle: "next", target: "split" },
+      { id: "6", source: "dist", sourceHandle: "failed", target: "nopin" },
+      { id: "7", source: "split", sourceHandle: "path:near", target: "near" },
+      { id: "8", source: "split", sourceHandle: "path:mid", target: "mid" },
+      { id: "9", source: "split", sourceHandle: "else", target: "far" },
+    ];
+    await liveAutomation("howfar", def);
+    const done = async (chat: { conversationId: string }) =>
+      until("the run to finish", async () => {
+        const r = await runOf(chat.conversationId);
+        return r?.status === "completed" ? r : null;
+      });
+    const noteOf = async (chat: { conversationId: string }) =>
+      ((await botMessages(chat.conversationId)).find((m) => m.type === "note")?.content as { text?: string })
+        ?.text;
+
+    // Dubai Mall is about 10.9 km away: the second path, since the first doesn't match.
+    const a = await newChat();
+    await customerSays(a, "howfar");
+    await until("the run to wait", async () => (await runOf(a.conversationId))?.status === "waiting");
+    await customerSharesLocation(a, {
+      latitude: 25.1972,
+      longitude: 55.2744,
+      name: "Dubai Mall",
+      address: null,
+    });
+    const runA = await done(a);
+    assert.deepEqual((runA.output as { path: string[] }).path, [
+      "where:next",
+      "dist:next",
+      "split:path:mid",
+      "mid:next",
+    ]);
+    assert.equal(await noteOf(a), "drive 10.9 km (10.9)");
+
+    // A typed address has no pin: "No pin shared".
+    const b = await newChat();
+    await customerSays(b, "howfar");
+    await until("the run to wait", async () => (await runOf(b.conversationId))?.status === "waiting");
+    await customerSays(b, "Marina Walk");
+    const runB = await done(b);
+    assert.deepEqual((runB.output as { path: string[] }).path, ["where:next", "dist:failed", "nopin:next"]);
+    assert.equal(await noteOf(b), "no pin for Marina Walk");
+  });
+
+  it("calculates, makes a reference code once, and branches on an answered date", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["quote"],
+      match: "exact",
+    });
+    def.rules = { ...def.rules, skipIfAssigned: false };
+    const tz = "Asia/Kolkata";
+    def.nodes = [
+      {
+        id: "qty",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "How many?",
+          answer: { type: "text", format: "number" },
+          saveAs: "qty",
+          retries: 1,
+          timeoutMinutes: 60,
+        },
+      },
+      {
+        id: "calc",
+        type: "utility",
+        version: 1,
+        config: {
+          ...utilityDefaults("calculate", "total"),
+          formula: "{{answers.qty}} * 250 + 50",
+          decimals: 0,
+          currency: "INR",
+        },
+      },
+      {
+        id: "ref",
+        type: "utility",
+        version: 1,
+        config: { ...utilityDefaults("reference_code", "ref"), prefix: "BK-" },
+      },
+      {
+        id: "when",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "Which day?",
+          answer: { type: "text", format: "date" },
+          saveAs: "day",
+          retries: 1,
+          timeoutMinutes: 60,
+        },
+      },
+      {
+        id: "split",
+        type: "branch",
+        version: 1,
+        config: {
+          paths: [
+            {
+              id: "soon",
+              name: "This week",
+              match: "all",
+              rules: [{ kind: "date", source: "answers.day", op: "in_next_days", days: 7, timezone: tz }],
+            },
+          ],
+        },
+      },
+      { id: "soon", type: "add_note", version: 1, config: { text: "{{values.total}} {{values.ref}} soon" } },
+      {
+        id: "later",
+        type: "add_note",
+        version: 1,
+        config: { text: "{{values.total}} {{values.ref}} later" },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "qty" },
+      { id: "2", source: "qty", sourceHandle: "next", target: "calc" },
+      { id: "3", source: "qty", sourceHandle: "invalid", target: "bye" },
+      { id: "4", source: "qty", sourceHandle: "no_reply", target: "bye" },
+      { id: "5", source: "calc", sourceHandle: "next", target: "ref" },
+      { id: "6", source: "ref", sourceHandle: "next", target: "when" },
+      { id: "7", source: "when", sourceHandle: "next", target: "split" },
+      { id: "8", source: "when", sourceHandle: "invalid", target: "bye" },
+      { id: "9", source: "when", sourceHandle: "no_reply", target: "bye" },
+      { id: "10", source: "split", sourceHandle: "path:soon", target: "soon" },
+      { id: "11", source: "split", sourceHandle: "else", target: "later" },
+    ];
+    await liveAutomation("quote", def);
+    const inDays = (n: number) => {
+      const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: tz })
+        .format(new Date())
+        .split("-")
+        .map(Number);
+      const at = new Date(Date.UTC(y as number, (m as number) - 1, (d as number) + n));
+      return `${at.getUTCDate()}/${at.getUTCMonth() + 1}/${at.getUTCFullYear()}`;
+    };
+    for (const [days, expect] of [
+      [2, "soon"],
+      [20, "later"],
+    ] as const) {
+      const chat = await newChat();
+      await customerSays(chat, "quote");
+      await until("the first question", async () => (await runOf(chat.conversationId))?.status === "waiting");
+      await customerSays(chat, "3");
+      // The run has gone past the code and waits for the day (the second question).
+      await until("the second question", async () => {
+        const m = await botMessages(chat.conversationId);
+        return m.length >= 2 && (await runOf(chat.conversationId))?.status === "waiting";
+      });
+      await customerSays(chat, inDays(days));
+      const run = await until("the run to finish", async () => {
+        const r = await runOf(chat.conversationId);
+        return r?.status === "completed" ? r : null;
+      });
+      const values = (run.output as { values: Record<string, { text: string }> }).values;
+      assert.equal(values.total?.text, "₹800");
+      assert.match(values.ref?.text ?? "", /^BK-[2-9A-HJ-KM-NP-Z]{6}$/);
+      const note = (await botMessages(chat.conversationId)).find((m) => m.type === "note");
+      // The code worked out before the run waited is the same one used after it was replayed.
+      assert.equal((note?.content as { text?: string })?.text, `₹800 ${values.ref?.text} ${expect}`);
+    }
   });
 });

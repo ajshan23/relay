@@ -1,6 +1,7 @@
 import type { AutomationDefinition } from "./definition";
-import { locationAnswer, nodeSpec, type TapTarget } from "./nodes";
+import { type BranchConfig, locationAnswer, nodeSpec, type TapTarget } from "./nodes";
 import type { AutomationRunInput } from "./runtime";
+import { type UtilityResult, utilityDef } from "./utilities";
 
 /*
  * A run's history in plain words, for the Runs tab: what started it, what was sent, what the customer
@@ -322,7 +323,30 @@ export function describeRun(o: {
     const title = stepTitle(def, node);
     const entry: HistoryEntry = { at, tone: "normal", text: title, nodeId: node };
     if (type === "condition") entry.text = `Checked a condition: ${s.result ? "yes" : "no"}`;
-    else if (type === "add_tag") entry.text = "Added a tag";
+    else if (type === "branch") {
+      const taken = String(s.result ?? "");
+      const path = (cfg as BranchConfig).paths?.find((x) => `path:${x.id}` === taken);
+      entry.text = path
+        ? `Took the ${quote(path.name, 30)} path`
+        : taken === "else"
+          ? "No path matched: took “Otherwise”"
+          : "Checked the paths";
+    } else if (type === "utility") {
+      const r = s.result as UtilityResult | null;
+      const d = utilityDef(String(cfg.fn ?? ""));
+      const label = d?.label ?? "Utility";
+      const saveAs = typeof cfg.saveAs === "string" ? cfg.saveAs : "";
+      if (r?.ok) {
+        entry.text = `${label}: ${quote(r.value.text || "(empty)", 60)}`;
+        if (saveAs) entry.saved = { name: saveAs, value: r.value.text };
+      } else if (r) {
+        entry.tone = "warn";
+        entry.text = `${label}: ${d?.failLabel ?? "couldn't work it out"}${
+          r.reason.startsWith("not_a_number:") ? ` ({{${r.reason.slice(13)}}} isn't a number)` : ""
+        }`;
+        if (saveAs && r.value) entry.saved = { name: saveAs, value: r.value.text };
+      }
+    } else if (type === "add_tag") entry.text = "Added a tag";
     else if (type === "remove_tag") entry.text = "Removed a tag";
     else if (type === "set_field") entry.text = "Set a contact field";
     else if (type === "assign") entry.text = "Assigned the chat";

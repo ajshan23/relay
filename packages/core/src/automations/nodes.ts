@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { FilterRule } from "../contacts";
 import type { AutomationDefinition } from "./definition";
+import { dateOps, valueOps } from "./eval";
+import { type UtilityConfig, utilityConfigSchema, utilityDef } from "./utilities";
 
 /*
  * The step catalogue. Each step type has a versioned config schema, the handles (exits) it offers for a
@@ -11,7 +13,7 @@ import type { AutomationDefinition } from "./definition";
  * version that has shipped: published automations keep running on the version they were saved with.
  */
 
-export type NodeCategory = "message" | "logic" | "contact" | "chat";
+export type NodeCategory = "message" | "logic" | "utility" | "contact" | "chat";
 export type Handle = { id: string; label: string };
 
 export type NodeSpec<C = Record<string, unknown>> = {
@@ -40,6 +42,7 @@ const variableName = z
   .regex(/^[a-z][a-z0-9_]{0,39}$/, "Use lowercase letters, digits and _ (start with a letter)");
 const optionId = z.string().regex(/^[a-z0-9]{1,12}$/);
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:MM");
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date");
 
 const mediaSchema = z.object({
   kind: z.enum(["image", "video", "document", "audio"]),
@@ -161,11 +164,23 @@ export const conditionRuleSchema = z.discriminatedUnion("kind", [
     kind: z.literal("contact"),
     rule: z.object({ field: z.string().min(1), op: z.string().min(1), value: z.unknown().optional() }),
   }),
+  /** "answer": an answer by name (older rules); "variable": any saved value by path (answers.city, values.dist.km, contact.city). */
   z.object({
     kind: z.enum(["answer", "variable"]),
-    name: z.string().min(1),
-    op: z.enum(["is", "is_not", "contains", "is_empty", "is_not_empty", "gt", "lt"]),
-    value: z.string().max(200).optional(),
+    name: z.string().min(1, "Pick a value to check"),
+    op: z.enum(valueOps),
+    value: z.string().max(1000).optional(),
+  }),
+  /** A date: a saved value read as a date, or "today" itself (holidays). Days are counted in `timezone`. */
+  z.object({
+    kind: z.literal("date"),
+    source: z.string().min(1, "Pick a date to check"),
+    op: z.enum(dateOps),
+    days: z.number().int().min(0).max(3650).optional(),
+    date: isoDate.optional(),
+    to: isoDate.optional(),
+    weekdays: z.array(z.number().int().min(0).max(6)).optional(),
+    timezone: z.string().min(1),
   }),
   z.object({ kind: z.literal("window_open") }),
   z.object({
@@ -183,6 +198,22 @@ const condition = z.object({
   match: z.enum(["all", "any"]).default("all"),
   rules: z.array(conditionRuleSchema).min(1, "Add at least one rule").max(20),
 });
+
+/** Branch: paths checked top to bottom; the first whose rules match is taken, else "Otherwise". */
+const branchPath = z.object({
+  id: optionId,
+  name: z.string().trim().min(1, "Name every path").max(30, "Path names can be at most 30 characters"),
+  match: z.enum(["all", "any"]).default("all"),
+  rules: z.array(conditionRuleSchema).min(1, "Add at least one rule to every path").max(20),
+});
+const branch = z.object({
+  paths: z.array(branchPath).min(1, "Add at least one path").max(10, "At most 10 paths"),
+});
+
+/** A short id for a new option or path. */
+export function shortId(): string {
+  return Math.random().toString(36).slice(2, 8).padEnd(6, "0");
+}
 
 const wait = z.discriminatedUnion("mode", [
   z.object({
@@ -354,6 +385,52 @@ export const nodeSpecs = {
       `${c.rules.length} rule${c.rules.length === 1 ? "" : "s"} (${c.match === "all" ? "all" : "any"})`,
   } satisfies NodeSpec<z.infer<typeof condition>>,
 
+  branch: {
+    type: "branch",
+    version: 1,
+    category: "logic",
+    label: "Branch",
+    description: "Split into paths: the first path whose rules match is taken.",
+    config: branch,
+    defaults: () => ({
+      paths: [
+        {
+          id: shortId(),
+          name: "Path 1",
+          match: "all",
+          rules: [{ kind: "variable", name: "", op: "is", value: "" }],
+        },
+      ],
+    }),
+    handles: (c) => [
+      ...c.paths.map((p) => ({ id: `path:${p.id}`, label: p.name })),
+      { id: "else", label: "Otherwise" },
+    ],
+    summary: (c) => `${c.paths.length} ${c.paths.length === 1 ? "path" : "paths"} + Otherwise`,
+  } satisfies NodeSpec<z.infer<typeof branch>>,
+
+  utility: {
+    type: "utility",
+    version: 1,
+    category: "utility",
+    label: "Utility",
+    description: "Work something out and save it for later steps.",
+    config: utilityConfigSchema as unknown as z.ZodType<UtilityConfig>,
+    defaults: () =>
+      ({ fn: "date_time", saveAs: "now", ...utilityDef("date_time")?.defaults() }) as UtilityConfig,
+    handles: (c) => {
+      const d = utilityDef(c.fn);
+      return [
+        { id: "next", label: d?.okLabel ?? "Done" },
+        ...(d?.failLabel ? [{ id: "failed", label: d.failLabel }] : []),
+      ];
+    },
+    summary: (c) => {
+      const d = utilityDef(c.fn);
+      return d ? `${d.summary(c as never)} → {{values.${c.saveAs}}}` : "Unknown function";
+    },
+  } satisfies NodeSpec<UtilityConfig>,
+
   wait: {
     type: "wait",
     version: 1,
@@ -515,6 +592,7 @@ export function locationAnswer(
   };
 }
 export type ConditionConfig = z.infer<typeof condition>;
+export type BranchConfig = z.infer<typeof branch>;
 export type WaitConfig = z.infer<typeof wait>;
 export type ContactRule = FilterRule;
 

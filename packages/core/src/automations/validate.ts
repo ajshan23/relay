@@ -1,13 +1,17 @@
 import { type AutomationDefinition, TRIGGER_NODE_ID } from "./definition";
+import { dateOpNeeds, todayOps } from "./eval";
 import {
   type AskLocationConfig,
   type AskQuestionConfig,
   askLayout,
+  type BranchConfig,
   type ConditionConfig,
+  type ConditionRule,
   type LocationAnswer,
   nodeSpec,
   type WaitConfig,
 } from "./nodes";
+import { type UtilityConfig, utilityDef } from "./utilities";
 import { variableRoots, variablesUsed } from "./variables";
 
 /*
@@ -42,7 +46,7 @@ export type ValidationContext = {
   templates?: Map<string, { name: string; status: string; variables: string[] }>;
 };
 
-const coreContactVars = new Set(["name", "first_name", "phone", "email", "username"]);
+const coreContactVars = new Set(["name", "first_name", "phone", "email", "username", "added_on"]);
 
 export function validateDefinition(def: AutomationDefinition, ctx: ValidationContext = {}): Issue[] {
   const issues: Issue[] = [];
@@ -134,6 +138,29 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
   // Exits that must be connected, and step-specific rules
   const saved = new Map<string, string>(); // answer name → node id
   const locations = new Set<string>(); // answers that are shared locations (they have parts)
+  const values = new Map<string, { nodeId: string; parts: readonly string[] }>(); // utility results
+  /** Rules of a Condition or a Branch path: what each kind needs besides its schema. */
+  const checkRules = (rules: ConditionRule[], nodeId: string) => {
+    for (const r of rules) {
+      if (
+        r.kind === "contact" &&
+        r.rule.field.startsWith("attr.") &&
+        ctx.fields &&
+        !ctx.fields.has(r.rule.field.slice(5))
+      )
+        warn("FIELD_MISSING", `The contact field “${r.rule.field.slice(5)}” doesn't exist.`, nodeId);
+      if (r.kind === "date") {
+        if (r.source === "today" && !todayOps.includes(r.op))
+          err("DATE_RULE", "For today, check a date, two dates or weekdays.", nodeId);
+        const needs = dateOpNeeds[r.op];
+        if (needs === "days" && r.days === undefined) err("DATE_RULE", "Say how many days.", nodeId);
+        if (needs === "date" && !r.date) err("DATE_RULE", "Pick the date to compare with.", nodeId);
+        if (needs === "range" && (!r.date || !r.to)) err("DATE_RULE", "Pick both dates.", nodeId);
+        if (needs === "weekdays" && !r.weekdays?.length)
+          err("DATE_RULE", "Pick at least one weekday.", nodeId);
+      }
+    }
+  };
   for (const n of def.nodes) {
     const c = configs.get(n.id);
     if (!c) continue;
@@ -232,14 +259,37 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
       for (const h of ["yes", "no"])
         if (!wired.has(h))
           warn("BRANCH_UNWIRED", `The “${h === "yes" ? "Yes" : "No"}” way ends the automation.`, n.id);
-      for (const r of (c as ConditionConfig).rules)
-        if (
-          r.kind === "contact" &&
-          r.rule.field.startsWith("attr.") &&
-          ctx.fields &&
-          !ctx.fields.has(r.rule.field.slice(5))
-        )
-          warn("FIELD_MISSING", `The contact field “${r.rule.field.slice(5)}” doesn't exist.`, n.id);
+      checkRules((c as ConditionConfig).rules, n.id);
+    }
+    if (n.type === "branch") {
+      const b = c as BranchConfig;
+      const names = new Set<string>();
+      for (const p of b.paths) {
+        const key = p.name.trim().toLowerCase();
+        if (names.has(key)) err("PATH_DUPLICATE", `Two paths are called “${p.name}”.`, n.id);
+        names.add(key);
+        if (!wired.has(`path:${p.id}`))
+          warn("BRANCH_UNWIRED", `The “${p.name}” path ends the automation.`, n.id);
+        checkRules(p.rules, n.id);
+      }
+      if (new Set(b.paths.map((p) => p.id)).size !== b.paths.length)
+        err("PATH_IDS", "Two paths share an id.", n.id);
+      if (!wired.has("else")) warn("BRANCH_UNWIRED", "The “Otherwise” way ends the automation.", n.id);
+    }
+    if (n.type === "utility") {
+      const u = c as UtilityConfig;
+      const d = utilityDef(u.fn);
+      const problem = d?.check?.(u as never);
+      if (problem) err("UTILITY_SETTINGS", problem, n.id);
+      if (d?.failLabel && !wired.has("failed"))
+        warn("UTILITY_UNWIRED", `“${d.failLabel}” ends the automation.`, n.id);
+      if (values.has(u.saveAs) && values.get(u.saveAs)?.nodeId !== n.id)
+        warn(
+          "VALUE_NAME_REUSED",
+          `Another step also saves its result as “${u.saveAs}”; the later one wins.`,
+          n.id,
+        );
+      values.set(u.saveAs, { nodeId: n.id, parts: d?.parts ?? [] });
     }
     if (n.type === "send_message") {
       const m = c as { text: string; media: unknown };
@@ -271,6 +321,28 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
     }
   }
 
+  // What utilities read, and names saved twice over
+  for (const n of def.nodes) {
+    const c = configs.get(n.id);
+    if (!c || n.type !== "utility") continue;
+    const u = c as UtilityConfig;
+    for (const ref of utilityDef(u.fn)?.refs(u as never) ?? []) {
+      if (!ref.path) {
+        err("UTILITY_INPUT", "Pick the value this works on.", n.id);
+        continue;
+      }
+      const [root, key] = ref.path.split(".");
+      if (ref.kind === "location" && !(root === "answers" && key && locations.has(key)))
+        err("UTILITY_INPUT", "Pick a location shared with an “Ask for location” step.", n.id);
+    }
+    if (saved.has(u.saveAs))
+      err(
+        "VALUE_NAME_CLASH",
+        `“${u.saveAs}” is already the name of an answer; give the result another name.`,
+        n.id,
+      );
+  }
+
   // Variables
   for (const n of def.nodes) {
     const c = configs.get(n.id);
@@ -289,6 +361,19 @@ export function validateDefinition(def: AutomationDefinition, ctx: ValidationCon
           err(
             "ANSWER_PART",
             `{{${path}}}: a location has ${locationParts.map((p) => `.${p}`).join(", ")}.`,
+            n.id,
+          );
+      } else if (root === "values" && (!key || !values.has(key)))
+        err("VALUE_MISSING", `No utility saves a result called “${key ?? ""}”.`, n.id);
+      else if (root === "values" && key && path.split(".").length > 2) {
+        const part = path.split(".").slice(2).join(".");
+        const parts = values.get(key)?.parts ?? [];
+        if (!parts.includes(part))
+          err(
+            "VALUE_PART",
+            parts.length
+              ? `{{${path}}}: this result has ${parts.map((p) => `.${p}`).join(", ")}.`
+              : `{{${path}}}: this result has no parts; use {{values.${key}}}.`,
             n.id,
           );
       } else if (root === "contact" && key && !coreContactVars.has(key) && ctx.fields && !ctx.fields.has(key))
@@ -356,6 +441,29 @@ function textsOf(type: string, c: Record<string, unknown>): string[] {
   if (type === "send_template") return Object.values((c.values ?? {}) as Record<string, string>);
   if (type === "set_field") return [String(c.value ?? "")];
   if (type === "handoff") return [String(c.note ?? "")];
+  // Values a rule or a utility reads, as {{paths}}, so they're checked like any variable.
+  const rulePaths = (rules: ConditionRule[]) =>
+    rules.flatMap((r) =>
+      r.kind === "variable" && r.name
+        ? [`{{${r.name}}}`]
+        : r.kind === "date" && r.source !== "today"
+          ? [`{{${r.source}}}`]
+          : [],
+    );
+  if (type === "condition") return rulePaths((c as ConditionConfig).rules);
+  if (type === "branch") return (c as BranchConfig).paths.flatMap((p) => rulePaths(p.rules));
+  if (type === "utility") {
+    const u = c as UtilityConfig;
+    const d = utilityDef(u.fn);
+    if (!d) return [];
+    return [
+      ...d
+        .refs(u as never)
+        .filter((r) => r.path)
+        .map((r) => `{{${r.path}}}`),
+      ...d.texts(u as never),
+    ];
+  }
   return [];
 }
 
@@ -403,6 +511,9 @@ function windowRisks(
       } else if (type === "condition" && c && handle === "yes") {
         const cc = c as ConditionConfig;
         if (cc.match === "all" && cc.rules.some((r) => r.kind === "window_open")) next = 0;
+      } else if (type === "branch" && c && handle.startsWith("path:")) {
+        const p = (c as BranchConfig).paths.find((x) => `path:${x.id}` === handle);
+        if (p?.match === "all" && p.rules.some((r) => r.kind === "window_open")) next = 0;
       }
       queue.push([target, next]);
     }

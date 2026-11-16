@@ -264,7 +264,7 @@ function Timeline({ history }: { history: HistoryEntry[] }) {
   );
 }
 
-/** Every answer saved, in order: a later one (an earlier button tapped) doesn't hide the first. */
+/** Every answer and worked-out value saved, in order: a later one doesn't hide the first. */
 function Answers({ history }: { history: HistoryEntry[] }) {
   const byName = new Map<string, string[]>();
   for (const h of history)
@@ -272,7 +272,7 @@ function Answers({ history }: { history: HistoryEntry[] }) {
   if (!byName.size) return null;
   return (
     <section className="flex flex-col gap-1">
-      <h3 className="text-sm font-semibold">Answers</h3>
+      <h3 className="text-sm font-semibold">Saved</h3>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {[...byName].map(([name, values]) => (
           <div key={name} className="contents">
@@ -300,6 +300,11 @@ function stepLabel(name: string): string {
     send_template: "Send template",
     ask_question: "Ask a question",
     condition: "Condition",
+    branch: "Branch",
+    utility: "Utility",
+    send_link: "Send link button",
+    ask_location: "Ask for location",
+    send_location: "Send location",
     wait: "Wait",
     add_tag: "Add tag",
     remove_tag: "Remove tag",
