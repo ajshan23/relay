@@ -2,6 +2,7 @@
 
 import {
   type InfiniteData,
+  type QueryClient,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -90,6 +91,74 @@ export function useMessages(id: string | null) {
     getNextPageParam: (last) => last.nextBefore,
     enabled: !!id,
   });
+}
+
+/** The history endpoint's page size (newest page first). */
+const HISTORY_PAGE = 50;
+
+const order = (a: Message, b: Message) =>
+  a.sentAt < b.sentAt ? -1 : a.sentAt > b.sentAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+
+const refreshing = new Set<string>();
+const refreshAgain = new Set<string>();
+
+/**
+ * Brings an open chat up to date with one request: its newest page is fetched and merged into what's
+ * already on screen (new messages added, changed ones replaced), however far back you scrolled. A plain
+ * refetch would reload every page loaded so far, one after another. Falls back to that only when more
+ * than a page arrived at once, or when `messageIds` changed but aren't among the newest.
+ */
+export async function refreshNewest(qc: QueryClient, id: string, messageIds: string[] = []): Promise<void> {
+  const key = keys.messages(id);
+  if (!qc.getQueryData<InfiniteData<MessagePage>>(key)) return; // not open here: nothing to update
+  if (refreshing.has(id)) {
+    refreshAgain.add(id);
+    return;
+  }
+  refreshing.add(id);
+  try {
+    const fresh = await api<MessagePage>(`/conversations/${id}/messages`);
+    const freshIds = new Set(fresh.messages.map((m) => m.id));
+    let fallBack = false;
+    qc.setQueryData<InfiniteData<MessagePage>>(key, (data) => {
+      const first = data?.pages[0];
+      if (!data || !first) return data;
+      const known = first.messages.filter((m) => !m.pending);
+      // A full page of only new messages: there may be more between them and what's on screen.
+      if (fresh.messages.length >= HISTORY_PAGE && known.length && !known.some((m) => freshIds.has(m.id))) {
+        fallBack = true;
+        return data;
+      }
+      const older = data.pages.slice(1).flatMap((p) => p.messages);
+      if (messageIds.some((m) => !freshIds.has(m) && older.some((o) => o.id === m))) {
+        fallBack = true;
+        return data;
+      }
+      // The newest page is the truth for its own time span: anything there that it no longer has (a
+      // deleted note) goes. Older messages on screen stay; stand-ins still sending stay until confirmed.
+      const oldestFresh = fresh.messages[0];
+      // (No older messages at all when the newest page is the whole history.)
+      const keep = (m: Message) =>
+        !freshIds.has(m.id) &&
+        (!!m.pending || (fresh.nextBefore !== null && !!oldestFresh && order(m, oldestFresh) < 0));
+      const merged = [...first.messages.filter(keep), ...fresh.messages].sort(order);
+      return {
+        ...data,
+        pages: [
+          { ...first, messages: merged },
+          ...data.pages
+            .slice(1)
+            .map((p) => ({ ...p, messages: p.messages.filter((m) => !freshIds.has(m.id)) })),
+        ],
+      };
+    });
+    if (fallBack) await qc.invalidateQueries({ queryKey: key });
+  } catch {
+    await qc.invalidateQueries({ queryKey: key });
+  } finally {
+    refreshing.delete(id);
+    if (refreshAgain.delete(id)) void refreshNewest(qc, id);
+  }
 }
 
 export function useAssignees(id: string, enabled: boolean) {
@@ -256,7 +325,47 @@ export function useSend(conversationId: string) {
           ? { ...data, pages: [{ ...first, messages: [...first.messages, temp] }, ...rest] }
           : data;
       });
+      // The chat jumps to the top of the list with this message as its preview, before the server says so.
+      const preview = {
+        type: temp.type,
+        text: input.template?.rendered.body ?? input.text ?? input.upload?.fileName ?? null,
+        direction: "outbound" as const,
+        senderName: input.senderName,
+      };
+      qc.setQueriesData<InfiniteData<ConversationPage>>({ queryKey: keys.lists() }, (data) => {
+        if (!data?.pages.length) return data;
+        const row = data.pages.flatMap((p) => p.conversations).find((c) => c.id === conversationId);
+        if (!row) return data;
+        const moved = { ...row, preview, activityAt: temp.sentAt };
+        return {
+          ...data,
+          pages: data.pages.map((p, i) => ({
+            ...p,
+            conversations: [
+              ...(i === 0 ? [moved] : []),
+              ...p.conversations.filter((c) => c.id !== conversationId),
+            ],
+          })),
+        };
+      });
       return { tempId: temp.id };
+    },
+    // The server gave it its real id: the next refresh replaces it in place instead of adding a copy.
+    onSuccess: (res, _input, ctx) => {
+      qc.setQueryData<InfiniteData<MessagePage>>(keys.messages(conversationId), (data) =>
+        data
+          ? {
+              ...data,
+              pages: data.pages.map((p) => ({
+                ...p,
+                // If a live refresh already brought the real one, drop the stand-in instead.
+                messages: data.pages.some((q) => q.messages.some((m) => m.id === res.message.id))
+                  ? p.messages.filter((m) => m.id !== ctx?.tempId)
+                  : p.messages.map((m) => (m.id === ctx?.tempId ? { ...m, id: res.message.id } : m)),
+              })),
+            }
+          : data,
+      );
     },
     onError: (_err, _input, ctx) => {
       qc.setQueryData<InfiniteData<MessagePage>>(keys.messages(conversationId), (data) =>
@@ -272,7 +381,7 @@ export function useSend(conversationId: string) {
       );
     },
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: keys.messages(conversationId) });
+      void refreshNewest(qc, conversationId);
       void qc.invalidateQueries({ queryKey: keys.lists() });
     },
   });
@@ -286,7 +395,7 @@ export function useRetry(conversationId: string) {
         method: "POST",
         json: { confirm: !!confirm },
       }),
-    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+    onSettled: () => refreshNewest(qc, conversationId),
   });
 }
 
@@ -299,7 +408,7 @@ export function useReact(conversationId: string) {
         method: "POST",
         json: { emoji },
       }),
-    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+    onSettled: () => refreshNewest(qc, conversationId),
   });
 }
 
@@ -312,7 +421,7 @@ export function useAddNote(conversationId: string) {
         method: "POST",
         json: { text },
       }),
-    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+    onSettled: () => refreshNewest(qc, conversationId),
   });
 }
 
@@ -321,6 +430,6 @@ export function useDeleteNote(conversationId: string) {
   return useMutation({
     mutationFn: (noteId: string) =>
       api(`/conversations/${conversationId}/notes/${noteId}`, { method: "DELETE" }),
-    onSettled: () => qc.invalidateQueries({ queryKey: keys.messages(conversationId) }),
+    onSettled: () => refreshNewest(qc, conversationId),
   });
 }

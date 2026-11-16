@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { type ReactNode, useEffect, useState } from "react";
 import { useBranch } from "@/components/shell/branch-context";
 import { applyPresence } from "./presence";
-import { keys } from "./queries";
+import { keys, refreshNewest } from "./queries";
 
 /*
  * Data for the signed-in app, plus live updates from /api/events.
@@ -30,6 +30,8 @@ export function LiveUpdates() {
     let everConnected = false;
     let stopped = false;
     const changed = new Set<string>();
+    /** Messages a "message.updated" named, per conversation (to check they were refreshed). */
+    const changedMessages = new Map<string, string[]>();
     const lists = { stale: false };
 
     const flush = () => {
@@ -40,15 +42,18 @@ export function LiveUpdates() {
         void qc.invalidateQueries({ queryKey: ["inbox", "counts"] });
       }
       for (const id of changed) {
-        void qc.invalidateQueries({ queryKey: keys.messages(id) });
+        // The open chat: only its newest messages are fetched and merged in (one small request).
+        void refreshNewest(qc, id, changedMessages.get(id));
         void qc.invalidateQueries({ queryKey: keys.detail(id) });
         // The "automation is running" bar over the chat (an automation can start or end any time).
         void qc.invalidateQueries({ queryKey: ["automations", branchId, "chat", id] });
       }
       changed.clear();
+      changedMessages.clear();
     };
     const schedule = () => {
-      timer ??= setTimeout(flush, 150);
+      // Short enough to feel instant, long enough that a burst of webhooks makes one refresh.
+      timer ??= setTimeout(flush, 50);
     };
 
     const onTemplate = () => {
@@ -58,6 +63,11 @@ export function LiveUpdates() {
       try {
         const hint = JSON.parse(e.data) as Hint;
         if (hint.type !== "conversation.read") changed.add(hint.conversationId);
+        if (hint.messageId)
+          changedMessages.set(hint.conversationId, [
+            ...(changedMessages.get(hint.conversationId) ?? []),
+            hint.messageId,
+          ]);
         if (hint.type !== "message.updated") lists.stale = true;
         schedule();
       } catch {
