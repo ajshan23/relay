@@ -506,6 +506,7 @@ export function createIngest(
                 : null,
           adId: adIdOf(event.context.adReferral),
           optOut: optOutReply(said),
+          sentAt: sentAt.toISOString(),
           location:
             event.content.type === "location"
               ? {

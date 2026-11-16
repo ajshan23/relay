@@ -757,8 +757,10 @@ export function createAutomations({
         answer = read(p);
         // Sent before the question was on their screen (a second "hello" while the bot was typing) and
         // not an answer to it: they haven't seen the question yet, so it isn't a wrong answer. Wait on,
-        // for messages after the last wait began (never this one again).
-        const beforeQuestion = sentAt !== undefined && Date.parse(reply.event.createdAt) < sentAt;
+        // for messages after the last wait began (never this one again). "Sent" is when they sent it
+        // (WhatsApp's time), not when it reached us: Meta can take a couple of seconds to pass it on.
+        const theirTime = Date.parse(p.sentAt ?? reply.event.createdAt);
+        const beforeQuestion = sentAt !== undefined && theirTime < sentAt;
         if (!answer && !p.reply && beforeQuestion && early <= 5) {
           lookbackFrom = waitName;
           waitName = `${name}:answer${attempt}~${early}`;

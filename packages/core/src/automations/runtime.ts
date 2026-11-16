@@ -85,6 +85,8 @@ export type InboundEventPayload = {
   reply: { id: string; title: string } | null;
   adId: string | null;
   optOut: "stop" | "start" | null;
+  /** When the customer sent it (WhatsApp's time, to the second); missing on older events. */
+  sentAt?: string;
   /** A shared location (missing on events from before locations were read). */
   location?: { latitude: number; longitude: number; name: string | null; address: string | null } | null;
 };

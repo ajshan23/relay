@@ -94,6 +94,8 @@ async function customerSays(
   externalId: string | null = null,
   /** The message a tapped button belongs to (WhatsApp sends this with every button tap). */
   replyToMessageId: string | null = null,
+  /** When they sent it (WhatsApp's time), if not just now. */
+  sentAt: Date | null = null,
 ) {
   await db.transaction(async (tx) => {
     await tx
@@ -125,6 +127,7 @@ async function customerSays(
       reply,
       adId: null,
       optOut: text.trim().toUpperCase() === "STOP" ? "stop" : null,
+      ...(sentAt ? { sentAt: sentAt.toISOString() } : {}),
     };
     await automations.onInbound(tx as never, ev);
   });
@@ -934,6 +937,18 @@ describe("automations on Kairos", () => {
     });
     const asked = (await botMessages(chat.conversationId)).filter((m) => m.type === "interactive");
     assert.equal(asked.length, 1, "no 'Please pick one' for a message sent before the question");
+    // One more sent before the question, that Meta passed on only after it went out: still let pass.
+    await customerSays(chat, "twice", null, undefined, null, null, new Date(Date.now() - 5_000));
+    await until("the run to wait again", async () => {
+      const r = await runOf(chat.conversationId);
+      const steps = r ? (await automations.kairos.getRun(r.id))?.steps : [];
+      return steps?.some((s) => s.name === "ask_question:q#1:answer0~2" && s.status === "waiting");
+    });
+    assert.equal(
+      (await botMessages(chat.conversationId)).filter((m) => m.type === "interactive").length,
+      1,
+      "a message sent before the question but delivered late isn't a wrong answer",
+    );
     // A wrong answer after seeing the question is still asked again.
     await customerSays(chat, "hello");
     await until("the re-ask", async () => {
