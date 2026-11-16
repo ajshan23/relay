@@ -267,6 +267,17 @@ export function describeRun(o: {
       }
       const pin = r?.event?.payload?.location;
       const said = pin ? locationAnswer(pin).text : (r?.event?.payload?.text ?? "");
+      // Sent before the question was on their screen, and let pass (the next wait is "answerN~k").
+      const nextPart = steps[i + 1] ? (parseName(steps[i + 1]?.name ?? "")?.part ?? "") : "";
+      if (nextPart.startsWith(`${part.split("~")[0]}~`) && steps[i + 1]?.kind === "wait") {
+        out.push({
+          at,
+          tone: "muted",
+          text: `Wrote ${quote(said || "(nothing)")} before the question appeared, so it wasn't taken as the answer`,
+          nodeId: node,
+        });
+        return;
+      }
       // What happened next with this answer: asked again (it didn't fit), or a jump (older button).
       const after = steps[i + 1] ? parseName(steps[i + 1]?.name ?? "") : null;
       const sameNode = after?.node === node;

@@ -724,36 +724,74 @@ export function createAutomations({
     read: (p: InboundEventPayload) => { handle: string; value: string | LocationAnswer } | null,
   ): Promise<Exit> {
     await typeFirst(ctx, input, name, q.text);
-    const sent = await ctx.step(`${name}:ask`, () => send(stepKey, q.text, stepKey));
+    // Each send records when it went out (database time, like the events), to tell a message sent
+    // before the question was on their screen from an answer to it.
+    const sendNow = async (sendKey: string, text: string) => {
+      const r = await send(sendKey, text, stepKey);
+      return { ...r, at: await dbNow() };
+    };
+    const sent = await ctx.step(`${name}:ask`, () => sendNow(stepKey, q.text));
     if (!sent.ok) return "failed";
     const deadline = await ctx.step(`${name}:deadline`, () => Date.now() + q.timeoutMinutes * 60_000);
+    // Missing on runs that sent the question before this was recorded: nothing is skipped for them.
+    let sentAt: number | undefined = (sent as { at?: number }).at;
     for (let attempt = 0; ; attempt++) {
-      const reply = await ctx.waitForEvent<InboundEventPayload>(`${name}:answer${attempt}`, {
-        key: automationEvents.messageReceived,
-        scope: input.conversationId,
-        timeoutMs: Math.max(1_000, deadline - Date.now()),
-        // An answer typed while the bot was "typing" the question (or the re-ask) counts too.
-        lookbackFrom: input.typing ? (attempt ? `${name}:re${attempt}:typing` : `${name}:typing`) : undefined,
-      });
-      if (reply.timedOut) return "no_reply";
-      const answer = read(reply.event.payload);
+      let waitName = `${name}:answer${attempt}`;
+      // An answer typed while the bot was "typing" the question (or the re-ask) counts too.
+      let lookbackFrom = input.typing
+        ? attempt
+          ? `${name}:re${attempt}:typing`
+          : `${name}:typing`
+        : undefined;
+      let answer: ReturnType<typeof read> = null;
+      let p: InboundEventPayload | null = null;
+      for (let early = 1; ; early++) {
+        const reply = await ctx.waitForEvent<InboundEventPayload>(waitName, {
+          key: automationEvents.messageReceived,
+          scope: input.conversationId,
+          timeoutMs: Math.max(1_000, deadline - Date.now()),
+          lookbackFrom,
+        });
+        if (reply.timedOut) return "no_reply";
+        p = reply.event.payload;
+        answer = read(p);
+        // Sent before the question was on their screen (a second "hello" while the bot was typing) and
+        // not an answer to it: they haven't seen the question yet, so it isn't a wrong answer. Wait on,
+        // for messages after the last wait began (never this one again).
+        const beforeQuestion = sentAt !== undefined && Date.parse(reply.event.createdAt) < sentAt;
+        if (!answer && !p.reply && beforeQuestion && early <= 5) {
+          lookbackFrom = waitName;
+          waitName = `${name}:answer${attempt}~${early}`;
+          continue;
+        }
+        break;
+      }
       if (answer) {
         memory.answers[q.saveAs] = answer.value;
         return answer.handle;
       }
-      const p = reply.event.payload;
-      if (p.reply && input.followTaps) {
+      if (p?.reply && input.followTaps) {
         // A button from an earlier question of this automation: go where that choice leads.
-        const jump = await ctx.step(`${name}:older_button${attempt}`, () => olderTap(input, def, p));
+        const tap = p;
+        const jump = await ctx.step(`${name}:older_button${attempt}`, () => olderTap(input, def, tap));
         if (jump) return { jump };
       }
       if (attempt >= q.retries) return "invalid";
       await typeFirst(ctx, input, `${name}:re${attempt + 1}`, q.retryText);
       const again = await ctx.step(`${name}:reask${attempt + 1}`, () =>
-        send(`${stepKey}:re${attempt + 1}`, q.retryText, stepKey),
+        sendNow(`${stepKey}:re${attempt + 1}`, q.retryText),
       );
       if (!again.ok) return "failed";
+      sentAt = (again as { at?: number }).at;
     }
+  }
+
+  /** The database's clock in ms (events are stamped with it, so the two compare exactly). */
+  async function dbNow(): Promise<number> {
+    const rows = (await db.execute(
+      sql`select (extract(epoch from clock_timestamp()) * 1000)::float8 as t`,
+    )) as unknown as { t: number }[];
+    return Number(rows[0]?.t ?? Date.now());
   }
 
   /**

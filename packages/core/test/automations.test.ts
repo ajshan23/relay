@@ -336,11 +336,11 @@ describe("wait for a reply on send steps", () => {
 });
 
 describe("typing pause", () => {
-  it("grows with the message, between 1.2 s and 4 s", () => {
-    assert.equal(typingPauseMs(""), 1_500);
-    assert.equal(typingPauseMs("Hi"), 1_200);
-    assert.equal(typingPauseMs("x".repeat(40)), 2_000);
-    assert.equal(typingPauseMs("x".repeat(500)), 4_000);
+  it("grows with the message, between 0.6 s and 1.8 s", () => {
+    assert.equal(typingPauseMs(""), 900);
+    assert.equal(typingPauseMs("Hi"), 600);
+    assert.equal(typingPauseMs("x".repeat(40)), 1_000);
+    assert.equal(typingPauseMs("x".repeat(500)), 1_800);
   });
 });
 

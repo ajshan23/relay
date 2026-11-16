@@ -641,7 +641,7 @@ describe("automations on Kairos", () => {
       keywords: ["typey"],
       match: "exact",
     });
-    const text = "Thanks for writing, we will get back to you shortly"; // 51 chars → 2.33 s
+    const text = "Thanks for writing, we will get back to you shortly"; // 51 chars → 1.17 s
     def.nodes = [{ id: "hi", type: "send_message", version: 1, config: { text, media: null } }];
     def.edges = [{ id: "1", source: "trigger", sourceHandle: "next", target: "hi" }];
     await liveAutomation("typey", def);
@@ -655,7 +655,7 @@ describe("automations on Kairos", () => {
     assert.ok(shown, "typing was queued on the customer's message");
     const [sent] = await botMessages(chat.conversationId);
     const gap = new Date(sent?.createdAt ?? 0).getTime() - shown.at;
-    assert.ok(gap >= 2_200 && gap < 3_500, `the message went out ${gap} ms after typing started`);
+    assert.ok(gap >= 1_100 && gap < 2_400, `the message went out ${gap} ms after typing started`);
     const names = (await automations.kairos.getRun(run.id))?.steps.map((s) => s.name);
     assert.deepEqual(names?.slice(0, 3), [
       "send_message:hi#1:typing",
@@ -879,6 +879,73 @@ describe("automations on Kairos", () => {
     const out = run.output as { path: string[]; answers: Record<string, string> };
     assert.deepEqual(out.path, ["q:opt:a1", "bye:end"]);
     assert.equal(out.answers.callback, "Yes");
+  });
+
+  it("lets a message sent before the question appeared pass, instead of asking again", async () => {
+    const def = emptyDefinition({
+      type: "message_received",
+      mode: "keyword",
+      keywords: ["twice"],
+      match: "exact",
+    });
+    def.nodes = [
+      {
+        id: "q",
+        type: "ask_question",
+        version: 1,
+        config: {
+          text: "How can we help?",
+          answer: {
+            type: "buttons",
+            options: [
+              { id: "a1", title: "Prices" },
+              { id: "a2", title: "Talk" },
+            ],
+          },
+          saveAs: "need",
+          retries: 1,
+          retryText: "Please pick one of the options.",
+          timeoutMinutes: 60,
+        },
+      },
+      { id: "bye", type: "end", version: 1, config: {} },
+    ];
+    def.edges = [
+      { id: "1", source: "trigger", sourceHandle: "next", target: "q" },
+      { id: "2", source: "q", sourceHandle: "opt:a1", target: "bye" },
+      { id: "3", source: "q", sourceHandle: "opt:a2", target: "bye" },
+      { id: "4", source: "q", sourceHandle: "invalid", target: "bye" },
+      { id: "5", source: "q", sourceHandle: "no_reply", target: "bye" },
+    ];
+    await liveAutomation("twice", def);
+    const chat = await newChat();
+    await customerSays(chat, "twice", null, undefined, `wamid.twice${T}`);
+    // A second message while "typing…" shows: they haven't seen the question yet.
+    await until("the pause before the question", async () => {
+      const r = await runOf(chat.conversationId);
+      const steps = r ? (await automations.kairos.getRun(r.id))?.steps : [];
+      return steps?.some((s) => s.name === "ask_question:q#1:pause" && s.status === "waiting");
+    });
+    await customerSays(chat, "twice");
+    await until("the run to wait for the answer", async () => {
+      const r = await runOf(chat.conversationId);
+      const steps = r ? (await automations.kairos.getRun(r.id))?.steps : [];
+      return steps?.some((s) => s.name.startsWith("ask_question:q#1:answer0~") && s.status === "waiting");
+    });
+    const asked = (await botMessages(chat.conversationId)).filter((m) => m.type === "interactive");
+    assert.equal(asked.length, 1, "no 'Please pick one' for a message sent before the question");
+    // A wrong answer after seeing the question is still asked again.
+    await customerSays(chat, "hello");
+    await until("the re-ask", async () => {
+      const m = (await botMessages(chat.conversationId)).filter((x) => x.type === "interactive");
+      return m.length === 2 ? m : null;
+    });
+    await customerSays(chat, "Prices");
+    const run = await until("the run to finish", async () => {
+      const r = await runOf(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    assert.deepEqual((run.output as { path: string[] }).path, ["q:opt:a1", "bye:end"]);
   });
 
   it("never lets a second run take a chat that a run is in charge of", async () => {

@@ -50,13 +50,14 @@ export type AutomationRunInput = {
 };
 
 /**
- * How long "typing…" shows before a message: about as long as a quick typist takes, between 1.2 s
- * and 4 s. Photos and files without a caption take 1.5 s.
+ * How long "typing…" shows before a message: long enough to be seen, short enough not to keep anyone
+ * waiting: 0.6 s for a short line, up to 1.8 s for a long message. Photos and files without a caption
+ * take 0.9 s.
  */
 export function typingPauseMs(text: string): number {
   const n = text.trim().length;
-  if (!n) return 1_500;
-  return Math.round(Math.min(4_000, Math.max(1_200, 800 + n * 30)));
+  if (!n) return 900;
+  return Math.round(Math.min(1_800, Math.max(600, 400 + n * 15)));
 }
 
 /** Labels on every automation run (searchable in Kairos and by the API). */
