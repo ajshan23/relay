@@ -240,3 +240,35 @@ Channel-agnostic message templates, WhatsApp first.
 
 Open: campaigns on top of templates, authentication-code buttons, carousels, translations of one template,
 template analytics, SMS registration.
+
+## 13. Catalogue and storage limit (2026-11-17)
+
+One catalogue per branch for anything a business sells. Design and research: `research/08-mira-catalogue.md`.
+
+- **Model.**
+  - **Types:** business-wide, with typed fields; templates for Product, Service, Menu item, Property, Room, Course, Vehicle and Package.
+  - **Items:** title, description, category and field values. Items carry no price.
+  - **Variants:** price in minor units and currency, SKU, stock, and duration for services.
+  - **Gallery:** an ordered list of photos, videos, audio and PDFs, one of them the primary.
+- **Search.**
+  - Exact filters run first: category with sub-categories, price on the sale price, stock, and choice, yes/no, number and date fields.
+  - Then full-text and meaning ranking on the filtered rows. Embeddings are 512-dim halfvec from text-embedding-3-small.
+  - There is deliberately no shared vector index: each query scans one branch's rows.
+- **Media.**
+  - The browser uploads straight to storage with a signed PUT.
+  - The `catalog-media` queue prepares each file for WhatsApp: JPEG under 5 MB; H.264/AAC MP4 under 16 MB (ffmpeg); MP3; PDF.
+  - Each business prepares one file at a time.
+- **Mira.**
+  - Tools: `search_catalog`, `get_item`, `show_items`, `show_item_media`.
+  - A price guard stops a reply that quotes an amount not found in this turn's results or the chat.
+  - **More details** taps are answered without a model call.
+- **WhatsApp.**
+  - One item goes as reply buttons with the item's photo on top. 2–10 items go as a carousel (signed links) or, if any lack a photo, as a list.
+  - The team can send items from the inbox.
+- **Import and copy.**
+  - Excel and CSV import in the background, one import at a time per business. Rows with the same id become one item with options; importing again updates it.
+  - **Copy to branch** shares files rather than duplicating them.
+- **Storage.**
+  - 500 MB per business for now (`storage_usage`, migration 0025). The business's own uploads are refused at the limit; files customers send are always kept.
+  - The nightly file sweep recounts usage and keeps any file that knowledge, an agent or a gallery still uses.
+- **Migrations.** 0025 (storage_usage) and 0026 (catalogue). They need ffmpeg/ffprobe on the server, plus a 1-day lifecycle rule on `uploads/`.
