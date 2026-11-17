@@ -16,6 +16,7 @@ import {
   asc,
   CatalogInputError,
   catalogCards,
+  copyCatalogItems,
   createCatalogType,
   desc,
   eq,
@@ -38,6 +39,7 @@ import { requireSession } from "../auth/session";
 import { branchAccess, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { catalogImportRoutes } from "./imports";
 import { catalogMediaRoutes } from "./media";
 
 /*
@@ -59,7 +61,9 @@ import { catalogMediaRoutes } from "./media";
  *   DELETE /api/catalog/items/:id
  *   POST   /api/catalog/items/bulk           { ids, action: archive | activate | delete }
  *   GET    /api/catalog/search               ?q&categoryId&priceMin&priceMax&inStock → cards, as Mira finds them
+ *   POST   /api/catalog/items/copy           { ids, toBranchId }: copies to another branch
  *   /api/catalog/media/*                      an item's gallery (media.ts)
+ *   /api/catalog/imports/*                    Excel / CSV imports (imports.ts)
  * Owners, admins and the branch's managers change things; anyone in the branch may look.
  */
 
@@ -69,6 +73,7 @@ export function catalogRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
   app.route("/media", catalogMediaRoutes(ctx));
+  app.route("/imports", catalogImportRoutes(ctx));
   const T = schema.catalogType;
   const F = schema.catalogField;
   const C = schema.catalogCategory;
@@ -513,6 +518,32 @@ export function catalogRoutes(ctx: AppContext) {
             .where(where)
             .returning({ id: I.id });
     return c.json({ changed: rows.length });
+  });
+
+  app.post("/items/copy", async (c) => {
+    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    const parsed = await parseBody(
+      c,
+      z.object({ ids: z.array(z.string()).min(1).max(500), toBranchId: z.string() }),
+    );
+    if ("error" in parsed) return parsed.error;
+    const target = await branchAccess(ctx, c.var.access, parsed.data.toBranchId);
+    if (target?.role !== "manager")
+      return fail(c, 403, "forbidden", "You can only copy to branches you manage.");
+    try {
+      const res = await copyCatalogItems(ctx.db, {
+        organizationId: orgOf(c),
+        fromBranchId: c.var.branchId,
+        toBranchId: parsed.data.toBranchId,
+        itemIds: parsed.data.ids,
+        userId: c.var.access.userId,
+        newId: (kind) => newId(kind),
+      });
+      return c.json(res);
+    } catch (err) {
+      if (err instanceof CatalogInputError) return fail(c, 422, "invalid_input", err.message);
+      throw err;
+    }
   });
 
   app.get("/search", async (c) => {

@@ -236,6 +236,11 @@ export function useCatalogActions() {
       mutationFn: (id: string) => call(`/catalog/items/${id}`, "DELETE"),
       onSettled: refresh,
     }),
+    copy: useMutation({
+      mutationFn: (body: { ids: string[]; toBranchId: string }) =>
+        call<{ copied: number; skusCleared: number }>("/catalog/items/copy", "POST", body),
+      onSettled: refresh,
+    }),
     bulk: useMutation({
       mutationFn: (body: { ids: string[]; action: "archive" | "activate" | "delete" }) =>
         call<{ changed: number }>("/catalog/items/bulk", "POST", body),

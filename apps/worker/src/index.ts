@@ -10,6 +10,7 @@ import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { type EmbedJob as CatalogEmbedJob, createCatalogEmbedder } from "./catalog/embed";
+import { createCatalogImporter, type ImportJob as CatalogImportJob } from "./catalog/import";
 import { type MediaJob as CatalogMediaJob, createCatalogMediaProcessor } from "./catalog/media";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
@@ -74,14 +75,35 @@ const embedCatalog = createCatalogEmbedder({
   db,
   embed: aiConfigured(config) ? createEmbedder(config, { dimensions: catalogEmbeddingDimensions }) : null,
 });
-const catalog = new Worker<CatalogEmbedJob>(
+const catalogQueue = new Queue(queues.catalog, { connection });
+const catalogMediaQueue = new Queue(queues.catalogMedia, { connection });
+const importCatalog = createCatalogImporter({
+  db,
+  storage: fileStorage(),
+  media: catalogMediaQueue,
+  embedSoon: (organizationId, branchId) =>
+    catalogQueue.add(
+      "embed",
+      { organizationId, branchId },
+      {
+        jobId: `embed_${branchId}_${Math.floor(Date.now() / 10_000)}`,
+        delay: 2_000,
+        attempts: 3,
+        removeOnComplete: true,
+      },
+    ),
+});
+type CatalogJob = CatalogEmbedJob | CatalogImportJob;
+const catalog = new Worker<CatalogJob>(
   queues.catalog,
-  onePerOrg<CatalogEmbedJob>(
+  onePerOrg<CatalogJob>(
     connection,
     "catalog",
     (job) => job.data.organizationId,
     async (job) => {
-      if (job.name === "embed") return embedCatalog(job);
+      if (job.name === "embed") return embedCatalog(job as Job<CatalogEmbedJob>);
+      if (job.name === "import-read") return importCatalog.read(job as Job<CatalogImportJob>);
+      if (job.name === "import") return importCatalog.run(job as Job<CatalogImportJob>);
     },
   ),
   { connection, concurrency: 2 },

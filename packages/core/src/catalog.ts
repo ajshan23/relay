@@ -374,3 +374,104 @@ export function catalogMediaKind(mimeType: string): CatalogMediaKind | null {
   if (m === "application/pdf") return "document";
   return null;
 }
+
+/* ------------------------------------------------------------------ imports */
+
+/**
+ * Where a spreadsheet column goes. Rows with the same id (or, without an id column, the same name)
+ * become one item, each row one of its options.
+ */
+export type CatalogImportTarget =
+  | "skip"
+  | "title"
+  | "description"
+  | "category"
+  | "price"
+  | "salePrice"
+  | "currency"
+  | "sku"
+  | "stock"
+  | "duration"
+  | "option"
+  | "externalId"
+  | "images"
+  | "tags"
+  | "status"
+  | `field:${string}`;
+
+export const catalogImportTargets: { value: CatalogImportTarget; label: string; hint: string }[] = [
+  { value: "title", label: "Name", hint: "Required" },
+  { value: "description", label: "Description", hint: "" },
+  { value: "category", label: "Category", hint: 'Use "Living > Sofas" for one inside another' },
+  { value: "price", label: "Price", hint: "" },
+  { value: "salePrice", label: "Sale price", hint: "" },
+  { value: "currency", label: "Currency", hint: "Otherwise your catalogue's currency" },
+  { value: "sku", label: "SKU", hint: "" },
+  { value: "stock", label: "Stock", hint: "" },
+  { value: "duration", label: "Length (minutes)", hint: "Services" },
+  { value: "option", label: "Option name", hint: "Rows with the same name or id become options" },
+  { value: "externalId", label: "Your id", hint: "Importing again updates these items" },
+  { value: "images", label: "Photo links", hint: "Web addresses, separated by commas" },
+  { value: "tags", label: "Tags", hint: "Separated by commas" },
+  { value: "status", label: "Status", hint: "On sale, draft or archived" },
+  { value: "skip", label: "Don't import", hint: "" },
+];
+
+const guesses: [RegExp, CatalogImportTarget][] = [
+  [/^(name|title|product|product name|item|item name|service)$/i, "title"],
+  [/desc/i, "description"],
+  [/categor|collection|department/i, "category"],
+  [/^(sale|offer|discount)\s*price|compare/i, "salePrice"],
+  [/price|mrp|rate|cost|amount/i, "price"],
+  [/^currency$/i, "currency"],
+  [/sku|barcode|code$/i, "sku"],
+  [/stock|qty|quantity|inventory/i, "stock"],
+  [/duration|length|minutes|mins/i, "duration"],
+  [/^(variant|option|size|variation)( name)?$/i, "option"],
+  [/^(id|external id|product id|handle)$/i, "externalId"],
+  [/image|photo|picture|img/i, "images"],
+  [/^tags?$/i, "tags"],
+  [/^status$/i, "status"],
+];
+
+/** A first guess for a column: one of the type's fields by name, else a known column, else skip. */
+export function guessCatalogTarget(
+  header: string,
+  fields: Pick<CatalogFieldDef, "key" | "label">[],
+): CatalogImportTarget {
+  const h = header.trim();
+  const field = fields.find((f) => f.label.toLowerCase() === h.toLowerCase() || f.key === fieldKey(h));
+  if (field) return `field:${field.key}`;
+  for (const [re, target] of guesses) if (re.test(h)) return target;
+  return "skip";
+}
+
+export type CatalogImportSheet = {
+  name: string;
+  headers: string[];
+  rowCount: number;
+  preview: unknown[][];
+  guesses: Record<string, CatalogImportTarget>;
+};
+
+export function summarizeCatalogSheet(
+  sheet: { name: string; headers: string[]; rows: unknown[][] },
+  fields: Pick<CatalogFieldDef, "key" | "label">[],
+): CatalogImportSheet {
+  const used = new Set<CatalogImportTarget>();
+  const guessed: Record<string, CatalogImportTarget> = {};
+  for (const h of sheet.headers) {
+    let g = guessCatalogTarget(h, fields);
+    // One column per target, except skip.
+    if (g !== "skip" && used.has(g)) g = "skip";
+    used.add(g);
+    guessed[h] = g;
+  }
+  return {
+    name: sheet.name,
+    headers: sheet.headers,
+    rowCount: sheet.rows.length,
+    preview: sheet.rows.slice(0, 5),
+    guesses: guessed,
+  };
+}

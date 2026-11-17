@@ -13,7 +13,14 @@ import {
 import { fieldKey } from "@relay/core/contacts";
 import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { createDb } from "./client";
-import { catalogCategory, catalogField, catalogItem, catalogType, catalogVariant } from "./schema/catalog";
+import {
+  catalogCategory,
+  catalogField,
+  catalogItem,
+  catalogMedia,
+  catalogType,
+  catalogVariant,
+} from "./schema/catalog";
 
 /*
  * Saving catalogue items, shared by the API and the import worker so both check items the same way:
@@ -670,4 +677,141 @@ export async function catalogCards(
   });
   const order = new Map(args.ids.map((id, i) => [id, i]));
   return cards.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+}
+
+/**
+ * Copies items (with their options, category and gallery) from one branch to another of the same
+ * business. Categories are matched by path and made if missing; photos and videos point at the same
+ * stored files, so nothing is uploaded or counted twice; the search vector is copied too. A SKU the
+ * other branch already uses is left empty on the copy.
+ */
+export async function copyCatalogItems(
+  db: Db,
+  args: {
+    organizationId: string;
+    fromBranchId: string;
+    toBranchId: string;
+    itemIds: string[];
+    userId: string | null;
+    newId: (kind: "catalogItem" | "catalogVariant" | "catalogMedia" | "catalogCategory") => string;
+  },
+) {
+  const { organizationId, fromBranchId, toBranchId } = args;
+  if (fromBranchId === toBranchId) throw new CatalogInputError("Pick another branch to copy to.");
+  return db.transaction(async (tx) => {
+    const items = await tx
+      .select()
+      .from(catalogItem)
+      .where(
+        and(
+          inArray(catalogItem.id, args.itemIds),
+          eq(catalogItem.organizationId, organizationId),
+          eq(catalogItem.branchId, fromBranchId),
+        ),
+      );
+    if (!items.length) return { copied: 0, skusCleared: 0 };
+    const itemIds = items.map((i) => i.id);
+    const [variants, media, fromCats, toCats, takenSkus] = await Promise.all([
+      tx.select().from(catalogVariant).where(inArray(catalogVariant.itemId, itemIds)),
+      tx
+        .select()
+        .from(catalogMedia)
+        .where(and(inArray(catalogMedia.itemId, itemIds), eq(catalogMedia.status, "ready"))),
+      tx
+        .select()
+        .from(catalogCategory)
+        .where(
+          and(eq(catalogCategory.organizationId, organizationId), eq(catalogCategory.branchId, fromBranchId)),
+        ),
+      tx
+        .select()
+        .from(catalogCategory)
+        .where(
+          and(eq(catalogCategory.organizationId, organizationId), eq(catalogCategory.branchId, toBranchId)),
+        ),
+      tx
+        .select({ sku: catalogVariant.sku })
+        .from(catalogVariant)
+        .where(
+          and(eq(catalogVariant.organizationId, organizationId), eq(catalogVariant.branchId, toBranchId)),
+        ),
+    ]);
+    const taken = new Set(takenSkus.map((r) => r.sku).filter(Boolean));
+    const pathOf = (id: string | null) => {
+      const names: string[] = [];
+      for (let c = fromCats.find((x) => x.id === id), g = 0; c && g < 10; g++) {
+        names.unshift(c.name);
+        c = fromCats.find((x) => x.id === c?.parentId);
+      }
+      return names;
+    };
+    const catIn = async (names: string[]) => {
+      let parentId: string | null = null;
+      for (const name of names) {
+        const under: string | null = parentId;
+        let found: typeof catalogCategory.$inferSelect | undefined = toCats.find(
+          (c) => c.parentId === under && c.name.toLowerCase() === name.toLowerCase(),
+        );
+        if (!found) {
+          const made: (typeof catalogCategory.$inferSelect)[] = await tx
+            .insert(catalogCategory)
+            .values({
+              id: args.newId("catalogCategory"),
+              organizationId,
+              branchId: toBranchId,
+              name,
+              parentId: under,
+            })
+            .returning();
+          found = made[0];
+          if (!found) return null;
+          toCats.push(found);
+        }
+        parentId = found.id;
+      }
+      return parentId;
+    };
+    let skusCleared = 0;
+    for (const item of items) {
+      const newItemId = args.newId("catalogItem");
+      const { id: _i, branchId: _b, createdAt: _c, updatedAt: _u, tsv: _t, externalId: _e, ...rest } = item;
+      await tx.insert(catalogItem).values({
+        ...rest,
+        id: newItemId,
+        branchId: toBranchId,
+        categoryId: item.categoryId ? await catIn(pathOf(item.categoryId)) : null,
+        source: "manual",
+        externalId: null,
+        createdByUserId: args.userId,
+      });
+      const variantIds = new Map<string, string>();
+      for (const v of variants.filter((x) => x.itemId === item.id)) {
+        const id = args.newId("catalogVariant");
+        variantIds.set(v.id, id);
+        let sku = v.sku;
+        if (sku && taken.has(sku)) {
+          sku = null;
+          skusCleared++;
+        }
+        if (sku) taken.add(sku);
+        const { id: _v, itemId: _it, branchId: _vb, createdAt: _vc, updatedAt: _vu, ...vrest } = v;
+        await tx
+          .insert(catalogVariant)
+          .values({ ...vrest, id, itemId: newItemId, branchId: toBranchId, sku });
+      }
+      for (const m of media.filter((x) => x.itemId === item.id)) {
+        const { id: _m, itemId: _mi, branchId: _mb, variantId, createdAt: _mc, updatedAt: _mu, ...mrest } = m;
+        await tx.insert(catalogMedia).values({
+          ...mrest,
+          id: args.newId("catalogMedia"),
+          itemId: newItemId,
+          branchId: toBranchId,
+          variantId: variantId ? (variantIds.get(variantId) ?? null) : null,
+          uploadKey: null,
+          reservedBytes: 0,
+        });
+      }
+    }
+    return { copied: items.length, skusCleared };
+  });
 }

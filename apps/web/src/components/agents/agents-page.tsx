@@ -10,6 +10,7 @@ import { Button } from "@relay/ui/ui/button";
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { useSearchParams } from "next/navigation";
 import { Gallery } from "@/components/catalog/gallery";
+import { ImportView } from "@/components/catalog/import-view";
 import { ItemsView } from "@/components/catalog/items-view";
 import { TypesView } from "@/components/catalog/types-view";
 import { ApiError } from "@/lib/api";
@@ -53,10 +54,14 @@ const titles: Record<string, { title: string; description: string }> = {
     title: "Types and fields",
     description: "The kinds of things you sell and the details each one has. Shared by every branch.",
   },
+  import: {
+    title: "Import",
+    description: "Add or update many items at once from an Excel or CSV file.",
+  },
 };
 
 /** Catalogue views work without an AI agent: the team uses the catalogue too. */
-const catalogViews = new Set(["items", "types-and-fields"]);
+const catalogViews = new Set(["items", "types-and-fields", "import"]);
 
 export const statusWords: Record<Agent["status"], { label: string; tone: "good" | "plain" | "warning" }> = {
   live: { label: "Live", tone: "good" },
@@ -83,7 +88,13 @@ export function AgentsPage() {
             <h1 className="text-2xl font-semibold tracking-tight">{head.title}</h1>
             <p className="text-sm text-muted-foreground">{head.description}</p>
           </header>
-          {view === "items" ? <ItemsView gallery={(item) => <Gallery item={item} />} /> : <TypesView />}
+          {view === "items" ? (
+            <ItemsView gallery={(item) => <Gallery item={item} />} />
+          ) : view === "import" ? (
+            <ImportView />
+          ) : (
+            <TypesView />
+          )}
         </>
       ) : q.isPending ? (
         <div className="flex flex-col gap-4">

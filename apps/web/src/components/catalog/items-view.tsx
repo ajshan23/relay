@@ -18,6 +18,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { StorageMeter } from "@/components/settings/storage-settings";
 import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
+import { useMe } from "@/lib/me";
 import { ItemEditor } from "./item-editor";
 import {
   type CatalogCategory,
@@ -162,6 +163,7 @@ function Items({
   const [selected, setSelected] = useState<ItemRow[]>([]);
   const [editing, setEditing] = useState<{ id: string | null } | null>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
   const categories = useMemo(() => categoryLabels(overview.categories), [overview.categories]);
 
   const columns = useMemo(() => {
@@ -339,6 +341,9 @@ function Items({
         <Panel padding="sm" className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">{selected.length} selected</span>
           <div className="ml-auto flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => setCopyOpen(true)}>
+              Copy to branch
+            </Button>
             <Button size="sm" variant="outline" onClick={() => bulk("activate")}>
               Put on sale
             </Button>
@@ -508,6 +513,77 @@ function CategoriesModal({
       <ModalActions>
         <Button variant="outline" onClick={() => onOpenChange(false)}>
           Done
+        </Button>
+      </ModalActions>
+    </Modal>
+  );
+}
+
+function CopyModal({
+  open,
+  onOpenChange,
+  ids,
+  onDone,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  ids: string[];
+  onDone: () => void;
+}) {
+  const { branch, branches } = useBranch();
+  const { me, canManageOrg } = useMe();
+  const actions = useCatalogActions();
+  // Branches this person manages (owners and admins manage all).
+  const managed = new Set(me.branches.filter((b) => canManageOrg || b.role === "manager").map((b) => b.id));
+  const targets = branches.filter((b) => b.id !== branch.id && managed.has(b.id));
+  const [to, setTo] = useState("");
+  const target = to || targets[0]?.id || "";
+  return (
+    <Modal
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Copy ${ids.length} item${ids.length === 1 ? "" : "s"} to another branch`}
+      description="Prices, options, categories, photos and videos are copied. Photos aren't stored twice."
+    >
+      {targets.length ? (
+        <Field label="Copy to">
+          <SelectField
+            value={target}
+            onValueChange={setTo}
+            options={targets.map((b) => ({ value: b.id, label: b.name }))}
+          />
+        </Field>
+      ) : (
+        <p className="text-sm text-muted-foreground">You don't manage another branch to copy to.</p>
+      )}
+      <ModalActions>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button
+          disabled={!target || actions.copy.isPending}
+          onClick={() =>
+            actions.copy.mutate(
+              { ids, toBranchId: target },
+              {
+                onSuccess: (r) => {
+                  notify.success(
+                    `${r.copied} item${r.copied === 1 ? "" : "s"} copied to ${branches.find((b) => b.id === target)?.name}`,
+                    r.skusCleared
+                      ? {
+                          description: `${r.skusCleared} SKU${r.skusCleared === 1 ? " was" : "s were"} already used there, so left empty.`,
+                        }
+                      : undefined,
+                  );
+                  onDone();
+                  onOpenChange(false);
+                },
+                onError: (err) => notify.error("Not copied", { description: errorText(err) }),
+              },
+            )
+          }
+        >
+          Copy
         </Button>
       </ModalActions>
     </Modal>
