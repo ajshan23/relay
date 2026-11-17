@@ -95,7 +95,8 @@ export type ModelCaller = (request: ModelRequest) => Promise<ModelResponse>;
 export type StepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
 export type TurnOutcome =
-  | { kind: "reply"; text: string }
+  /** gap: a question it couldn't answer from its knowledge (kept for "Improve"). */
+  | { kind: "reply"; text: string; gap?: string }
   | { kind: "options"; text: string; options: { id: string; title: string }[]; buttonText?: string }
   | { kind: "handoff"; reason: string; summary: string; text?: string }
   | { kind: "close"; reason: string; text?: string }

@@ -18,7 +18,7 @@ import {
   systemPrompt,
 } from "@relay/agent";
 import { fileStorage, newId } from "@relay/core";
-import { agentSettingsSchema, agentStarters } from "@relay/core/agents";
+import { agentPatchSchema, agentSettingsSchema, agentStarters } from "@relay/core/agents";
 import {
   aiCredits,
   and,
@@ -89,8 +89,10 @@ const knowledgeBody = z.discriminatedUnion("kind", [
     url: z
       .string()
       .trim()
-      .url("Enter a full web address, starting with https://")
-      .refine((u) => /^https?:\/\//i.test(u), "Enter a web address starting with https://"),
+      .refine(
+        (u) => URL.canParse(u) && /^https?:\/\//i.test(u),
+        "Enter a full web address, starting with https://",
+      ),
   }),
 ]);
 
@@ -198,7 +200,7 @@ export function agentRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c) => {
     if (!(await canManage(c))) return fail(c, 403, "forbidden");
-    const parsed = await parseBody(c, agentSettingsSchema.partial());
+    const parsed = await parseBody(c, agentPatchSchema);
     if ("error" in parsed) return parsed.error;
     const set = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
     return saveAgent(c, async () => {
@@ -329,7 +331,7 @@ export function agentRoutes(ctx: AppContext) {
         system: systemPrompt(profile),
         messages: chatMessages(
           lines,
-          contextNote(runCtx, { name: parsed.data.contactName ?? "Test customer" }),
+          contextNote(runCtx, { name: parsed.data.contactName ?? "Test customer" }, agent.languages),
         ),
         tools,
         ctx: runCtx,

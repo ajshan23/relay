@@ -58,7 +58,16 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
           setLast(r);
           const o = r.outcome;
           const add: Line[] = [];
-          if (o.kind === "reply") add.push(line({ from: "agent", text: o.text }));
+          if (o.kind === "reply") {
+            add.push(line({ from: "agent", text: o.text }));
+            if (o.gap)
+              add.push(
+                line({
+                  from: "event",
+                  text: `${agent.name} couldn't answer “${o.gap}”. In a real chat it goes to Improve.`,
+                }),
+              );
+          }
           if (o.kind === "options") add.push(line({ from: "agent", text: o.text, options: o.options }));
           if (o.kind === "handoff") {
             if (o.text) add.push(line({ from: "agent", text: o.text }));

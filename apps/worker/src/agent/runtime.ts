@@ -352,6 +352,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         case "reply": {
           const sent = await ctx.step(`t${turn}:send`, () => sendText(input, agent, stepKey, outcome.text));
           if (!sent.ok) return "send_failed";
+          if (outcome.gap) {
+            const question = outcome.gap;
+            await ctx.step(`t${turn}:gap`, () => noteGap(input, agent, `${stepKey}:gap`, question));
+          }
           break;
         }
         case "options": {
@@ -409,12 +413,12 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       timezone: await branchTimezone(input.branchId),
       now: new Date(),
     };
-    const tools = agentTools(agent, runCtx, `${ctx.runId}:${prefix}`);
+    const tools = agentTools(agent, runCtx);
     try {
       const result = await runTurn({
         model: modelFor(agent.model),
         system: systemPrompt(agent.profile),
-        messages: chatMessages(lines, contextNote(runCtx, contact)),
+        messages: chatMessages(lines, contextNote(runCtx, contact, agent.profile.languages)),
         tools,
         ctx: runCtx,
         callModel,
@@ -453,7 +457,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   }
 
   /** The tools for one turn, bound to this business and chat. */
-  function agentTools(agent: LoadedAgent, runCtx: RunContext, keyPrefix: string) {
+  function agentTools(agent: LoadedAgent, runCtx: RunContext) {
     return builtinTools({
       editableFields: agent.editableFields,
       searchKnowledge: async (query) => {
@@ -466,20 +470,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         });
         return hits.map((h) => ({ source: h.title, text: h.content }));
       },
-      noteGap: async (question) => {
-        await db
-          .insert(schema.aiGap)
-          .values({
-            id: newId("aiGap"),
-            organizationId: runCtx.orgId,
-            branchId: runCtx.branchId,
-            agentId: agent.id,
-            conversationId: runCtx.conversationId,
-            stepKey: `${keyPrefix}:gap:${question.slice(0, 80)}`,
-            question,
-          })
-          .onConflictDoNothing();
-      },
+      // An empty search is not yet a gap: the agent may search again or answer from the chat. Saying it
+      // can't answer (cant_answer) is what records the question.
       updateContact: async (change) => {
         if (!runCtx.contactId) return { saved: [] };
         const saved: string[] = [];
@@ -659,6 +651,22 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         status: "sent",
         automationStepKey: `${stepKey}:note`,
         sentAt: new Date(),
+      })
+      .onConflictDoNothing();
+  }
+
+  /** A question the agent couldn't answer, for "Improve" (once per step). */
+  async function noteGap(input: AgentRunInput, agent: LoadedAgent, stepKey: string, question: string) {
+    await db
+      .insert(schema.aiGap)
+      .values({
+        id: newId("aiGap"),
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        agentId: agent.id,
+        conversationId: input.conversationId,
+        stepKey,
+        question: question.slice(0, 500),
       })
       .onConflictDoNothing();
   }

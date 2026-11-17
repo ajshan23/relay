@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
+import { aiConfigured, createEmbedder, createModelCaller } from "@relay/agent";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
 import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
-import { aiConfigured, createEmbedder, createModelCaller } from "@relay/agent";
 import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
@@ -56,7 +56,11 @@ console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_A
 /* AI agent knowledge: read, cut into pieces and embed each source the business adds. */
 const knowledge = new Worker<KnowledgeJob>(
   queues.knowledge,
-  createKnowledgeProcessor({ db, storage: fileStorage(), embed: aiConfigured(config) ? createEmbedder(config) : null }),
+  createKnowledgeProcessor({
+    db,
+    storage: fileStorage(),
+    embed: aiConfigured(config) ? createEmbedder(config) : null,
+  }),
   { connection, concurrency: 2 },
 );
 knowledge.on("failed", (job, err) => console.warn(`knowledge ${job?.data.sourceId} failed: ${err.message}`));

@@ -1,4 +1,5 @@
 import { randomBytes, randomInt } from "node:crypto";
+import type { Embedder, ModelCaller } from "@relay/agent";
 import type { ChannelType } from "@relay/channels";
 import { newId, type Publisher, publishInboxEvent, type SignalJob } from "@relay/core";
 import {
@@ -65,7 +66,6 @@ import {
   type WorkflowContext,
 } from "@relay/kairos";
 import type { Queue } from "bullmq";
-import type { Embedder, ModelCaller } from "@relay/agent";
 import { createAgentRuntime } from "../agent/runtime";
 import type { InboundHook } from "../channels/ingest";
 import { channels } from "../channels/registry";
@@ -728,7 +728,9 @@ export function createAutomations({
             source: "automation",
             automationId: input.automationId,
             // No greeting: the agent answers straight away, from the chat so far.
-            trigger: h.greeting.trim() ? null : { messageId: input.trigger.messageId ?? "", text: input.trigger.text ?? "" },
+            trigger: h.greeting.trim()
+              ? null
+              : { messageId: input.trigger.messageId ?? "", text: input.trigger.text ?? "" },
             greeting: h.greeting.trim() || undefined,
             idempotencyKey: `aut:${stepKey}`,
             fromRunId: ctx.runId,

@@ -9,7 +9,7 @@ import type { AgentProfile, ChatLine, ContactFacts, RunContext } from "./types";
 /** The system prompt. It depends only on what the business taught the agent. */
 export function systemPrompt(agent: AgentProfile): string {
   const languages = agent.languages.length
-    ? `Reply in the customer's language if it is one of: ${agent.languages.join(", ")}. Otherwise reply in ${agent.languages[0]}.`
+    ? `Only ever reply in ${agent.languages.length === 1 ? agent.languages[0] : `one of these languages: ${agent.languages.join(", ")}`}. If the customer writes in one of them, use theirs; if they write in any other language, reply in ${agent.languages[0]}, even if you understand them.`
     : "Reply in the language the customer writes in.";
   const role = agent.role.trim() ? `${agent.role.trim()}` : `the assistant for ${agent.businessName}`;
   const sections = [
@@ -25,7 +25,7 @@ export function systemPrompt(agent: AgentProfile): string {
     [
       "## What you know",
       `- Before answering any question about the business (services, prices, timings, location, policies), use ${toolNames.search}.`,
-      "- Answer only from what the search returns or what is said in this chat. If the search has nothing, say you'll check with the team and hand the chat over. Never guess prices, dates, availability, or give medical, legal or financial advice.",
+      `- Answer only from what the search returns or what is said in this chat. If the search finds nothing, or nothing that answers the question, use ${toolNames.cantAnswer}. Never guess prices, dates, availability, or give medical, legal or financial advice.`,
       "- Never promise anything the business hasn't told you (discounts, bookings, refunds, delivery dates).",
     ].join("\n"),
     [
@@ -49,7 +49,7 @@ export function systemPrompt(agent: AgentProfile): string {
 }
 
 /** The volatile part: who the customer is and what time it is for the business. */
-export function contextNote(ctx: RunContext, contact: ContactFacts): string {
+export function contextNote(ctx: RunContext, contact: ContactFacts, languages: string[] = []): string {
   const time = new Intl.DateTimeFormat("en-GB", {
     timeZone: ctx.timezone,
     weekday: "long",
@@ -64,7 +64,29 @@ export function contextNote(ctx: RunContext, contact: ContactFacts): string {
   const fields = Object.entries(contact.fields ?? {}).filter(([, v]) => v);
   if (fields.length) lines.push(`On their contact card: ${fields.map(([k, v]) => `${k}: ${v}`).join("; ")}.`);
   if (contact.tags?.length) lines.push(`Tags: ${contact.tags.join(", ")}.`);
+  // Repeated here, last, because it is the rule models most often drift from.
+  if (languages.length)
+    lines.push(
+      languages.length === 1
+        ? `Reply only in ${languages[0]}, whatever language the customer writes in.`
+        : `Language: if the customer's last message is in ${languages.join(" or ")}, reply in that same language. If it is in any other language, reply in ${languages[0]}.`,
+    );
   return lines.join("\n");
+}
+
+/**
+ * Markdown the model sometimes writes, as WhatsApp shows it: **bold** → *bold*, __x__ → _x_,
+ * headings and code fences dropped, [label](url) → label: url.
+ */
+export function whatsappText(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/gs, "*$1*")
+    .replace(/__(.+?)__/gs, "_$1_")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/```[a-z]*\n?/g, "")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1: $2")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
 }
 
 /** Keeps the newest lines that fit in about `maxChars` (roughly 4 characters per token). */

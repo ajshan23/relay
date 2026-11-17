@@ -48,7 +48,7 @@ export type KnowledgeSource = {
 export type Gap = { id: string; question: string; conversationId: string | null; createdAt: string };
 
 export type TryOutcome =
-  | { kind: "reply"; text: string }
+  | { kind: "reply"; text: string; gap?: string }
   | { kind: "options"; text: string; options: { id: string; title: string }[] }
   | { kind: "handoff"; reason: string; summary: string; text?: string }
   | { kind: "close"; reason: string; text?: string }

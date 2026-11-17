@@ -17,7 +17,15 @@ export type KnowledgeSearchHit = { chunkId: string; sourceId: string; title: str
  */
 export async function searchKnowledge(
   db: DbOrTx,
-  opts: { orgId: string; branchId: string; terms: string | null; embedding: number[] | null; limit?: number },
+  opts: {
+    orgId: string;
+    branchId: string;
+    terms: string | null;
+    embedding: number[] | null;
+    limit?: number;
+    /** Meaning matches below this cosine similarity are dropped (unrelated pieces score about 0.1-0.25). */
+    minSimilarity?: number;
+  },
 ): Promise<KnowledgeSearchHit[]> {
   const limit = opts.limit ?? 5;
   if (!opts.terms && !opts.embedding) return [];
@@ -36,6 +44,7 @@ export async function searchKnowledge(
     parts.push(`select c.id, row_number() over (order by c.embedding <=> $${params.length}::vector) as r
       from knowledge_chunk c
       where c.organization_id = $1 and c.branch_id = $2 and c.embedding is not null
+        and 1 - (c.embedding <=> $${params.length}::vector) >= ${Number(opts.minSimilarity ?? 0.3)}
       order by c.embedding <=> $${params.length}::vector limit 20`);
   }
   const ranked = parts.map((p, i) => `l${i} as (${p})`).join(",\n");

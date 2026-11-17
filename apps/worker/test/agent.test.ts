@@ -89,6 +89,16 @@ const brain: ModelCaller = async (req) => {
         },
       ],
     });
+  if (text.includes("root canal"))
+    return r({
+      toolCalls: [
+        {
+          id: "g1",
+          name: toolNames.cantAnswer,
+          input: { question: "Root canal treatment?", text: "Let me check that with the team." },
+        },
+      ],
+    });
   if (text.includes("bye"))
     return r({
       toolCalls: [{ id: "c1", name: toolNames.close, input: { reason: "done", text: "Take care!" } }],
@@ -403,6 +413,23 @@ describe("AI agent in chats", () => {
     await customerSays(chat, "hello?");
     await new Promise((res) => setTimeout(res, 1500));
     assert.equal((await agentMessages(chat.conversationId)).length, 2, "no new answer after a hand-over");
+  });
+
+  it("keeps a question it couldn't answer for Improve", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "do you do root canal?");
+    const gap = await until("the question kept", async () => {
+      const rows = await db
+        .select()
+        .from(schema.aiGap)
+        .where(eq(schema.aiGap.conversationId, chat.conversationId));
+      return rows[0];
+    });
+    assert.equal(gap.question, "Root canal treatment?");
+    assert.equal(
+      textOf((await agentMessages(chat.conversationId))[0] as never),
+      "Let me check that with the team.",
+    );
   });
 
   it("closes the chat when the customer is done", async () => {

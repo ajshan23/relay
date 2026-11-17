@@ -117,7 +117,10 @@ describe("prompt", () => {
   });
 
   it("can restrict reply languages", () => {
-    assert.match(systemPrompt({ ...profile, languages: ["English", "Hindi"] }), /one of: English, Hindi/);
+    assert.match(
+      systemPrompt({ ...profile, languages: ["English", "Hindi"] }),
+      /one of these languages: English, Hindi.*reply in English, even if/,
+    );
   });
 });
 
@@ -203,6 +206,47 @@ describe("turn loop", () => {
     ]);
     const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
     assert.deepEqual(res.outcome, { kind: "close", reason: "done", text: "Take care!" });
+  });
+
+  it("says it can't answer and keeps the question", async () => {
+    const { caller } = scripted([
+      respond({
+        toolCalls: [
+          {
+            id: "g",
+            name: toolNames.cantAnswer,
+            input: {
+              question: "Do you do root canals?",
+              text: "I'll check with the team and get back to you.",
+            },
+          },
+        ],
+      }),
+    ]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, {
+      kind: "reply",
+      text: "I'll check with the team and get back to you.",
+      gap: "Do you do root canals?",
+    });
+    assert.match(systemPrompt(profile), /cant_answer/);
+    assert.match(systemPrompt({ ...profile, languages: ["English"] }), /Only ever reply in English/);
+  });
+
+  it("writes WhatsApp formatting, not Markdown, and repeats the language rule last", async () => {
+    const { caller } = scripted([
+      respond({ text: "## Prices\n**Cleaning** is AED 350. [Book](https://x.example/b)  \n" }),
+    ]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, {
+      kind: "reply",
+      text: "Prices\n*Cleaning* is AED 350. Book: https://x.example/b",
+    });
+    assert.match(
+      contextNote(ctx, {}, ["English", "Hindi"]),
+      /if the customer.s last message is in English or Hindi, reply in that same language\. If it is in any other language, reply in English\.$/,
+    );
+    assert.doesNotMatch(contextNote(ctx, {}), /Reply only/);
   });
 
   it("hands over instead of looping forever", async () => {

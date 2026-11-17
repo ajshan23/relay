@@ -61,20 +61,37 @@ export const agentHoursSchema = z
   })
   .nullable();
 
-/** What the Teach and Go live pages save. */
-export const agentSettingsSchema = z.object({
+/** Each setting's rule, with no defaults (a partial save must not reset what it doesn't send). */
+const agentFields = {
   name: z.string().trim().min(1, "Give it a name").max(40),
-  role: z.string().trim().max(120).default(""),
-  instructions: z.string().max(8000).default(""),
-  tone: z.string().trim().max(60).default("friendly"),
-  languages: z.array(z.string().trim().min(1).max(30)).max(8).default([]),
-  model: z.enum(["fast", "smart"]).default("fast"),
+  role: z.string().trim().max(120),
+  instructions: z.string().max(8000),
+  tone: z.string().trim().max(60),
+  languages: z.array(z.string().trim().min(1).max(30)).max(8),
+  model: z.enum(["fast", "smart"]),
   handoff: agentHandoffSchema,
-  answerUnclaimed: z.boolean().default(false),
-  hours: agentHoursSchema.default(null),
-  editableFields: z.array(z.string()).max(30).default([]),
-  avatarFileId: z.string().nullable().default(null),
+  answerUnclaimed: z.boolean(),
+  hours: agentHoursSchema,
+  editableFields: z.array(z.string()).max(30),
+  avatarFileId: z.string().nullable(),
+};
+
+/** A new agent's settings: anything not given gets its default. */
+export const agentSettingsSchema = z.object({
+  ...agentFields,
+  role: agentFields.role.default(""),
+  instructions: agentFields.instructions.default(""),
+  tone: agentFields.tone.default("friendly"),
+  languages: agentFields.languages.default([]),
+  model: agentFields.model.default("fast"),
+  answerUnclaimed: agentFields.answerUnclaimed.default(false),
+  hours: agentFields.hours.default(null),
+  editableFields: agentFields.editableFields.default([]),
+  avatarFileId: agentFields.avatarFileId.default(null),
 });
+
+/** What the Teach and Go live pages save: only the settings sent change. */
+export const agentPatchSchema = z.object(agentFields).partial();
 export type AgentSettings = z.infer<typeof agentSettingsSchema>;
 
 /** Starting points for the "Your job" text. */

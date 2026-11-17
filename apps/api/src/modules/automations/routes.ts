@@ -920,7 +920,10 @@ export function automationRoutes(ctx: AppContext) {
     } | null = null;
     if (conv.automationRunId) {
       const found = await ctx.kairos.getRun(conv.automationRunId).catch(() => null);
-      const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels> & { ai?: boolean; agentId?: string };
+      const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels> & {
+        ai?: boolean;
+        agentId?: string;
+      };
       if (found && isLiveRun(found.run) && l.ai && l.agentId) {
         // The AI agent holds the chat.
         const [agent] = await ctx.db

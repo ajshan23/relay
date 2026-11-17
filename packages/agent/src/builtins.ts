@@ -24,6 +24,7 @@ export const toolNames = {
   handoff: "hand_to_person",
   updateContact: "update_contact",
   close: "close_chat",
+  cantAnswer: "cant_answer",
 } as const;
 
 /** The tools every agent has. Later phases add booking, catalogue and custom ones next to these. */
@@ -33,7 +34,7 @@ export function builtinTools(deps: BuiltinDeps): AgentTool<unknown>[] {
       name: toolNames.search,
       kind: "read",
       description:
-        "Search what the business has taught you (notes, questions and answers, files, its website). Use it before answering any question about the business: services, prices, timings, location, policies. Search with the customer's words, in their language or English.",
+        "Search what the business has taught you (notes, questions and answers, files, its website). Use it before answering any question about the business: services, prices, timings, location, policies. Search in English with the key words of the question (translate it if the customer wrote in another language).",
       input: z.object({ query: z.string().min(2).max(300).describe("What to look for") }),
       run: async ({ query }, ctx) => {
         const hits = await deps.searchKnowledge(query, ctx);
@@ -61,6 +62,16 @@ export function builtinTools(deps: BuiltinDeps): AgentTool<unknown>[] {
           .max(10)
           .describe("Short choice labels, 24 characters at most"),
         buttonText: z.string().max(20).optional().describe("List button label, e.g. 'Choose'"),
+      }),
+    }),
+    defineTool({
+      name: toolNames.cantAnswer,
+      kind: "reply",
+      description:
+        "Reply when what you found doesn't answer the customer's question: tell them you'll check with the team (and offer a person if it seems urgent). The question is passed to the business so they can teach you the answer. Ends your turn.",
+      input: z.object({
+        question: z.string().min(2).max(300).describe("The customer's question, short and in English"),
+        text: z.string().min(1).max(1000).describe("Your message to the customer"),
       }),
     }),
     defineTool({

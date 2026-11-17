@@ -1,4 +1,5 @@
 import { toolNames } from "./builtins";
+import { whatsappText } from "./prompt";
 import { envelope, runTool } from "./tools";
 import type {
   AgentTool,
@@ -66,7 +67,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
     trace.calls.push({ model: response.model, usage: response.usage, latencyMs: response.latencyMs });
     await input.onModelCall?.(response, call);
 
-    const text = response.text.trim();
+    const text = whatsappText(response.text);
     if (!response.toolCalls.length)
       return { outcome: text ? { kind: "reply", text } : { kind: "silent" }, trace };
 
@@ -130,11 +131,13 @@ function endingOutcome(call: ToolCall, text: string, tool: AgentTool<unknown>): 
   const parsed = tool.input.safeParse(call.input);
   if (!parsed.success) return text ? { kind: "reply", text } : null;
   const data = parsed.data as Record<string, unknown>;
+  if (call.name === toolNames.cantAnswer)
+    return { kind: "reply", text: whatsappText(String(data.text)), gap: String(data.question) };
   if (call.name === toolNames.options) {
     const options = (data.options as string[]).map((title, i) => ({ id: `o${i + 1}`, title }));
     return {
       kind: "options",
-      text: String(data.text),
+      text: whatsappText(String(data.text)),
       options,
       ...(data.buttonText ? { buttonText: String(data.buttonText) } : {}),
     };
@@ -147,7 +150,7 @@ function endingOutcome(call: ToolCall, text: string, tool: AgentTool<unknown>): 
       ...(text ? { text } : {}),
     };
   if (tool.kind === "end") {
-    const last = (data.text as string | undefined)?.trim() || text;
+    const last = whatsappText(String(data.text ?? "")) || text;
     return { kind: "close", reason: String(data.reason), ...(last ? { text: last } : {}) };
   }
   return null;
