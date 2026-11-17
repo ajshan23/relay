@@ -118,7 +118,8 @@ export function buildWhatsAppInteractive(message: Extract<OutboundMessage, { typ
   const body = { text: cut(message.body, 1024) };
   if (message.kind === "location_request")
     return { type: "location_request_message", body, action: { name: "send_location" } };
-  const footer = message.footer ? { footer: { text: cut(message.footer, 60) } } : {};
+  const footerText = "footer" in message ? message.footer : undefined;
+  const footer = footerText ? { footer: { text: cut(footerText, 60) } } : {};
   if (message.kind === "cta_url") {
     const h = message.headerMedia;
     return {
@@ -142,9 +143,37 @@ export function buildWhatsAppInteractive(message: Extract<OutboundMessage, { typ
       },
     };
   }
+  if (message.kind === "carousel")
+    // https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/interactive-media-carousel-messages
+    return {
+      type: "carousel",
+      body,
+      action: {
+        cards: message.cards.slice(0, 10).map((c, i) => ({
+          card_index: i,
+          type: "cta_url",
+          header: { type: c.media.kind, [c.media.kind]: { link: c.media.link } },
+          ...(c.body ? { body: { text: cut(c.body, 160) } } : {}),
+          action: {
+            buttons: c.buttons.slice(0, 2).map((b) => ({
+              type: "quick_reply",
+              quick_reply: { id: b.id.slice(0, 256), title: cut(b.title, 20) },
+            })),
+          },
+        })),
+      },
+    };
   if (message.kind === "buttons")
     return {
       type: "button",
+      ...(message.headerMedia
+        ? {
+            header: {
+              type: message.headerMedia.kind,
+              [message.headerMedia.kind]: { id: message.headerMedia.providerMediaId },
+            },
+          }
+        : {}),
       body,
       ...footer,
       action: {

@@ -329,8 +329,10 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
     const header = (message.content as { header?: { kind: string; attachmentId?: string | null } | null })
       .header;
     // So does a link button with a picture, video or file on top.
-    const isLinkButton =
-      message.type === "interactive" && (message.content as { kind?: string }).kind === "cta_url";
+    // …and a catalogue card: reply buttons with the item's main photo on top.
+    const interactiveKind =
+      message.type === "interactive" ? (message.content as { kind?: string }).kind : null;
+    const isLinkButton = interactiveKind === "cta_url" || interactiveKind === "buttons";
     if ((isTemplate || isLinkButton) && header && header.kind !== "text" && header.attachmentId) {
       const [file] = await db
         .select()
@@ -364,6 +366,46 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
         providerMediaId,
         fileName: file.fileName ?? undefined,
       };
+    }
+
+    // Carousel cards carry their pictures as links WhatsApp fetches: signed for a week.
+    let carouselLinks: Map<string, string> | undefined;
+    if (interactiveKind === "carousel") {
+      const cards = ((message.content as { cards?: { fileId?: string }[] }).cards ?? []).map(
+        (c) => c.fileId ?? "",
+      );
+      const files = cards.length
+        ? await db
+            .select({
+              id: schema.storedFile.id,
+              storageKey: schema.storedFile.storageKey,
+              mimeType: schema.storedFile.mimeType,
+            })
+            .from(schema.storedFile)
+            .where(
+              and(
+                inArray(schema.storedFile.id, cards),
+                eq(schema.storedFile.organizationId, message.organizationId),
+              ),
+            )
+        : [];
+      carouselLinks = new Map();
+      for (const f of files) {
+        const link = await storage.signedUrl(f.storageKey, {
+          expiresIn: 7 * 24 * 3600,
+          contentType: f.mimeType,
+          inline: true,
+        });
+        if (link) carouselLinks.set(f.id, link);
+      }
+      if (cards.length < 2 || cards.some((id) => !carouselLinks?.has(id))) {
+        await fail(message.id, {
+          reason: "error",
+          message:
+            "The pictures for these cards couldn't be prepared (they need file storage that gives links).",
+        });
+        throw new UnrecoverableError("carousel media missing");
+      }
     }
 
     await throttle(job, account.id, token);
@@ -416,7 +458,7 @@ export function createOutboxProcessor({ db, redis }: { db: Db; redis: Redis }) {
           emoji: (message.content as { emoji?: string }).emoji ?? "",
         }
       : message.type === "interactive"
-        ? interactiveOutbound(message.content, replyToExternalId, headerMedia)
+        ? interactiveOutbound(message.content, replyToExternalId, headerMedia, carouselLinks)
         : message.type === "location"
           ? locationOutbound(message.content, replyToExternalId)
           : isTemplate
@@ -506,6 +548,7 @@ function interactiveOutbound(
   content: Record<string, unknown>,
   replyToExternalId?: string,
   headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string },
+  carouselLinks?: Map<string, string>,
 ): OutboundMessage {
   const c = content as {
     kind?: string;
@@ -517,6 +560,25 @@ function interactiveOutbound(
   };
   if (c.kind === "location_request")
     return { type: "interactive", kind: "location_request", body: c.body ?? "", replyToExternalId };
+  if (c.kind === "carousel") {
+    const cards = (content.cards ?? []) as {
+      fileId: string;
+      mediaKind: "image" | "video";
+      body?: string;
+      buttons: { id: string; title: string }[];
+    }[];
+    return {
+      type: "interactive",
+      kind: "carousel",
+      body: c.body ?? "",
+      cards: cards.map((card) => ({
+        media: { kind: card.mediaKind, link: carouselLinks?.get(card.fileId) ?? "" },
+        body: card.body,
+        buttons: card.buttons,
+      })),
+      replyToExternalId,
+    };
+  }
   if (c.kind === "cta_url")
     return {
       type: "interactive",
@@ -534,6 +596,7 @@ function interactiveOutbound(
     options: c.options ?? [],
     buttonText: c.buttonText,
     footer: c.footer ?? undefined,
+    ...(c.kind !== "list" && headerMedia ? { headerMedia } : {}),
     replyToExternalId,
   };
 }

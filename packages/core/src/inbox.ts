@@ -26,8 +26,19 @@ export function previewText(content: Record<string, unknown>): string | null {
       return str(content.name) ?? str(content.address);
     case "button":
       return str(content.text);
-    case "interactive":
+    case "interactive": {
+      // Catalogue items we showed: name and price, so the AI agent's history says what was shown.
+      const items = Array.isArray(content.items)
+        ? (content.items as { title?: string; priceText?: string | null }[])
+        : [];
+      if (items.length) {
+        const shown = items
+          .map((i) => `${i.title ?? ""}${i.priceText ? ` (${i.priceText})` : ""}`)
+          .join("; ");
+        return [str(content.body), `[Showed: ${shown}]`].filter(Boolean).join("\n");
+      }
       return str(content.title) ?? str(content.name) ?? str(content.body);
+    }
     case "order":
       return str(content.text);
     case "template":

@@ -150,6 +150,70 @@ describe("WhatsApp link buttons and locations", () => {
       },
     });
   });
+  it("builds an item card: reply buttons with the main photo on top", () => {
+    const body = buildWhatsAppSendBody(
+      to,
+      {
+        type: "interactive",
+        kind: "buttons",
+        body: "*Sofa Oslo*\nAED 1,800",
+        options: [
+          { id: "qa_i0m", title: "More details" },
+          { id: "qa_i0o", title: "Order" },
+        ],
+        headerMedia: { kind: "image", providerMediaId: "IMG2" },
+      },
+      "m5",
+    );
+    assert.deepEqual(body.interactive, {
+      type: "button",
+      header: { type: "image", image: { id: "IMG2" } },
+      body: { text: "*Sofa Oslo*\nAED 1,800" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: "qa_i0m", title: "More details" } },
+          { type: "reply", reply: { id: "qa_i0o", title: "Order" } },
+        ],
+      },
+    });
+  });
+  it("builds a carousel of cards with linked pictures and the same buttons on each", () => {
+    const card = (n: number) => ({
+      media: { kind: "image" as const, link: `https://files.example/${n}.jpg` },
+      body: `Item ${n}\n${"x".repeat(200)}`,
+      buttons: [
+        { id: `q_i${n}m`, title: "More details" },
+        { id: `q_i${n}o`, title: "Order" },
+        { id: "extra", title: "Ignored third" },
+      ],
+    });
+    const body = buildWhatsAppSendBody(
+      to,
+      { type: "interactive", kind: "carousel", body: "Two picks", cards: [card(0), card(1)] },
+      "m6",
+    );
+    const i = body.interactive as {
+      type: string;
+      body: { text: string };
+      action: { cards: Record<string, unknown>[] };
+    };
+    assert.equal(i.type, "carousel");
+    assert.deepEqual(i.body, { text: "Two picks" });
+    assert.equal(i.action.cards.length, 2);
+    const first = i.action.cards[0] as {
+      card_index: number;
+      header: unknown;
+      body: { text: string };
+      action: { buttons: { quick_reply: { id: string } }[] };
+    };
+    assert.equal(first.card_index, 0);
+    assert.deepEqual(first.header, { type: "image", image: { link: "https://files.example/0.jpg" } });
+    assert.equal(first.body.text.length, 160, "card text is cut to 160");
+    assert.deepEqual(
+      first.action.buttons.map((b) => b.quick_reply.id),
+      ["q_i0m", "q_i0o"],
+    );
+  });
   it("asks for the customer's location", () => {
     const body = buildWhatsAppSendBody(
       to,

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { type ModelCaller, type ModelRequest, type ModelResponse, toolNames } from "@relay/agent";
+import {
+  catalogToolNames,
+  type ModelCaller,
+  type ModelRequest,
+  type ModelResponse,
+  toolNames,
+} from "@relay/agent";
+import { newId } from "@relay/core";
 import { agentWorkflow } from "@relay/core/agents";
 import { emptyDefinition, type InboundEventPayload } from "@relay/core/automations";
-import { createDb, eq, schema, sql } from "@relay/db";
+import { createCatalogType, createDb, eq, saveCatalogItem, schema, sql } from "@relay/db";
 import { createAutomations } from "../src/automations/runtime";
 
 /*
@@ -26,6 +33,9 @@ const ids = {
   automation: `aut_${T}`,
   version: `autv_${T}`,
 };
+
+/** The seeded catalogue's item ids, for the pretend model. */
+const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}` };
 
 /** What each model call was sent, for checks. */
 const calls: ModelRequest[] = [];
@@ -99,6 +109,16 @@ const brain: ModelCaller = async (req) => {
         },
       ],
     });
+  if (text.includes("sofa"))
+    return r({
+      toolCalls: [
+        {
+          id: "c1",
+          name: catalogToolNames.show,
+          input: { itemIds: [catalog.sofa, catalog.table], text: "Two picks" },
+        },
+      ],
+    });
   if (text.includes("bye"))
     return r({
       toolCalls: [{ id: "c1", name: toolNames.close, input: { reason: "done", text: "Take care!" } }],
@@ -159,6 +179,7 @@ async function customerSays(
   chat: { contactId: string; conversationId: string },
   text: string,
   reply: { id: string; title: string } | null = null,
+  replyTo: string | null = null,
 ) {
   const messageId = `msg_${T}_${++msgSeq}`;
   await db.transaction(async (tx) => {
@@ -175,6 +196,7 @@ async function customerSays(
         : { type: "text", text },
       status: "received",
       sentAt: new Date(),
+      replyToMessageId: replyTo,
     });
     const ev: InboundEventPayload = {
       messageId,
@@ -349,6 +371,68 @@ before(async () => {
     definition: def2,
     checksum: "test",
   });
+  // A small catalogue: a sofa with two photos and a table with one.
+  await db
+    .insert(schema.organizationSettings)
+    .values({ organizationId: ids.org, catalog: { currency: "AED" } });
+  const type = await createCatalogType(db, {
+    organizationId: ids.org,
+    name: "Furniture",
+    kind: "product",
+    template: "product",
+    newId: (k) => newId(k),
+  });
+  for (const [key, title, price] of [
+    ["sofa", "Sofa Oslo", 1800],
+    ["table", "Oak table", 900],
+  ] as const) {
+    const item = await saveCatalogItem(db, {
+      organizationId: ids.org,
+      branchId: ids.branch,
+      userId: null,
+      input: {
+        typeId: type.id,
+        title,
+        description: "",
+        attributes: {},
+        status: "active",
+        tags: [],
+        variants: [{ title: "", price, currency: "AED", options: {}, available: true, bookable: false }],
+      },
+      newId: (k) => newId(k),
+    });
+    catalog[key] = item.id;
+  }
+  for (const [itemId, n, primary] of [
+    [catalog.sofa, 1, true],
+    [catalog.sofa, 2, false],
+    [catalog.table, 3, true],
+  ] as const) {
+    const fileId = `sf_c${T}_${n}`;
+    await db
+      .insert(schema.storedFile)
+      .values({
+        id: fileId,
+        organizationId: ids.org,
+        sha256: `${T}${n}`.padEnd(64, "0"),
+        sizeBytes: 10,
+        mimeType: "image/jpeg",
+        storageKey: `files/x/${n}`,
+      });
+    await db
+      .insert(schema.catalogMedia)
+      .values({
+        id: `ctm_c${T}_${n}`,
+        organizationId: ids.org,
+        branchId: ids.branch,
+        itemId,
+        fileId,
+        kind: "image",
+        status: "ready",
+        isPrimary: primary,
+        position: n,
+      });
+  }
   await automations.startWorker(worker);
 });
 
@@ -547,6 +631,60 @@ describe("AI agent in chats", () => {
       return m.length ? m : null;
     });
     assert.equal(textOf(reply as never), "You said: prices?");
+  });
+
+  it("shows catalogue items as cards, sends the gallery on More details without the model, and names the item on Order", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "do you have a sofa?");
+    const [cards] = await until("the cards", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const c = cards?.content as {
+      kind: string;
+      body: string;
+      cards: { fileId: string; buttons: { id: string; title: string }[] }[];
+      items: { id: string }[];
+    };
+    assert.equal(c.kind, "carousel", "both items have a photo");
+    assert.equal(c.body, "Two picks");
+    assert.deepEqual(
+      c.items.map((i) => i.id),
+      [catalog.sofa, catalog.table],
+    );
+    assert.deepEqual(
+      c.cards[0]?.buttons.map((b) => b.title),
+      ["More details", "Order"],
+    );
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+
+    const before = calls.length;
+    const more = c.cards[0]?.buttons[0] as { id: string; title: string };
+    await customerSays(chat, "More details", more, cards?.id ?? null);
+    const gallery = await until("the gallery", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length > 1 ? m.slice(1) : null;
+    });
+    const g = gallery[0]?.content as {
+      kind: string;
+      body: string;
+      cards: unknown[];
+      items: { id: string }[];
+    };
+    assert.equal(g.kind, "carousel", "the sofa's two photos");
+    assert.equal(g.cards.length, 2);
+    assert.match(g.body, /\*Sofa Oslo\*\nAED 1,800/);
+    assert.equal(calls.length, before, "no model call for More details");
+
+    await until("waiting again", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    const order = c.cards[0]?.buttons[1] as { id: string; title: string };
+    await customerSays(chat, "Order", order, cards?.id ?? null);
+    await until("the answer", async () => calls.length > before);
+    const said = lastCustomerTexts(calls.at(-1)?.messages ?? []).join(" ");
+    assert.match(said, new RegExp(`tapped "Order" on Sofa Oslo \\(${catalog.sofa}\\)`));
+    // The agent's prompt says it sells from a catalogue and has the tools for it.
+    assert.match(calls.at(-1)?.system ?? "", /What the business sells/);
+    assert.ok(calls.at(-1)?.tools.some((t) => t.name === catalogToolNames.search));
   });
 
   it("sends nothing when the reply window is closed", async () => {

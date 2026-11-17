@@ -8,6 +8,7 @@ import {
   eq,
   ilike,
   inArray,
+  createCatalogPresenter,
   insertOutboundMessage,
   isNull,
   or,
@@ -1064,6 +1065,62 @@ export function conversationRoutes(ctx: AppContext) {
     await stopForAgentReply(ctx, conversation);
     await announce(conversation);
     return c.json({ message }, 201);
+  });
+
+  // Send catalogue items from the inbox: a card, a carousel or a list, as the AI agent would.
+  app.post("/:id/send-items", async (c) => {
+    const access = c.var.access;
+    const parsed = await parseBody(
+      c,
+      z.object({
+        itemIds: z.array(z.string()).min(1).max(10),
+        text: z.string().trim().max(600).optional(),
+        action: z.enum(["order", "book", "none"]).default("order"),
+      }),
+    );
+    if ("error" in parsed) return parsed.error;
+    const conversation = await findConversation(ctx, access, c.req.param("id"));
+    if (!conversation?.branchId) return fail(c, 404, "not_found");
+    if (!(await canWork(ctx, access, conversation)))
+      return fail(c, 403, "forbidden", "Viewers can read conversations but not reply.");
+    if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date())
+      return fail(c, 409, "window_closed", "The reply window has closed. Only an approved template can be sent now.");
+    const [user] = await ctx.db
+      .select({ name: schema.user.name })
+      .from(schema.user)
+      .where(eq(schema.user.id, access.userId))
+      .limit(1);
+    const sent: string[] = [];
+    const presenter = createCatalogPresenter({ db: ctx.db });
+    const res = await presenter.showItems({
+      organizationId: conversation.organizationId,
+      branchId: conversation.branchId,
+      stepKey: `team:${newId("message")}`,
+      itemIds: parsed.data.itemIds,
+      action: parsed.data.action,
+      text: parsed.data.text,
+      send: async (key, type, content, attachmentId) => {
+        const id = newId("message");
+        await insertOutboundMessage(ctx.db, {
+          id,
+          conversation,
+          type,
+          content,
+          senderType: "user",
+          senderUserId: access.userId,
+          senderName: user?.name ?? null,
+          automationStepKey: key,
+          ...(attachmentId ? { attachmentId } : {}),
+        });
+        await enqueue(ctx.queues.outbox, "send", { messageId: id }, { jobId: id, ...outboxJobOptions });
+        sent.push(id);
+        return { ok: true, messageId: id };
+      },
+    });
+    if (!res.ok) return fail(c, 422, "not_sent", "Those items couldn't be sent.");
+    await stopForAgentReply(ctx, conversation);
+    await announce(conversation);
+    return c.json({ messageIds: sent }, 201);
   });
 
   // React to a message (or take our reaction away with an empty emoji). WhatsApp: within the reply

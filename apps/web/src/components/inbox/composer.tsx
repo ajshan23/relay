@@ -17,6 +17,7 @@ import { Spinner } from "@relay/ui/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@relay/ui/ui/tooltip";
 import Link from "next/link";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ItemPicker } from "@/components/catalog/item-picker";
 import { useQuickReplies } from "@/components/quick-replies/queries";
 import { ApiError } from "@/lib/api";
 import { useMe } from "@/lib/me";
@@ -143,6 +144,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
     !!lock && !!caps && detail.canWork && detail.channel.status === "active" && !groupDown && !left;
   const canTemplate = !!caps?.templates && caps.outboundTypes.includes("template");
   const [picking, setPicking] = useState(false);
+  const [pickingItems, setPickingItems] = useState(false);
   const pickerDialog = canTemplate ? (
     <TemplatePicker detail={detail} open={picking} onOpenChange={setPicking} />
   ) : null;
@@ -502,6 +504,25 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
                     )
                   }
                 />
+              ) : null}
+              {detail.conversation.kind === "direct" && !lock ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Send items from the catalogue"
+                      onClick={() => setPickingItems(true)}
+                    >
+                      <Icon name="tag" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Send items</TooltipContent>
+                </Tooltip>
+              ) : null}
+              {detail.conversation.kind === "direct" ? (
+                <ItemPicker conversationId={id} open={pickingItems} onOpenChange={setPickingItems} />
               ) : null}
               {canTemplate ? (
                 <Tooltip>

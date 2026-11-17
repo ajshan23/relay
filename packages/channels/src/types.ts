@@ -359,6 +359,22 @@ export type OutboundMessage = (
       /** The list's button (lists only). */
       buttonText?: string;
       footer?: string;
+      /** Buttons only: a picture or video on top (a catalogue item's main photo). */
+      headerMedia?: { kind: "image" | "video" | "document"; providerMediaId: string; fileName?: string };
+    }
+  /**
+   * Swipeable cards (2–10), each with a picture or video, a short text and the same set of reply
+   * buttons (taps come back as button_reply). The media are public links the channel fetches.
+   */
+  | {
+      type: "interactive";
+      kind: "carousel";
+      body: string;
+      cards: {
+        media: { kind: "image" | "video"; link: string };
+        body?: string;
+        buttons: { id: string; title: string }[];
+      }[];
     }
   /** A message with one button that opens a web page. Taps aren't reported by the channel. */
   | {

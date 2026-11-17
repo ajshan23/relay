@@ -52,8 +52,12 @@ const automations = createAutomations({
   signals: automationSignals,
   linkBase: config.WEB_URL,
   ai: aiConfigured(config)
-    ? { callModel: createModelCaller(config), embed: createEmbedder(config) }
-    : { callModel: null, embed: null },
+    ? {
+        callModel: createModelCaller(config),
+        embed: createEmbedder(config),
+        embedCatalog: createEmbedder(config, { dimensions: catalogEmbeddingDimensions }),
+      }
+    : { callModel: null, embed: null, embedCatalog: null },
 });
 const automationWorker = automations.worker();
 console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_API_KEY)");

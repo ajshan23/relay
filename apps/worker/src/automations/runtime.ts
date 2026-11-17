@@ -49,6 +49,7 @@ import {
   activeFields,
   and,
   compileFilter,
+  createCatalogPresenter,
   type createDb,
   eq,
   inArray,
@@ -128,7 +129,7 @@ export function createAutomations({
   /** Where tracked links live: the web app's address (WEB_URL), which forwards /l/<code> to the API. */
   linkBase?: string;
   /** The AI agent's model and embedder; null without an AI key (the agent then hands chats over). */
-  ai?: { callModel: ModelCaller | null; embed: Embedder | null };
+  ai?: { callModel: ModelCaller | null; embed: Embedder | null; embedCatalog?: Embedder | null };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
 
@@ -145,6 +146,7 @@ export function createAutomations({
   }
 
   // The AI agent shares this Kairos, the chat's controller and "typing…".
+  const itemPresenter = createCatalogPresenter({ db });
   const agents = createAgentRuntime({
     db,
     kairos,
@@ -154,6 +156,7 @@ export function createAutomations({
     showTyping: (conversationId, key) => showTyping({ conversationId } as AutomationRunInput, key),
     callModel: ai.callModel,
     embed: ai.embed,
+    embedCatalog: ai.embedCatalog ?? null,
   });
 
   /** Clears the chat's controller if it is still this run. */
@@ -261,6 +264,34 @@ export function createAutomations({
     // A tap on a button from an automation's earlier (finished) run: carry on from that choice.
     const resumed = await resumeFromTap(ev, conv);
     if (resumed) return resumed;
+
+    // A tap on an item card nothing is running for (the team sent it, or the agent has finished):
+    // "More details" sends the item's photos and videos, a list row sends that item's card.
+    const itemTap = ev.reply ? await itemPresenter.readTap(ev.messageId, ev.reply.id) : null;
+    if (itemTap && (itemTap.action === "more" || itemTap.action === "select") && conv.branchId) {
+      const args = {
+        organizationId: conv.organizationId,
+        branchId: conv.branchId,
+        stepKey: `tap:${ev.messageId}`,
+        itemId: itemTap.itemId,
+        send: async (key: string, type: string, content: Record<string, unknown>, attachmentId?: string) => {
+          const { message } = await insertOutboundMessage(db, {
+            id: newId("message"),
+            conversation: conv,
+            type,
+            content,
+            senderType: "bot",
+            automationStepKey: key,
+            ...(attachmentId ? { attachmentId } : {}),
+          });
+          if (message.status === "queued")
+            await outbox.add("send", { messageId: message.id }, { jobId: message.id, ...outboxJobOptions });
+          return { ok: true as const, messageId: message.id };
+        },
+      };
+      await (itemTap.action === "more" ? itemPresenter.showGallery(args) : itemPresenter.showItemCard(args));
+      return { action: "item_tap", itemId: itemTap.itemId };
+    }
 
     // Which live automation this message starts: candidates on this number, most specific wins.
     const rows = await db

@@ -26,10 +26,18 @@ import {
   agentWorkflow,
   withinAgentHours,
 } from "@relay/core/agents";
-import { automationEvents, type InboundEventPayload, optionReplyId } from "@relay/core/automations";
+import {
+  automationEvents,
+  type InboundEventPayload,
+  optionOfReply,
+  optionReplyId,
+} from "@relay/core/automations";
 import {
   aiCredits,
   and,
+  catalogAgentDeps,
+  catalogShape,
+  createCatalogPresenter,
   type createDb,
   desc,
   eq,
@@ -76,10 +84,13 @@ export type AgentRuntimeDeps = {
   /** Null when no AI key is set: the agent hands chats straight to a person. */
   callModel: ModelCaller | null;
   embed: Embedder | null;
+  /** 512-dim embeddings for catalogue searches (null without an AI key: words only). */
+  embedCatalog?: Embedder | null;
 };
 
 export function createAgentRuntime(d: AgentRuntimeDeps) {
   const { db, kairos } = d;
+  const presenter = createCatalogPresenter({ db });
 
   const announce = (c: { organizationId: string; id: string; branchId: string | null }) =>
     publishInboxEvent(d.redis, c.organizationId, {
@@ -271,6 +282,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
             ),
           )
       : [];
+    const catalog = await catalogShape(db, orgId, a.branchId);
     return {
       id: a.id,
       status: a.status,
@@ -285,8 +297,11 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         tone: a.tone,
         languages: a.languages,
         handoffWhen: a.handoff.when,
+        catalog: !!catalog,
       } satisfies AgentProfile,
       editableFields: fields,
+      /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
+      catalog,
     };
   }
   type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>> & {
@@ -328,6 +343,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       pending = false;
     }
     for (let turn = 1; ; turn++) {
+      // The customer's newest message this turn, to see whether it's a tap on one of our item cards.
+      let latest: InboundEventPayload | null = null;
       if (!pending) {
         const name = `wait${turn}`;
         const got = await ctx.waitForEvent<InboundEventPayload>(name, {
@@ -338,6 +355,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         });
         if (got.timedOut) return "idle";
         if (got.event.payload.optOut === "stop") return "stopped";
+        latest = got.event.payload;
         lookbackFrom = name;
       }
       pending = false;
@@ -352,6 +370,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         });
         if (more.timedOut) break;
         if (more.event.payload.optOut === "stop") return "stopped";
+        latest = more.event.payload;
         lookbackFrom = name;
       }
       onTurn(turn);
@@ -385,6 +404,25 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         );
         return "paused";
       }
+      // "More details" on an item card sends its gallery, and a tapped list row its card, straight
+      // away: no model call and no credit. Order or Book goes to the agent like any message.
+      const tap = latest?.reply ? await presenter.readTap(latest.messageId, latest.reply.id) : null;
+      if (tap && (tap.action === "more" || tap.action === "select")) {
+        const tapStep = `t${turn}:gallery`;
+        const args = {
+          organizationId: input.organizationId,
+          branchId: input.branchId,
+          send: sender(input, agent),
+          stepKey: `${ctx.runId}:t${turn}`,
+          itemId: tap.itemId,
+        };
+        const sent = await ctx.step(tapStep, () =>
+          tap.action === "more" ? presenter.showGallery(args) : presenter.showItemCard(args),
+        );
+        if (!sent.ok) return "send_failed";
+        lookbackFrom = tapStep;
+        continue;
+      }
       const typingStep = `t${turn}:typing`;
       await ctx.step(typingStep, () => d.showTyping(input.conversationId, `${ctx.runId}_t${turn}`));
       const outcome = await oneTurn(ctx, input, agent, turn);
@@ -404,6 +442,35 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         }
         case "options": {
           const sent = await ctx.step(`t${turn}:send`, () => sendOptions(input, agent, stepKey, outcome));
+          if (!sent.ok) return "send_failed";
+          break;
+        }
+        case "items": {
+          const sent = await ctx.step(`t${turn}:send`, () =>
+            presenter.showItems({
+              organizationId: input.organizationId,
+              branchId: input.branchId,
+              send: sender(input, agent),
+              stepKey,
+              itemIds: outcome.itemIds,
+              action: outcome.action,
+              text: outcome.text,
+            }),
+          );
+          if (!sent.ok) return "send_failed";
+          break;
+        }
+        case "media": {
+          const sent = await ctx.step(`t${turn}:send`, () =>
+            presenter.showGallery({
+              organizationId: input.organizationId,
+              branchId: input.branchId,
+              send: sender(input, agent),
+              stepKey,
+              itemId: outcome.itemId,
+              text: outcome.text,
+            }),
+          );
           if (!sent.ok) return "send_failed";
           break;
         }
@@ -502,8 +569,20 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
 
   /** The tools for one turn, bound to this business and chat. */
   function agentTools(agent: LoadedAgent, runCtx: RunContext) {
+    const embedCatalog = d.embedCatalog;
     return builtinTools({
       editableFields: agent.editableFields,
+      ...(agent.catalog
+        ? {
+            catalog: catalogAgentDeps(db, {
+              organizationId: runCtx.orgId,
+              branchId: runCtx.branchId,
+              shape: agent.catalog,
+              embed: embedCatalog ? async (text) => (await embedCatalog([text])).embeddings[0] ?? null : null,
+              terms: searchTerms,
+            }),
+          }
+        : {}),
       searchKnowledge: async (query) => {
         const embedding = d.embed ? ((await d.embed([query])).embeddings[0] ?? null) : null;
         const hits = await searchKnowledge(db, {
@@ -570,22 +649,34 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const m = schema.message;
     const rows = await db
       .select({
+        id: m.id,
         direction: m.direction,
         senderType: m.senderType,
         type: m.type,
         content: m.content,
         sentAt: m.sentAt,
+        replyTo: m.replyToMessageId,
       })
       .from(m)
       .where(and(eq(m.conversationId, conversationId), ne(m.type, "reaction"), ne(m.type, "note")))
       .orderBy(desc(m.sentAt), desc(m.id))
       .limit(40);
+    const byId = new Map(rows.map((r) => [r.id, r]));
     const lines: ChatLine[] = [];
     for (const r of rows.reverse()) {
       const content = r.content as Record<string, unknown>;
       let text = previewText(content);
       if (!text) text = r.type === "text" ? "" : `[${r.type}]`;
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
+      // A tap on one of our item cards: say which item, so "Order" means something.
+      if (r.direction === "inbound" && r.replyTo && typeof content.id === "string") {
+        const n = optionOfReply(content.id)?.match(/^i(\d{1,2})[mobs]$/)?.[1];
+        const items = (
+          byId.get(r.replyTo)?.content as { items?: { id: string; title: string }[] } | undefined
+        )?.items;
+        const item = n !== undefined ? items?.[Number(n)] : undefined;
+        if (item) text = `[tapped "${text}" on ${item.title} (${item.id})]`;
+      }
       if (!text) continue;
       const from: ChatLine["from"] =
         r.direction === "inbound" ? "customer" : r.senderType === "user" ? "team" : "agent";
@@ -627,6 +718,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     stepKey: string,
     type: string,
     content: Record<string, unknown>,
+    attachmentId?: string,
   ): Promise<Sent> {
     const conv = await conversationOf(input.conversationId);
     if (!conv) return { ok: false, reason: "chat_gone" };
@@ -646,6 +738,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       senderType: "ai_agent",
       senderName: agent.name,
       automationStepKey: stepKey,
+      ...(attachmentId ? { attachmentId } : {}),
     });
     if (message.status === "queued") {
       await Promise.race([
@@ -656,6 +749,12 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     await announce(conv);
     return { ok: true, messageId: message.id };
   }
+
+  /** Sends as the agent, for the catalogue presenter. */
+  const sender =
+    (input: AgentRunInput, agent: LoadedAgent) =>
+    (key: string, type: string, content: Record<string, unknown>, attachmentId?: string) =>
+      queueSend(input, agent, key, type, content, attachmentId);
 
   const sendText = (input: AgentRunInput, agent: LoadedAgent, stepKey: string, text: string) =>
     queueSend(input, agent, stepKey, "text", { type: "text", text });

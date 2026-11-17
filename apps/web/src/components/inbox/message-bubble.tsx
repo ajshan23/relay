@@ -6,6 +6,7 @@ import { Button } from "@relay/ui/ui/button";
 import { Message, MessageAvatar, MessageContent, MessageFooter, MessageHeader } from "@relay/ui/ui/message";
 import { Popover, PopoverContent, PopoverTrigger } from "@relay/ui/ui/popover";
 import { type ReactNode, useState } from "react";
+import { useBranch } from "@/components/shell/branch-context";
 import { ChatBubble } from "@/components/ui/whatsapp/chat-bubble";
 import { ContactBubble } from "@/components/ui/whatsapp/contact-bubble";
 import { FileAttachmentBubble } from "@/components/ui/whatsapp/file-attachment-bubble";
@@ -468,13 +469,33 @@ function Body({
             buttons={[{ type: "quick_reply", label: "📍 Send location" }]}
           />
         );
+      if (c.kind === "carousel") {
+        // Catalogue items the AI agent showed: swipeable cards with their main photo and buttons.
+        const cards =
+          (c.cards as { mediaId?: string; body?: string; buttons?: { title: string }[] }[] | undefined) ?? [];
+        return (
+          <ChatBubble {...common}>
+            <span className="mb-2 block whitespace-pre-wrap">{str(c.body)}</span>
+            <CarouselCards cards={cards} />
+          </ChatBubble>
+        );
+      }
       if (c.kind === "buttons" || c.kind === "list") {
-        // A question we sent: reply buttons, or a list behind one button.
+        // A question we sent: reply buttons, or a list behind one button (or a catalogue item's card,
+        // with its main photo on top).
         const options = (c.options as { id: string; title: string }[] | undefined) ?? [];
+        const h = c.header as { kind?: string; attachmentId?: string | null } | null | undefined;
         return (
           <TemplateBubble
             {...common}
             label={m.senderType === "bot" ? "Automation" : undefined}
+            header={
+              h?.attachmentId
+                ? h.kind === "video"
+                  ? { type: "video" }
+                  : { type: "image", imageUrl: `/api/attachments/${h.attachmentId}` }
+                : undefined
+            }
             body={str(c.body) ?? ""}
             footer={
               c.kind === "list" ? options.map((o) => o.title).join(" · ") : (str(c.footer) ?? undefined)
@@ -626,6 +647,41 @@ function AdReferral({ message: m }: { message: Msg }) {
           Open
         </a>
       ) : null}
+    </span>
+  );
+}
+
+/** The cards of a carousel we sent, as the customer sees them: photo, text, buttons. */
+function CarouselCards({
+  cards,
+}: {
+  cards: { mediaId?: string; body?: string; buttons?: { title: string }[] }[];
+}) {
+  const branch = useBranch().branch.id;
+  return (
+    <span className="flex max-w-[20rem] gap-2 overflow-x-auto pb-1 sm:max-w-md">
+      {cards.map((card, i) => (
+        <span
+          key={card.mediaId ?? i}
+          className="flex w-40 shrink-0 flex-col overflow-hidden rounded-md border bg-background text-xs"
+        >
+          {card.mediaId ? (
+            // biome-ignore lint/performance/noImgElement: served by our API with auth cookies
+            <img
+              src={`/api/catalog/media/${card.mediaId}/file?branch=${branch}&preview=1`}
+              alt=""
+              className="aspect-square w-full bg-muted object-cover"
+              loading="lazy"
+            />
+          ) : null}
+          <span className="line-clamp-3 px-2 py-1.5 whitespace-pre-wrap">{card.body}</span>
+          {(card.buttons ?? []).map((b) => (
+            <span key={b.title} className="border-t px-2 py-1 text-center font-medium text-wa-emerald-600">
+              {b.title}
+            </span>
+          ))}
+        </span>
+      ))}
     </span>
   );
 }
