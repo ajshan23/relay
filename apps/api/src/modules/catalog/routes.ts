@@ -1,3 +1,4 @@
+import { aiConfigured, createEmbedder, searchTerms } from "@relay/agent";
 import { newId } from "@relay/core";
 import {
   catalogFieldSchema,
@@ -14,6 +15,7 @@ import {
   and,
   asc,
   CatalogInputError,
+  catalogCards,
   createCatalogType,
   desc,
   eq,
@@ -24,8 +26,10 @@ import {
   or,
   saveCatalogItem,
   schema,
+  searchCatalog,
   sql,
 } from "@relay/db";
+import { catalogEmbeddingDimensions } from "@relay/db/schema";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
@@ -54,6 +58,7 @@ import { catalogMediaRoutes } from "./media";
  *   PUT    /api/catalog/items/:id            replace item + variants
  *   DELETE /api/catalog/items/:id
  *   POST   /api/catalog/items/bulk           { ids, action: archive | activate | delete }
+ *   GET    /api/catalog/search               ?q&categoryId&priceMin&priceMax&inStock → cards, as Mira finds them
  *   /api/catalog/media/*                      an item's gallery (media.ts)
  * Owners, admins and the branch's managers change things; anyone in the branch may look.
  */
@@ -508,6 +513,38 @@ export function catalogRoutes(ctx: AppContext) {
             .where(where)
             .returning({ id: I.id });
     return c.json({ changed: rows.length });
+  });
+
+  app.get("/search", async (c) => {
+    const q = c.req.query("q")?.trim() ?? "";
+    const num = (k: string) => {
+      const v = c.req.query(k);
+      return v && Number.isFinite(Number(v)) ? Number(v) : undefined;
+    };
+    let embedding: number[] | null = null;
+    if (q && aiConfigured(ctx.config))
+      embedding =
+        (await createEmbedder(ctx.config, { dimensions: catalogEmbeddingDimensions })([q]).catch(() => null))
+          ?.embeddings[0] ?? null;
+    const found = await searchCatalog(ctx.db, {
+      organizationId: orgOf(c),
+      branchId: c.var.branchId,
+      terms: q ? searchTerms(q) : null,
+      embedding,
+      filters: {
+        categoryId: c.req.query("categoryId") || undefined,
+        priceMin: num("priceMin"),
+        priceMax: num("priceMax"),
+        inStock: c.req.query("inStock") === "1",
+      },
+      limit: Math.min(num("limit") ?? 10, 30),
+    });
+    const cards = await catalogCards(ctx.db, {
+      organizationId: orgOf(c),
+      branchId: c.var.branchId,
+      ids: found.ids,
+    });
+    return c.json({ items: cards });
   });
 
   return app;

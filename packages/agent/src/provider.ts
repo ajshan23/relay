@@ -74,10 +74,16 @@ export type Embedder = (
   values: string[],
 ) => Promise<{ embeddings: number[][]; tokens: number; model: string }>;
 
-export function createEmbedder(env: ProviderEnv = process.env): Embedder {
+/** `dimensions` shortens the vectors (text-embedding-3 models), e.g. 512 for the catalogue. */
+export function createEmbedder(env: ProviderEnv = process.env, opts: { dimensions?: number } = {}): Embedder {
   return async (values) => {
     const openai = openaiProvider(env);
-    const result = await embedMany({ model: openai.embedding(embeddingModel), values, maxParallelCalls: 2 });
+    const result = await embedMany({
+      model: openai.embedding(embeddingModel),
+      values,
+      maxParallelCalls: 2,
+      ...(opts.dimensions ? { dimensions: opts.dimensions } : {}),
+    });
     return { embeddings: result.embeddings, tokens: result.usage.tokens, model: embeddingModel };
   };
 }

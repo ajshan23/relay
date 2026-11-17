@@ -4,6 +4,9 @@ import {
   catalogSearchText,
   catalogTemplates,
   cleanCatalogValues,
+  fieldValueText,
+  formatMoney,
+  fromMinor,
   optionsFromLabels,
   toMinor,
 } from "@relay/core/catalog";
@@ -289,4 +292,382 @@ export async function saveCatalogItem(
     }
     return item;
   });
+}
+
+/* ------------------------------------------------------------------ search */
+
+/** A field filter: a choice value (or label), yes/no, several choices, or a number/date range. */
+export type CatalogFieldFilter =
+  | string
+  | number
+  | boolean
+  | string[]
+  | { min?: number | string; max?: number | string };
+
+export type CatalogSearchFilters = {
+  /** A category id; its sub-categories count too. */
+  categoryId?: string;
+  /** Major units ("under 2000" = priceMax 2000), compared with the sale price when there is one. */
+  priceMin?: number;
+  priceMax?: number;
+  currency?: string;
+  inStock?: boolean;
+  /** By field key; only filterable fields are used, anything else is reported back as ignored. */
+  fields?: Record<string, CatalogFieldFilter>;
+};
+
+/** One item as Mira and the cards see it: facts and prices only, nothing to guess. */
+export type CatalogCard = {
+  id: string;
+  title: string;
+  description: string;
+  type: string;
+  category: string | null;
+  /** Field values in words: "Bedrooms: 2", "Area: 1,450 sq ft". */
+  details: string[];
+  priceText: string | null;
+  variants: {
+    id: string;
+    title: string;
+    price: { amount: number; currency: string; text: string } | null;
+    salePrice: { amount: number; currency: string; text: string } | null;
+    available: boolean;
+    stock: number | null;
+    durationMinutes: number | null;
+    details: string[];
+  }[];
+  primaryMediaId: string | null;
+  mediaCount: number;
+};
+
+function rowsOf<T>(res: unknown): T[] {
+  return (Array.isArray(res) ? res : ((res as { rows?: unknown[] }).rows ?? [])) as T[];
+}
+
+/**
+ * Finds a branch's active items. Exact filters first (category, price, stock, field values), then, if
+ * there are words, ranks what's left by full-text and meaning together (reciprocal-rank fusion), with
+ * exact distance on those rows only. Without words, returns the newest matches. `terms` is a safe
+ * to_tsquery string (searchTerms in @relay/agent); `embedding` is 512-dim or null.
+ */
+export async function searchCatalog(
+  db: Db,
+  args: {
+    organizationId: string;
+    branchId: string;
+    terms?: string | null;
+    embedding?: number[] | null;
+    filters?: CatalogSearchFilters;
+    limit?: number;
+  },
+): Promise<{ ids: string[]; ignoredFilters: string[] }> {
+  const { organizationId, branchId } = args;
+  const f = args.filters ?? {};
+  const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
+  const conds = [
+    sql`i.organization_id = ${organizationId}`,
+    sql`i.branch_id = ${branchId}`,
+    sql`i.status = 'active'`,
+  ];
+  const ignored: string[] = [];
+
+  if (f.categoryId) {
+    const cats = await db
+      .select({ id: catalogCategory.id, parentId: catalogCategory.parentId })
+      .from(catalogCategory)
+      .where(and(eq(catalogCategory.organizationId, organizationId), eq(catalogCategory.branchId, branchId)));
+    const ids = new Set([f.categoryId]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const c of cats)
+        if (c.parentId && ids.has(c.parentId) && !ids.has(c.id)) {
+          ids.add(c.id);
+          grew = true;
+        }
+    }
+    conds.push(
+      sql`i.category_id in (${sql.join(
+        [...ids].map((id) => sql`${id}`),
+        sql`, `,
+      )})`,
+    );
+  }
+
+  // Variant conditions all apply to the same variant ("a grey one under 2000 in stock").
+  const vconds: ReturnType<typeof sql>[] = [];
+  const price = sql`coalesce(v.sale_price_minor, v.price_minor)`;
+  const minor = (amount: number, currency: string) => {
+    try {
+      return toMinor(amount, currency);
+    } catch {
+      return null;
+    }
+  };
+  if (f.priceMin !== undefined || f.priceMax !== undefined) {
+    const currency = f.currency ?? null;
+    const scale = currency
+      ? sql`${10 ** currencyDigitsOf(currency)}`
+      : sql`power(10, case when v.currency in ('JPY','KRW','VND','CLP','ISK','UGX') then 0 when v.currency in ('KWD','BHD','OMR','JOD','TND','LYD','IQD') then 3 else 2 end)`;
+    if (currency) vconds.push(sql`v.currency = ${currency}`);
+    if (f.priceMin !== undefined) {
+      const m = currency ? minor(f.priceMin, currency) : null;
+      vconds.push(m !== null ? sql`${price} >= ${m}` : sql`${price} >= ${f.priceMin} * ${scale}`);
+    }
+    if (f.priceMax !== undefined) {
+      const m = currency ? minor(f.priceMax, currency) : null;
+      vconds.push(m !== null ? sql`${price} <= ${m}` : sql`${price} <= ${f.priceMax} * ${scale}`);
+    }
+  }
+  if (f.inStock) vconds.push(sql`v.available and (v.stock is null or v.stock > 0)`);
+
+  const filterKeys = Object.keys(f.fields ?? {});
+  if (filterKeys.length) {
+    const defs = await db
+      .select()
+      .from(catalogField)
+      .where(
+        and(
+          eq(catalogField.organizationId, organizationId),
+          isNull(catalogField.archivedAt),
+          eq(catalogField.filterable, true),
+          inArray(catalogField.key, filterKeys),
+        ),
+      );
+    for (const key of filterKeys) {
+      const raw = f.fields?.[key];
+      const matching = defs.filter((d) => d.key === key);
+      const def = matching[0];
+      if (!def || raw === undefined || raw === null) {
+        ignored.push(key);
+        continue;
+      }
+      const col = def.onVariant ? sql`v.options` : sql`i.attributes`;
+      const optionValue = (x: unknown) => {
+        const s = String(x).trim().toLowerCase();
+        return def.options.find((o) => o.value === s || o.label.toLowerCase() === s)?.value ?? null;
+      };
+      let cond: ReturnType<typeof sql> | null = null;
+      if (def.type === "boolean") {
+        const b = typeof raw === "boolean" ? raw : ["yes", "true", "1"].includes(String(raw).toLowerCase());
+        cond = sql`${col} @> ${JSON.stringify({ [key]: b })}::jsonb`;
+      } else if (def.type === "select" || def.type === "multi_select") {
+        const wanted = (Array.isArray(raw) ? raw : [raw]).map(optionValue).filter((v): v is string => !!v);
+        if (!wanted.length) {
+          ignored.push(key);
+          continue;
+        }
+        cond =
+          def.type === "select"
+            ? sql`(${sql.join(
+                wanted.map((v) => sql`${col} @> ${JSON.stringify({ [key]: v })}::jsonb`),
+                sql` or `,
+              )})`
+            : sql`${col} @> ${JSON.stringify({ [key]: wanted })}::jsonb`;
+      } else if (def.type === "number" || def.type === "date") {
+        const range =
+          typeof raw === "object" && !Array.isArray(raw)
+            ? raw
+            : { min: raw as number | string, max: raw as number | string };
+        const parts: ReturnType<typeof sql>[] = [];
+        const value =
+          def.type === "number"
+            ? sql`case when jsonb_typeof(${col} -> ${key}) = 'number' then (${col} ->> ${key})::numeric end`
+            : sql`(${col} ->> ${key})`;
+        const num = (x: unknown) => (def.type === "number" ? Number(x) : String(x));
+        if (
+          range.min !== undefined &&
+          range.min !== "" &&
+          (def.type !== "number" || Number.isFinite(Number(range.min)))
+        )
+          parts.push(sql`${value} >= ${num(range.min)}`);
+        if (
+          range.max !== undefined &&
+          range.max !== "" &&
+          (def.type !== "number" || Number.isFinite(Number(range.max)))
+        )
+          parts.push(sql`${value} <= ${num(range.max)}`);
+        if (!parts.length) {
+          ignored.push(key);
+          continue;
+        }
+        cond = sql.join(parts, sql` and `);
+      } else {
+        ignored.push(key);
+        continue;
+      }
+      if (def.onVariant) vconds.push(cond);
+      else conds.push(cond);
+    }
+  }
+  if (vconds.length)
+    conds.push(
+      sql`exists (select 1 from ${catalogVariant} v where v.item_id = i.id and ${sql.join(vconds, sql` and `)})`,
+    );
+
+  const where = sql.join(conds, sql` and `);
+  const words = args.terms?.trim() ? args.terms.trim() : null;
+  const vector = args.embedding?.length ? `[${args.embedding.join(",")}]` : null;
+  let res: unknown;
+  if (!words && !vector) {
+    res = await db.execute(sql`
+      select i.id from ${catalogItem} i where ${where}
+      order by i.updated_at desc, i.id limit ${limit}`);
+  } else {
+    // Each leg ranks the filtered rows; an item found by both comes first. Exact distance, no index.
+    const kw = words
+      ? sql`select i.id, row_number() over (order by ts_rank(i.tsv, q) desc) as r
+            from ${catalogItem} i, to_tsquery('simple', ${words}) q
+            where ${where} and i.tsv @@ q limit 50`
+      : null;
+    const vec = vector
+      ? sql`select i.id, row_number() over (order by i.embedding <=> ${vector}::halfvec) as r
+            from ${catalogItem} i
+            where ${where} and i.embedding is not null
+              and 1 - (i.embedding <=> ${vector}::halfvec) >= 0.2
+            limit 50`
+      : null;
+    const legs = [kw, vec].filter((x): x is ReturnType<typeof sql> => !!x);
+    res = await db.execute(sql`
+      with legs as (${sql.join(
+        legs.map((l) => sql`(${l})`),
+        sql` union all `,
+      )})
+      select id, sum(1.0 / (60 + r)) as score from legs group by id
+      order by score desc, id limit ${limit}`);
+  }
+  return { ids: rowsOf<{ id: string }>(res).map((r) => r.id), ignoredFilters: ignored };
+}
+
+function currencyDigitsOf(currency: string) {
+  try {
+    return (
+      new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ??
+      2
+    );
+  } catch {
+    return 2;
+  }
+}
+
+/** Items as cards (facts and prices), in the order of `ids`. Only this branch's items. */
+export async function catalogCards(
+  db: Db,
+  args: { organizationId: string; branchId: string; ids: string[]; descriptionChars?: number },
+): Promise<CatalogCard[]> {
+  if (!args.ids.length) return [];
+  const items = await db
+    .select()
+    .from(catalogItem)
+    .where(
+      and(
+        inArray(catalogItem.id, args.ids),
+        eq(catalogItem.organizationId, args.organizationId),
+        eq(catalogItem.branchId, args.branchId),
+      ),
+    );
+  if (!items.length) return [];
+  const typeIds = [...new Set(items.map((i) => i.typeId))];
+  const [types, fields, variants, media, categories] = await Promise.all([
+    db.select().from(catalogType).where(inArray(catalogType.id, typeIds)),
+    db
+      .select()
+      .from(catalogField)
+      .where(and(inArray(catalogField.typeId, typeIds), isNull(catalogField.archivedAt)))
+      .orderBy(asc(catalogField.position)),
+    db
+      .select()
+      .from(catalogVariant)
+      .where(
+        inArray(
+          catalogVariant.itemId,
+          items.map((i) => i.id),
+        ),
+      )
+      .orderBy(asc(catalogVariant.position)),
+    db.execute(sql`
+      select item_id, count(*)::int as n,
+        (array_agg(id order by position) filter (where is_primary and variant_id is null and status = 'ready'))[1] as primary_id
+      from catalog_media where item_id in (${sql.join(
+        items.map((i) => sql`${i.id}`),
+        sql`, `,
+      )}) and status = 'ready'
+      group by item_id`),
+    db
+      .select({ id: catalogCategory.id, name: catalogCategory.name, parentId: catalogCategory.parentId })
+      .from(catalogCategory)
+      .where(
+        and(
+          eq(catalogCategory.organizationId, args.organizationId),
+          eq(catalogCategory.branchId, args.branchId),
+        ),
+      ),
+  ]);
+  const mediaBy = new Map(
+    rowsOf<{ item_id: string; n: number; primary_id: string | null }>(media).map((m) => [m.item_id, m]),
+  );
+  const catName = (id: string | null) => {
+    const names: string[] = [];
+    for (let c = categories.find((x) => x.id === id), g = 0; c && g < 10; g++) {
+      names.unshift(c.name);
+      c = categories.find((x) => x.id === c?.parentId);
+    }
+    return names.length ? names.join(" › ") : null;
+  };
+  const money = (minor: number | null, currency: string) =>
+    minor === null
+      ? null
+      : { amount: fromMinor(minor, currency), currency, text: formatMoney(minor, currency) };
+  const cards = items.map((item): CatalogCard => {
+    const defs = fields.filter((f) => f.typeId === item.typeId).map(toFieldDef);
+    const vs = variants.filter((v) => v.itemId === item.id);
+    const prices = vs.map((v) => v.salePriceMinor ?? v.priceMinor).filter((p): p is number => p !== null);
+    const currency = vs[0]?.currency ?? null;
+    const lo = prices.length ? Math.min(...prices) : null;
+    const hi = prices.length ? Math.max(...prices) : null;
+    const m = mediaBy.get(item.id);
+    const limitText = args.descriptionChars ?? 400;
+    return {
+      id: item.id,
+      title: item.title,
+      description:
+        item.description.length > limitText
+          ? `${item.description.slice(0, limitText).trimEnd()}…`
+          : item.description,
+      type: types.find((t) => t.id === item.typeId)?.name ?? "",
+      category: catName(item.categoryId),
+      details: defs
+        .filter((d) => !d.onVariant)
+        .map((d) => {
+          const text = fieldValueText(d, item.attributes[d.key]);
+          return text ? `${d.label}: ${text}` : "";
+        })
+        .filter(Boolean),
+      priceText:
+        lo === null || !currency
+          ? null
+          : lo === hi
+            ? formatMoney(lo, currency)
+            : `${formatMoney(lo, currency)} – ${formatMoney(hi as number, currency).replace(/^[A-Z]{3}\s/, "")}`,
+      variants: vs.map((v) => ({
+        id: v.id,
+        title: v.title,
+        price: money(v.priceMinor, v.currency),
+        salePrice: money(v.salePriceMinor, v.currency),
+        available: v.available && (v.stock === null || v.stock > 0),
+        stock: v.stock,
+        durationMinutes: v.durationMinutes,
+        details: defs
+          .filter((d) => d.onVariant)
+          .map((d) => {
+            const text = fieldValueText(d, v.options[d.key]);
+            return text ? `${d.label}: ${text}` : "";
+          })
+          .filter(Boolean),
+      })),
+      primaryMediaId: m?.primary_id ?? null,
+      mediaCount: m?.n ?? 0,
+    };
+  });
+  const order = new Map(args.ids.map((id, i) => [id, i]));
+  return cards.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }

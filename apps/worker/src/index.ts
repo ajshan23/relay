@@ -2,12 +2,14 @@ import { createServer } from "node:http";
 import { aiConfigured, createEmbedder, createModelCaller } from "@relay/agent";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
 import { and, createDb, eq, schema } from "@relay/db";
+import { catalogEmbeddingDimensions } from "@relay/db/schema";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
+import { type EmbedJob as CatalogEmbedJob, createCatalogEmbedder } from "./catalog/embed";
 import { type MediaJob as CatalogMediaJob, createCatalogMediaProcessor } from "./catalog/media";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
@@ -66,6 +68,25 @@ const knowledge = new Worker<KnowledgeJob>(
   { connection, concurrency: 2 },
 );
 knowledge.on("failed", (job, err) => console.warn(`knowledge ${job?.data.sourceId} failed: ${err.message}`));
+
+/* The catalogue: embed changed items (a branch at a time, batched) so Mira finds them by meaning. */
+const embedCatalog = createCatalogEmbedder({
+  db,
+  embed: aiConfigured(config) ? createEmbedder(config, { dimensions: catalogEmbeddingDimensions }) : null,
+});
+const catalog = new Worker<CatalogEmbedJob>(
+  queues.catalog,
+  onePerOrg<CatalogEmbedJob>(
+    connection,
+    "catalog",
+    (job) => job.data.organizationId,
+    async (job) => {
+      if (job.name === "embed") return embedCatalog(job);
+    },
+  ),
+  { connection, concurrency: 2 },
+);
+catalog.on("failed", (job, err) => console.warn(`catalog ${job?.name} failed: ${err.message}`));
 void automations
   .startWorker(automationWorker)
   .then(() =>
@@ -362,6 +383,7 @@ async function shutdown() {
     outbox.close(),
     media.close(),
     catalogMedia.close(),
+    catalog.close(),
     templates.close(),
     contactImports.close(),
     contactFiles.close(),
