@@ -353,6 +353,7 @@ export function describeRun(o: {
     else if (type === "add_note") entry.text = "Added a note";
     else if (type === "close_chat") entry.text = "Closed the chat";
     else if (type === "handoff") entry.text = "Handed the chat to a person";
+    else if (type === "hand_to_ai") entry.text = "Handed the chat to the AI agent";
     if (s.error?.message) {
       entry.tone = "bad";
       entry.text = `${entry.text}: ${s.error.message}`;

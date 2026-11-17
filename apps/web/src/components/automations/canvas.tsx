@@ -55,6 +55,7 @@ export const stepIcons: Record<string, IconName> = {
   add_note: "compose",
   close_chat: "archive",
   handoff: "handoff",
+  hand_to_ai: "sparkles",
   end: "check",
 };
 

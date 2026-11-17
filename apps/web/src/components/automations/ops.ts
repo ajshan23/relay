@@ -31,6 +31,7 @@ const prefix: Partial<Record<NodeType, string>> = {
   add_note: "note",
   close_chat: "close",
   handoff: "human",
+  hand_to_ai: "ai",
   end: "end",
 };
 

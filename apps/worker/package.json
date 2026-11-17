@@ -20,14 +20,17 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",
     "@hono/node-server": "^2.1.7",
+    "@relay/agent": "workspace:*",
     "@relay/channels": "workspace:*",
     "@relay/core": "workspace:*",
     "@relay/db": "workspace:*",
     "@relay/email": "workspace:*",
+    "@relay/kairos": "workspace:*",
     "bullmq": "^6.7.5",
     "hono": "^4.13.18",
     "ioredis": "^6.0.0",
+    "mammoth": "1.13.0",
     "sharp": "0.35.5",
-    "@relay/kairos": "workspace:*"
+    "unpdf": "2.1.0"
   }
 }

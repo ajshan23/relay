@@ -1,0 +1,19 @@
+{
+  "name": "@relay/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.107",
+    "@relay/core": "workspace:*",
+    "ai": "7.0.161",
+    "zod": "^4.6.7"
+  }
+}

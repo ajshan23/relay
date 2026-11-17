@@ -142,7 +142,7 @@ export async function stopRun(ctx: AppContext, runId: string, conversationId: st
   if (!conversationId) return;
   const [freed] = await ctx.db
     .update(schema.conversation)
-    .set({ automationRunId: null, updatedAt: new Date() })
+    .set({ automationRunId: null, aiAgentId: null, updatedAt: new Date() })
     .where(and(eq(schema.conversation.id, conversationId), eq(schema.conversation.automationRunId, runId)))
     .returning({
       id: schema.conversation.id,

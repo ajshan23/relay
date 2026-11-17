@@ -909,16 +909,40 @@ export function automationRoutes(ctx: AppContext) {
     const access = c.var.access;
     const conv = await chatFor(access, c.req.param("conversationId"));
     if (!conv) return fail(c, 404, "not_found");
-    let current: { runId: string; automationId: string; name: string; status: string; test: boolean } | null =
-      null;
+    let current: {
+      kind: "automation" | "ai";
+      runId: string;
+      automationId: string | null;
+      agentId: string | null;
+      name: string;
+      status: string;
+      test: boolean;
+    } | null = null;
     if (conv.automationRunId) {
       const found = await ctx.kairos.getRun(conv.automationRunId).catch(() => null);
-      const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels>;
-      if (found && isLiveRun(found.run) && l.automationId) {
+      const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels> & { ai?: boolean; agentId?: string };
+      if (found && isLiveRun(found.run) && l.ai && l.agentId) {
+        // The AI agent holds the chat.
+        const [agent] = await ctx.db
+          .select({ name: schema.aiAgent.name })
+          .from(schema.aiAgent)
+          .where(eq(schema.aiAgent.id, l.agentId));
+        current = {
+          kind: "ai",
+          runId: found.run.id,
+          automationId: null,
+          agentId: l.agentId,
+          name: agent?.name ?? "AI agent",
+          status: found.run.status,
+          test: false,
+        };
+      } else if (found && isLiveRun(found.run) && l.automationId) {
         const [auto] = await ctx.db.select({ name: a.name }).from(a).where(eq(a.id, l.automationId));
         current = {
+          kind: "automation",
           runId: found.run.id,
           automationId: l.automationId,
+          agentId: null,
           name: auto?.name ?? "Automation",
           status: found.run.status,
           test: !!l.test,

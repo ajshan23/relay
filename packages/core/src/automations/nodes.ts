@@ -510,6 +510,23 @@ export const nodeSpecs = {
     terminal: true,
   } satisfies NodeSpec<{ userId: string | null; note: string }>,
 
+  hand_to_ai: {
+    type: "hand_to_ai",
+    version: 1,
+    category: "chat",
+    label: "Hand to AI agent",
+    description: "Let the AI agent take over the chat from here; the automation stops.",
+    config: z.object({
+      agentId: z.string().min(1, "Pick the AI agent"),
+      /** Optional message from the agent as it takes over; empty: it answers the customer's last message. */
+      greeting: z.string().max(1000).default(""),
+    }),
+    defaults: () => ({ agentId: "", greeting: "" }),
+    handles: () => [],
+    summary: (c) => (c.greeting ? `Hand to AI agent: “${c.greeting.slice(0, 40)}”` : "Hand to AI agent"),
+    terminal: true,
+  } satisfies NodeSpec<{ agentId: string; greeting: string }>,
+
   end: {
     type: "end",
     version: 1,

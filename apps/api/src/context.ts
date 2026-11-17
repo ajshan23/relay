@@ -34,6 +34,7 @@ export function createContext() {
   const signalsQueue = new Queue(queues.signals, { connection });
   const previewsQueue = new Queue(queues.previews, { connection });
   const onboardingQueue = new Queue(queues.onboarding, { connection });
+  const knowledgeQueue = new Queue(queues.knowledge, { connection });
 
   // Automation runs live in Kairos (schema "kairos", migrated by the worker). The API starts, stops and
   // lists them; it never executes steps.
@@ -53,6 +54,7 @@ export function createContext() {
       signals: signalsQueue,
       previews: previewsQueue,
       onboarding: onboardingQueue,
+      knowledge: knowledgeQueue,
     },
     async close() {
       await Promise.all([
@@ -64,6 +66,7 @@ export function createContext() {
         signalsQueue.close(),
         previewsQueue.close(),
         onboardingQueue.close(),
+        knowledgeQueue.close(),
       ]);
       redis.disconnect();
       queueConnection.disconnect();

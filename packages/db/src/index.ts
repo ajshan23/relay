@@ -20,7 +20,9 @@ export {
   notInArray,
   or,
   sql,
+  sum,
 } from "drizzle-orm";
+export * from "./agents";
 export * from "./client";
 export * from "./contact-filter";
 export * from "./executor";

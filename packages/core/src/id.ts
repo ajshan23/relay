@@ -41,6 +41,11 @@ export const idPrefixes = {
   automation: "aut",
   automationVersion: "autv",
   trackedLink: "lnk",
+  aiAgent: "agt",
+  knowledgeSource: "ks",
+  knowledgeChunk: "kc",
+  aiUsage: "aiu",
+  aiGap: "gap",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

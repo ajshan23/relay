@@ -313,6 +313,7 @@ function stepLabel(name: string): string {
     add_note: "Note",
     close_chat: "Close chat",
     handoff: "Hand to a human",
+    hand_to_ai: "Hand to AI agent",
     route: "Route",
   };
   if (name === "release chat") return "Chat handed back";

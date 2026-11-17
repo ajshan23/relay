@@ -31,6 +31,8 @@ export const queues = {
    * closes the 24-hour window.
    */
   onboarding: "onboarding",
+  /** AI agent knowledge: "index" one source (job id index_<source id>_<revision>), one business at a time. */
+  knowledge: "knowledge",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];

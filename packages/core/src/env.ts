@@ -35,6 +35,11 @@ const schema = z.object({
   META_GRAPH_TIMEOUT_MS: z.coerce.number().default(15_000),
   // 32 bytes, base64 (openssl rand -base64 32). Encrypts channel access tokens in the database.
   CHANNEL_SECRET_KEY: z.string().optional(),
+  /** The AI agent's model provider. Without it the agent can't answer (chats go to the team). */
+  OPENAI_API_KEY: z.string().optional(),
+  /** Model names for the agent's "Fast" and "Smart" choices (default gpt-5.4-mini). */
+  AI_MODEL_FAST: z.string().optional(),
+  AI_MODEL_SMART: z.string().optional(),
   // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),
   /** Files go to S3 when a bucket is set (see storage.ts); "local" forces the disk. */

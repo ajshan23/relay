@@ -18,6 +18,7 @@ import { TextInput } from "@relay/ui/components/text-input";
 import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { useRef, useState } from "react";
+import { useAgents } from "@/components/agents/queries";
 import { ApiError, api } from "@/lib/api";
 import { stepLook, stepSummary } from "./canvas";
 import { type ChosenLocation, LocationPicker } from "./location-picker";
@@ -199,6 +200,8 @@ export function StepPanel(p: StepPanelProps) {
                 The automation stops here and the chat opens for the team.
               </p>
             </>
+          ) : node?.type === "hand_to_ai" ? (
+            <HandToAiFields config={config} set={set} />
           ) : node?.type === "close_chat" ? (
             <p className="text-sm text-muted-foreground">
               Marks the chat as closed. A new message from them opens it again.
@@ -1032,3 +1035,50 @@ function WaitForm({ config, onChange }: { config: WaitConfig; onChange: (c: Conf
 }
 
 // ---------------------------------------------------------------- texts with {{variables}}
+
+/** "Hand to AI agent": which agent takes over, and an optional first message from it. */
+function HandToAiFields({
+  config,
+  set,
+}: {
+  config: Record<string, unknown>;
+  set: (patch: Record<string, unknown>) => void;
+}) {
+  const agents = useAgents();
+  const list = agents.data?.agents ?? [];
+  return (
+    <>
+      <Field
+        label="AI agent"
+        hint={list.length ? undefined : "Set up your AI agent first (AI agent in the sidebar)."}
+      >
+        <SelectField
+          value={String(config.agentId ?? "") || undefined}
+          placeholder={list.length ? "Pick the agent" : "No AI agent yet"}
+          disabled={!list.length}
+          onValueChange={(v) => set({ agentId: v })}
+          options={list.map((a) => ({
+            value: a.id,
+            label: a.status === "live" ? a.name : `${a.name} (not live yet)`,
+          }))}
+        />
+      </Field>
+      <Field
+        label="First message from the agent"
+        optional
+        hint="Leave empty and it answers their last message straight away."
+      >
+        <TextInput
+          value={String(config.greeting ?? "")}
+          maxLength={1000}
+          placeholder="Hi! I'm Mira. How can I help?"
+          onChange={(e) => set({ greeting: e.target.value })}
+        />
+      </Field>
+      <p className="text-xs text-muted-foreground">
+        The automation stops here and the AI agent carries on the chat until it's done or hands it to your
+        team.
+      </p>
+    </>
+  );
+}

@@ -65,6 +65,8 @@ import {
   type WorkflowContext,
 } from "@relay/kairos";
 import type { Queue } from "bullmq";
+import type { Embedder, ModelCaller } from "@relay/agent";
+import { createAgentRuntime } from "../agent/runtime";
 import type { InboundHook } from "../channels/ingest";
 import { channels } from "../channels/registry";
 import { nextTimeOfDay, readAnswer, readLocation, withinBusinessHours } from "./helpers";
@@ -107,6 +109,7 @@ export function createAutomations({
   listenUrl,
   signals,
   linkBase = "http://localhost:3200",
+  ai = { callModel: null, embed: null },
   canType = (type) => {
     const adapter = channels().get(type as ChannelType);
     return !!adapter?.markRead && !!adapter.capabilities.readReceipts;
@@ -124,6 +127,8 @@ export function createAutomations({
   canType?: (channelType: string) => boolean;
   /** Where tracked links live: the web app's address (WEB_URL), which forwards /l/<code> to the API. */
   linkBase?: string;
+  /** The AI agent's model and embedder; null without an AI key (the agent then hands chats over). */
+  ai?: { callModel: ModelCaller | null; embed: Embedder | null };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
 
@@ -138,6 +143,18 @@ export function createAutomations({
     const [c] = await db.select().from(schema.conversation).where(eq(schema.conversation.id, id)).limit(1);
     return c ?? null;
   }
+
+  // The AI agent shares this Kairos, the chat's controller and "typing…".
+  const agents = createAgentRuntime({
+    db,
+    kairos,
+    redis,
+    outbox,
+    outboxJobOptions,
+    showTyping: (conversationId, key) => showTyping({ conversationId } as AutomationRunInput, key),
+    callModel: ai.callModel,
+    embed: ai.embed,
+  });
 
   /** Clears the chat's controller if it is still this run. */
   async function release(conversationId: string, runId: string) {
@@ -258,7 +275,7 @@ export function createAutomations({
           inArray(schema.automation.triggerType, ["message_received", "ad_click"]),
         ),
       );
-    if (!rows.length) return { action: "none", reason: "no_live_automation" };
+    if (!rows.length) return agents.maybeStartUnclaimed(conv, ev);
     const inbound = await db.execute(sql`
       select count(*)::int as n from (select 1 from message
         where conversation_id = ${conv.id} and direction = 'inbound' limit 2) x`);
@@ -270,7 +287,7 @@ export function createAutomations({
       row: r,
     }));
     const pick = pickAutomation(candidates, { text: ev.text, isFirstMessage, adId: ev.adId });
-    if (!pick) return { action: "none", reason: "no_trigger_matched" };
+    if (!pick) return agents.maybeStartUnclaimed(conv, ev);
     const def = migrateDefinition(pick.row.v.definition);
 
     const skip = await ruleBlocks(def, pick.id, ev.contactId, conv.assignedUserId);
@@ -697,6 +714,29 @@ export function createAutomations({
             ...(h.userId ? { assignedUserId: h.userId } : {}),
           });
         });
+        return null;
+      }
+      case "hand_to_ai": {
+        const h = config as { agentId: string; greeting: string };
+        await ctx.step(name, async () => {
+          const conv = await conversationOf(input.conversationId);
+          if (!conv) return { ok: false, reason: "chat_gone" };
+          const runId = await agents.startRun({
+            agentId: h.agentId,
+            conversation: conv,
+            contactId: input.contactId,
+            source: "automation",
+            automationId: input.automationId,
+            // No greeting: the agent answers straight away, from the chat so far.
+            trigger: h.greeting.trim() ? null : { messageId: input.trigger.messageId ?? "", text: input.trigger.text ?? "" },
+            greeting: h.greeting.trim() || undefined,
+            idempotencyKey: `aut:${stepKey}`,
+            fromRunId: ctx.runId,
+          });
+          return runId ? { ok: true, runId } : { ok: false, reason: "chat_taken" };
+        });
+        // Handed over: the agent's run holds the chat now (this run's release leaves it alone). When
+        // another run took the chat first, the automation simply ends.
         return null;
       }
       case "end":
@@ -1333,7 +1373,8 @@ export function createAutomations({
     run,
     onInbound,
     startRun,
-    worker: () => kairos.worker({ workflows: [router, run], concurrency: 20, tenantCap: 10 }),
+    agents,
+    worker: () => kairos.worker({ workflows: [router, run, agents.run], concurrency: 20, tenantCap: 10 }),
     startWorker,
   };
 }

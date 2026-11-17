@@ -1,5 +1,8 @@
-import { SectionPlaceholder } from "@/components/shell/section-placeholder";
+import { AgentsPage } from "@/components/agents/agents-page";
 
-export default function Page({ searchParams }: PageProps<"/agents">) {
-  return <SectionPlaceholder id="agents" searchParams={searchParams} />;
+/** Driven by the URL (?view=) and live data: nothing to prerender. */
+export const instant = false;
+
+export default function Page() {
+  return <AgentsPage />;
 }

@@ -11,7 +11,8 @@
     "./quick-replies": "./src/quick-replies.ts",
     "./sheets": "./src/sheets.ts",
     "./broadcasts": "./src/broadcasts.ts",
-    "./automations": "./src/automations/index.ts"
+    "./automations": "./src/automations/index.ts",
+    "./agents": "./src/agents.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

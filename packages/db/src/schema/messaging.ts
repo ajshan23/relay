@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   check,
   index,
@@ -12,6 +13,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { aiAgent } from "./agents";
 import { organization, user } from "./auth";
 import { branch } from "./branches";
 import { channelAccount, channelType } from "./channels";
@@ -159,6 +161,8 @@ export const conversation = pgTable(
     windowExpiresAt: timestamp("window_expires_at"),
     /** The automation run (Kairos run id) in charge of this chat right now; replies go to it first. */
     automationRunId: text("automation_run_id"),
+    /** The AI agent whose run holds the chat (automationRunId is then that run). Null otherwise. */
+    aiAgentId: text("ai_agent_id").references((): AnyPgColumn => aiAgent.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

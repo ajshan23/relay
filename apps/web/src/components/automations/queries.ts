@@ -280,7 +280,16 @@ export function useTestRun(id: string) {
 }
 
 export type ChatAutomation = {
-  current: { runId: string; automationId: string; name: string; status: string; test: boolean } | null;
+  current: {
+    /** "ai": the AI agent holds the chat (agentId set); "automation": an automation run (automationId set). */
+    kind: "automation" | "ai";
+    runId: string;
+    automationId: string | null;
+    agentId: string | null;
+    name: string;
+    status: string;
+    test: boolean;
+  } | null;
   runnable: { id: string; name: string; description: string | null }[];
   canRun: boolean;
 };

@@ -4,6 +4,8 @@ import { and, createDb, eq, schema } from "@relay/db";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
+import { aiConfigured, createEmbedder, createModelCaller } from "@relay/agent";
+import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { createMediaProcessor } from "./channels/media";
@@ -44,8 +46,20 @@ const automations = createAutomations({
   listenUrl: config.KAIROS_LISTEN_URL,
   signals: automationSignals,
   linkBase: config.WEB_URL,
+  ai: aiConfigured(config)
+    ? { callModel: createModelCaller(config), embed: createEmbedder(config) }
+    : { callModel: null, embed: null },
 });
 const automationWorker = automations.worker();
+console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_API_KEY)");
+
+/* AI agent knowledge: read, cut into pieces and embed each source the business adds. */
+const knowledge = new Worker<KnowledgeJob>(
+  queues.knowledge,
+  createKnowledgeProcessor({ db, storage: fileStorage(), embed: aiConfigured(config) ? createEmbedder(config) : null }),
+  { connection, concurrency: 2 },
+);
+knowledge.on("failed", (job, err) => console.warn(`knowledge ${job?.data.sourceId} failed: ${err.message}`));
 void automations
   .startWorker(automationWorker)
   .then(() =>
@@ -294,6 +308,7 @@ const health = createServer((_req, res) => {
           maintenance: maintenance.isRunning(),
           previews: previews.isRunning(),
           broadcasts: broadcasts.isRunning(),
+          knowledge: knowledge.isRunning(),
         },
         automations: { busy: automationWorker.busy, ...automationWorker.stats },
       }),
@@ -321,6 +336,7 @@ async function shutdown() {
     maintenance.close(),
     previews.close(),
     broadcasts.close(),
+    knowledge.close(),
     broadcastsQueue.close(),
     outboxQueue.close(),
     previewQueue.close(),
