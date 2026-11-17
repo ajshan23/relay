@@ -50,7 +50,7 @@ export function mediaUrl(branchId: string, mediaId: string, preview = false) {
 export function Thumb({ media, size = 40 }: { media: ItemRow["primaryMedia"]; size?: number }) {
   const branch = useBranch().branch.id;
   const box = { width: size, height: size };
-  if (!media || media.status !== "ready")
+  if (media?.status !== "ready")
     return (
       <span
         style={box}
@@ -400,6 +400,12 @@ function Items({
         open={categoriesOpen}
         onOpenChange={setCategoriesOpen}
         categories={overview.categories}
+      />
+      <CopyModal
+        open={copyOpen}
+        onOpenChange={setCopyOpen}
+        ids={selected.map((r) => r.id)}
+        onDone={() => setSelected([])}
       />
     </div>
   );

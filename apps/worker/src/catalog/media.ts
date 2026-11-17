@@ -183,7 +183,7 @@ export function createCatalogMediaProcessor(deps: { db: Db; storage: FileStorage
 
   return async (job: Job<MediaJob>) => {
     const [media] = await db.select().from(M).where(eq(M.id, job.data.mediaId)).limit(1);
-    if (!media || media.status !== "processing" || !media.uploadKey) return;
+    if (media?.status !== "processing" || !media.uploadKey) return;
     let bytes: Uint8Array;
     try {
       bytes = await storage.get(media.uploadKey);

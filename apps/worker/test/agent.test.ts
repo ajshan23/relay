@@ -409,29 +409,25 @@ before(async () => {
     [catalog.table, 3, true],
   ] as const) {
     const fileId = `sf_c${T}_${n}`;
-    await db
-      .insert(schema.storedFile)
-      .values({
-        id: fileId,
-        organizationId: ids.org,
-        sha256: `${T}${n}`.padEnd(64, "0"),
-        sizeBytes: 10,
-        mimeType: "image/jpeg",
-        storageKey: `files/x/${n}`,
-      });
-    await db
-      .insert(schema.catalogMedia)
-      .values({
-        id: `ctm_c${T}_${n}`,
-        organizationId: ids.org,
-        branchId: ids.branch,
-        itemId,
-        fileId,
-        kind: "image",
-        status: "ready",
-        isPrimary: primary,
-        position: n,
-      });
+    await db.insert(schema.storedFile).values({
+      id: fileId,
+      organizationId: ids.org,
+      sha256: `${T}${n}`.padEnd(64, "0"),
+      sizeBytes: 10,
+      mimeType: "image/jpeg",
+      storageKey: `files/x/${n}`,
+    });
+    await db.insert(schema.catalogMedia).values({
+      id: `ctm_c${T}_${n}`,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      itemId,
+      fileId,
+      kind: "image",
+      status: "ready",
+      isPrimary: primary,
+      position: n,
+    });
   }
   await automations.startWorker(worker);
 });

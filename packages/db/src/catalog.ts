@@ -875,7 +875,11 @@ export async function catalogShape(db: Db, organizationId: string, branchId: str
       .map((c) => ({ id: c.id, path: path(c.id) }))
       .sort((a, b) => a.path.localeCompare(b.path)),
     fields: fields
-      .filter((f) => (seen.has(f.key) ? false : (seen.add(f.key), true)))
+      .filter((f) => {
+        if (seen.has(f.key)) return false;
+        seen.add(f.key);
+        return true;
+      })
       .map((f) => ({
         key: f.key,
         label: f.label,
