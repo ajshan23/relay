@@ -7,6 +7,7 @@ import {
   createCatalogType,
   createDb,
   eq,
+  priceCatalogOrder,
   saveCatalogItem,
   schema,
   searchCatalog,
@@ -223,6 +224,23 @@ describe("catalogue search", () => {
     assert.equal(names({ ids: sea.ids.slice(0, 1) })[0], "twobed");
     assert.ok(!(await find("Sofa Oslo")).ids.includes(ids.elsewhere ?? ""));
     assert.deepEqual(names(await find("Sofa Oslo", {}, other)), ["elsewhere"]);
+  });
+
+  it("prices an order exactly, and asks for the option instead of guessing", async () => {
+    const o = { organizationId: org, branchId: branch };
+    const ok = await priceCatalogOrder(db, {
+      ...o,
+      lines: [
+        { itemId: ids.sofa ?? "", option: "grey", quantity: 2 },
+        { itemId: ids.table ?? "", quantity: 1 },
+      ],
+    });
+    assert.equal(ok.total, "AED 4,500", "2 × 1,800 (sale) + 900");
+    const unclear = await priceCatalogOrder(db, { ...o, lines: [{ itemId: ids.sofa ?? "", quantity: 1 }] });
+    assert.equal(unclear.total, null);
+    assert.match(JSON.stringify(unclear.lines[0]), /Which option/);
+    const short = await priceCatalogOrder(db, { ...o, lines: [{ itemId: ids.table ?? "", quantity: 5 }] });
+    assert.match(JSON.stringify(short.lines[0]), /Only 3 in stock/);
   });
 
   it("gives cards with facts and prices, and the embed job keeps up with edits", async () => {

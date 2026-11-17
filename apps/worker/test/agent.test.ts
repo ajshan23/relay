@@ -180,6 +180,8 @@ async function customerSays(
   text: string,
   reply: { id: string; title: string } | null = null,
   replyTo: string | null = null,
+  /** WhatsApp sends carousel and template buttons as a "button" message with the id as payload. */
+  asButton = false,
 ) {
   const messageId = `msg_${T}_${++msgSeq}`;
   await db.transaction(async (tx) => {
@@ -190,9 +192,11 @@ async function customerSays(
       channelAccountId: ids.channel,
       direction: "inbound",
       senderType: "contact",
-      type: reply ? "interactive" : "text",
+      type: reply ? (asButton ? "button" : "interactive") : "text",
       content: reply
-        ? { type: "interactive", kind: "button_reply", id: reply.id, title: reply.title }
+        ? asButton
+          ? { type: "button", text: reply.title, payload: reply.id }
+          : { type: "interactive", kind: "button_reply", id: reply.id, title: reply.title }
         : { type: "text", text },
       status: "received",
       sentAt: new Date(),
@@ -674,7 +678,7 @@ describe("AI agent in chats", () => {
 
     await until("waiting again", async () => (await agentRun(chat.conversationId))?.status === "waiting");
     const order = c.cards[0]?.buttons[1] as { id: string; title: string };
-    await customerSays(chat, "Order", order, cards?.id ?? null);
+    await customerSays(chat, "Order", order, cards?.id ?? null, true);
     await until("the answer", async () => calls.length > before);
     const said = lastCustomerTexts(calls.at(-1)?.messages ?? []).join(" ");
     assert.match(said, new RegExp(`tapped "Order" on Sofa Oslo \\(${catalog.sofa}\\)`));

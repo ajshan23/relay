@@ -420,6 +420,16 @@ describe("catalogue", () => {
               ],
         ignoredFilters: [],
       }),
+      price: async (lines) => ({
+        lines: lines.map((l) => ({
+          item: "Sofa Oslo",
+          option: l.option ?? "Grey",
+          quantity: l.quantity,
+          unitPrice: "AED 1,800",
+          lineTotal: `AED ${(1800 * l.quantity).toLocaleString("en")}`,
+        })),
+        total: `AED ${(1800 * lines.reduce((n, l) => n + l.quantity, 0)).toLocaleString("en")}`,
+      }),
       get: async () => ({
         id: "cti_sofa",
         variants: [{ title: "Grey", price: { amount: 1800, currency: "AED", text: "AED 1,800" } }],
@@ -494,6 +504,34 @@ describe("catalogue", () => {
       callModel: caller,
     });
     assert.deepEqual(res.outcome, { kind: "reply", text: "Yes, still AED 1,800." });
+  });
+
+  it("quotes an order total from price_order, which the price guard accepts", async () => {
+    const { caller, seen } = scripted([
+      respond({
+        toolCalls: [
+          {
+            id: "p",
+            name: catalogToolNames.price,
+            input: { lines: [{ itemId: "cti_sofa", option: "Grey", quantity: 2 }] },
+          },
+        ],
+      }),
+      respond({ text: "2 × Sofa Oslo (Grey): AED 3,600 in total. Shall I confirm it?" }),
+    ]);
+    const res = await runTurn({
+      model: "f",
+      system: "s",
+      messages: [],
+      tools: withCatalog,
+      ctx,
+      callModel: caller,
+    });
+    assert.deepEqual(res.outcome, {
+      kind: "reply",
+      text: "2 × Sofa Oslo (Grey): AED 3,600 in total. Shall I confirm it?",
+    });
+    assert.equal(seen.length, 2, "no rewrite was needed");
   });
 
   it("reads money however it's written", () => {

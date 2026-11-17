@@ -669,9 +669,16 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       let text = previewText(content);
       if (!text) text = r.type === "text" ? "" : `[${r.type}]`;
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
-      // A tap on one of our item cards: say which item, so "Order" means something.
-      if (r.direction === "inbound" && r.replyTo && typeof content.id === "string") {
-        const n = optionOfReply(content.id)?.match(/^i(\d{1,2})[mobs]$/)?.[1];
+      // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
+      // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.
+      const tapId =
+        typeof content.id === "string"
+          ? content.id
+          : typeof content.payload === "string"
+            ? content.payload
+            : null;
+      if (r.direction === "inbound" && r.replyTo && tapId) {
+        const n = optionOfReply(tapId)?.match(/^i(\d{1,2})[mobs]$/)?.[1];
         const items = (
           byId.get(r.replyTo)?.content as { items?: { id: string; title: string }[] } | undefined
         )?.items;

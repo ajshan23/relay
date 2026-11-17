@@ -13,7 +13,11 @@ export const catalogToolNames = {
   get: "get_item",
   show: "show_items",
   media: "show_item_media",
+  price: "price_order",
 } as const;
+
+/** One line of an order to price: an item, which option (its name or id), how many. */
+export type OrderLineInput = { itemId: string; option?: string; quantity: number };
 
 /** What the business sells, for the tool descriptions: the model writes exact filters from this. */
 export type CatalogShape = {
@@ -58,6 +62,8 @@ export type CatalogDeps = {
     ctx: RunContext,
   ) => Promise<{ items: CatalogHit[]; ignoredFilters: string[] }>;
   get: (itemId: string, ctx: RunContext) => Promise<unknown | null>;
+  /** Exact prices and the total for an order, from the catalogue (never computed by the model). */
+  price: (lines: OrderLineInput[], ctx: RunContext) => Promise<unknown>;
 };
 
 function describeShape(shape: CatalogShape) {
@@ -143,6 +149,29 @@ export function catalogTools(deps: CatalogDeps): AgentTool<unknown>[] {
       input: z.object({ itemId: z.string().min(3).max(60) }),
       run: async ({ itemId }, ctx) =>
         (await deps.get(itemId, ctx)) ?? { found: false, hint: "No such item here." },
+    }),
+    defineTool({
+      name: catalogToolNames.price,
+      kind: "read",
+      description:
+        "Price an order exactly before the customer confirms it: each item's option, unit price, quantity, line total and the order total, plus whether each is available. Use it instead of adding prices up yourself.",
+      input: z.object({
+        lines: z
+          .array(
+            z.object({
+              itemId: z.string().min(3).max(60),
+              option: z
+                .string()
+                .max(80)
+                .optional()
+                .describe("The option's name (e.g. '1 TB / Jaeger Gray') or id"),
+              quantity: z.number().int().min(1).max(99).default(1),
+            }),
+          )
+          .min(1)
+          .max(10),
+      }),
+      run: async ({ lines }, ctx) => deps.price(lines, ctx),
     }),
     defineTool({
       name: catalogToolNames.show,

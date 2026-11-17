@@ -963,5 +963,90 @@ export function catalogAgentDeps(
       const { primaryMediaId, ...rest } = card;
       return { ...rest, hasPhoto: !!primaryMediaId };
     },
+    price: (lines: { itemId: string; option?: string; quantity: number }[]) =>
+      priceCatalogOrder(db, { organizationId, branchId, lines }),
+  };
+}
+
+/**
+ * Prices an order from the catalogue: each line's option (matched by id or name), unit price (the
+ * sale price when there is one), line total and the order total, all as numbers with their text. A
+ * line whose option isn't clear lists the options instead of guessing.
+ */
+export async function priceCatalogOrder(
+  db: Db,
+  args: {
+    organizationId: string;
+    branchId: string;
+    lines: { itemId: string; option?: string; quantity: number }[];
+  },
+) {
+  const cards = await catalogCards(db, {
+    organizationId: args.organizationId,
+    branchId: args.branchId,
+    ids: [...new Set(args.lines.map((l) => l.itemId))],
+    descriptionChars: 0,
+  });
+  const norm = (x: string) => x.toLowerCase().replace(/\s+/g, " ").trim();
+  let currency: string | null = null;
+  let totalMinor = 0;
+  let complete = true;
+  const lines = args.lines.map((l) => {
+    const card = cards.find((c) => c.id === l.itemId);
+    if (!card) {
+      complete = false;
+      return { itemId: l.itemId, problem: "No such item here." };
+    }
+    const wanted = l.option ? norm(l.option) : null;
+    const variant = wanted
+      ? (card.variants.find((v) => v.id === l.option) ??
+        card.variants.find((v) => norm(v.title) === wanted) ??
+        card.variants.find((v) => norm(v.title).includes(wanted)))
+      : card.variants.length === 1
+        ? card.variants[0]
+        : undefined;
+    if (!variant) {
+      complete = false;
+      return {
+        item: card.title,
+        problem: "Which option? Ask the customer.",
+        options: card.variants.map((v) => ({
+          option: v.title,
+          price: (v.salePrice ?? v.price)?.text ?? "Price on request",
+          available: v.available,
+        })),
+      };
+    }
+    const unit = variant.salePrice ?? variant.price;
+    if (!unit) {
+      complete = false;
+      return {
+        item: card.title,
+        option: variant.title,
+        problem: "Price on request: the team will quote it.",
+      };
+    }
+    if (currency && currency !== unit.currency) complete = false;
+    currency ??= unit.currency;
+    const lineMinor = toMinor(unit.amount, unit.currency) * l.quantity;
+    totalMinor += lineMinor;
+    return {
+      item: card.title,
+      option: variant.title || null,
+      quantity: l.quantity,
+      unitPrice: unit.text,
+      lineTotal: formatMoney(lineMinor, unit.currency),
+      available: variant.available && (variant.stock === null || variant.stock >= l.quantity),
+      ...(variant.stock !== null && variant.stock < l.quantity
+        ? { stockNote: `Only ${variant.stock} in stock.` }
+        : {}),
+    };
+  });
+  return {
+    lines,
+    ...(complete && currency
+      ? { total: formatMoney(totalMinor, currency), totalAmount: fromMinor(totalMinor, currency), currency }
+      : { total: null, note: "Not complete yet: sort out the lines with a problem first." }),
+    deliveryNote: "Delivery charges follow the store's delivery rules (see what you know).",
   };
 }

@@ -52,6 +52,7 @@ export function systemPrompt(agent: AgentProfile): string {
           `- To show items, use ${catalogToolNames.show}: it sends each one's photo, name and price with buttons. Don't list prices in text when you can show the items.`,
           `- When they want more photos or videos of one item, use ${catalogToolNames.media}.`,
           "- If nothing matches, say so and suggest something close or a person; never make up an item.",
+          `- When they want to buy (they tap Order or Book, or say so), take the order before handing over: make sure you know the option and how many (ask with ${toolNames.options} if there's a choice), and delivery (their area) or pickup. Then use ${catalogToolNames.price} and send a short summary with the exact total it gives, asking them to confirm with ${toolNames.options} ("Confirm order", "Change something"). Only after they confirm, use ${toolNames.handoff} with the whole order in the summary (items, options, quantities, total, delivery or pickup and area) so the team can take payment and arrange it.`,
         ].join("\n")
       : "",
     [
