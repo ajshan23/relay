@@ -10,7 +10,7 @@ import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { type EmbedJob as CatalogEmbedJob, createCatalogEmbedder } from "./catalog/embed";
-import { createCatalogImporter, type ImportJob as CatalogImportJob } from "./catalog/import";
+import { type ImportJob as CatalogImportJob, createCatalogImporter } from "./catalog/import";
 import { type MediaJob as CatalogMediaJob, createCatalogMediaProcessor } from "./catalog/media";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";

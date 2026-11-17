@@ -4,11 +4,11 @@ import {
   AttachmentTaken,
   and,
   asc,
+  createCatalogPresenter,
   desc,
   eq,
   ilike,
   inArray,
-  createCatalogPresenter,
   insertOutboundMessage,
   isNull,
   or,
@@ -1084,7 +1084,12 @@ export function conversationRoutes(ctx: AppContext) {
     if (!(await canWork(ctx, access, conversation)))
       return fail(c, 403, "forbidden", "Viewers can read conversations but not reply.");
     if (!conversation.windowExpiresAt || conversation.windowExpiresAt <= new Date())
-      return fail(c, 409, "window_closed", "The reply window has closed. Only an approved template can be sent now.");
+      return fail(
+        c,
+        409,
+        "window_closed",
+        "The reply window has closed. Only an approved template can be sent now.",
+      );
     const [user] = await ctx.db
       .select({ name: schema.user.name })
       .from(schema.user)

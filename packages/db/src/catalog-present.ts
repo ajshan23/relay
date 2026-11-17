@@ -68,7 +68,8 @@ export function createCatalogPresenter(deps: { db: Db }) {
   }
 
   async function primaries(itemIds: string[]) {
-    if (!itemIds.length) return new Map<string, { mediaId: string; fileId: string; kind: "image" | "video" }>();
+    if (!itemIds.length)
+      return new Map<string, { mediaId: string; fileId: string; kind: "image" | "video" }>();
     const rows = await db
       .select({ id: M.id, itemId: M.itemId, fileId: M.fileId, kind: M.kind })
       .from(M)
