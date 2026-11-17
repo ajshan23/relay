@@ -1,3 +1,4 @@
+import { StorageFullError } from "@relay/db";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -64,6 +65,8 @@ export function createApp(ctx: AppContext) {
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {
+    // Any upload past the business's storage limit, wherever it was stored.
+    if (err instanceof StorageFullError) return c.json({ error: "storage_full", message: err.message }, 413);
     console.error(err);
     return c.json({ error: "internal_error" }, 500);
   });

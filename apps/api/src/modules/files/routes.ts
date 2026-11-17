@@ -94,6 +94,7 @@ export function fileRoutes(ctx: AppContext) {
         bytes: voice.bytes,
         mimeType: "audio/ogg",
         newId: () => newId("storedFile"),
+        quota: "enforce",
       });
       const [row] = await ctx.db
         .insert(schema.attachment)
@@ -179,6 +180,7 @@ export function fileRoutes(ctx: AppContext) {
       bytes,
       mimeType: storedMime,
       newId: () => newId("storedFile"),
+      quota: "enforce",
     });
     // A small preview for the chat (the worker makes it).
     if ((kind === "image" || kind === "video") && !stored.previewKey)

@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { organization } from "./auth";
 
 /** Business-wide rules for broadcasts. */
@@ -17,5 +17,21 @@ export const organizationSettings = pgTable("organization_settings", {
     .primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
   broadcast: jsonb("broadcast").$type<Partial<BroadcastRules>>().notNull().default({}),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+/**
+ * How much file storage a business uses (every stored file, all branches, customers' files too) and
+ * its limit. Kept as a running total so an upload can be checked in one atomic update; the nightly
+ * file sweep recounts it from stored_file to correct any drift.
+ */
+export const storageUsage = pgTable("storage_usage", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  usedBytes: bigint("used_bytes", { mode: "number" }).notNull().default(0),
+  /** Null: the default limit (plans set this later). */
+  limitBytes: bigint("limit_bytes", { mode: "number" }),
+  recountedAt: timestamp("recounted_at"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

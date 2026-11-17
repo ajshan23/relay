@@ -176,6 +176,13 @@
       "when": 1794894026226,
       "tag": "0024_ai_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794936832241,
+      "tag": "0025_storage_usage",
+      "breakpoints": true
     }
   ]
 }

@@ -30,3 +30,4 @@ export * from "./files";
 export * from "./links";
 export * from "./outbound";
 export * as schema from "./schema/index";
+export * from "./storage-usage";

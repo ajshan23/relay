@@ -449,6 +449,7 @@ const settingsGroups = [
     items: [
       { label: "Branches", href: "/settings/branches" },
       { label: "Team", href: "/settings/team" },
+      { label: "Usage", href: "/settings/usage" },
     ],
   },
   {

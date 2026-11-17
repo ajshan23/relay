@@ -89,6 +89,8 @@ export function createMediaProcessor({
         bytes: file.bytes,
         mimeType,
         newId: () => newId("storedFile"),
+        // A customer's file is always kept; it still counts towards the business's storage.
+        quota: "count",
       });
       if (/^(image|video)\//.test(mimeType) && !stored.previewKey)
         await previewQueue.add(

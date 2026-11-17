@@ -35,6 +35,7 @@ for (const r of rows) {
     bytes,
     mimeType: r.mimeType,
     newId: () => newId("storedFile"),
+    quota: "count",
   });
   await db.update(a).set({ fileId: file.id, storageKey: file.storageKey }).where(sql`${a.id} = ${r.id}`);
   if (reused) merged++;

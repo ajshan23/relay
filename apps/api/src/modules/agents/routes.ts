@@ -432,6 +432,7 @@ export function agentRoutes(ctx: AppContext) {
       bytes: new Uint8Array(await file.arrayBuffer()),
       mimeType,
       newId: () => newId("storedFile"),
+      quota: "enforce",
     });
     const name = file.name.slice(0, 200);
     const [row] = await ctx.db

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { createDb } from "./client";
 import { storedFile } from "./schema/messaging";
+import { type QuotaMode, releaseStorage, reserveStorage } from "./storage-usage";
 
 /*
  * Files are stored once per business: the same bytes (same SHA-256) are one stored_file row and one
@@ -34,33 +35,52 @@ export async function findStoredFile(db: Db, organizationId: string, sha256: str
 }
 
 /**
- * Stores bytes for a business, or finds the copy it already has. Uploads only when the content is new.
+ * Stores bytes for a business, or finds the copy it already has. Uploads only when the content is new,
+ * and only then counts against the business's storage: `quota: "enforce"` for the business's own
+ * uploads (throws StorageFullError past the limit), `"count"` for files customers send (always kept).
  * `newId` makes the row id (passed in so this package needn't depend on @relay/core).
  */
 export async function storeFile(
   db: Db,
   storage: Storage,
-  input: { organizationId: string; bytes: Uint8Array; mimeType?: string | null; newId: () => string },
+  input: {
+    organizationId: string;
+    bytes: Uint8Array;
+    mimeType?: string | null;
+    newId: () => string;
+    quota: QuotaMode;
+  },
 ) {
   const sha = shaHex(input.bytes);
   const existing = await findStoredFile(db, input.organizationId, sha);
   if (existing) return { file: existing, reused: true };
-  const key = fileKey(input.organizationId, sha);
-  // The object first, then the row: a row never points at missing bytes.
-  await storage.put(key, input.bytes, { contentType: input.mimeType });
-  const [row] = await db
-    .insert(storedFile)
-    .values({
-      id: input.newId(),
-      organizationId: input.organizationId,
-      sha256: sha,
-      sizeBytes: input.bytes.byteLength,
-      mimeType: input.mimeType ?? null,
-      storageKey: key,
-    })
-    .onConflictDoNothing()
-    .returning();
-  // Someone stored the same file at the same moment: use theirs (same key, same bytes).
+  const size = input.bytes.byteLength;
+  // Space first, so a full business never uploads the object at all.
+  await reserveStorage(db, input.organizationId, size, input.quota);
+  let row: typeof storedFile.$inferSelect | undefined;
+  try {
+    const key = fileKey(input.organizationId, sha);
+    // The object first, then the row: a row never points at missing bytes.
+    await storage.put(key, input.bytes, { contentType: input.mimeType });
+    [row] = await db
+      .insert(storedFile)
+      .values({
+        id: input.newId(),
+        organizationId: input.organizationId,
+        sha256: sha,
+        sizeBytes: size,
+        mimeType: input.mimeType ?? null,
+        storageKey: key,
+      })
+      .onConflictDoNothing()
+      .returning();
+  } catch (err) {
+    await releaseStorage(db, input.organizationId, size);
+    throw err;
+  }
+  // Someone stored the same file at the same moment: use theirs (same key, same bytes), and give the
+  // space back, since it is counted once.
+  if (!row) await releaseStorage(db, input.organizationId, size);
   const file = row ?? (await findStoredFile(db, input.organizationId, sha));
   if (!file) throw new Error("Stored file vanished");
   return { file, reused: !row };
