@@ -27,6 +27,8 @@ export type AgentProfile = {
   languages: string[];
   /** Extra plain-words rule for when to hand over. */
   handoffWhen: string;
+  /** The branch has a catalogue the agent can search and show. */
+  catalog?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */
@@ -100,6 +102,10 @@ export type TurnOutcome =
   | { kind: "options"; text: string; options: { id: string; title: string }[]; buttonText?: string }
   | { kind: "handoff"; reason: string; summary: string; text?: string }
   | { kind: "close"; reason: string; text?: string }
+  /** Show catalogue items (cards with the main photo, name, price and buttons). */
+  | { kind: "items"; itemIds: string[]; text?: string; action: "order" | "book" | "none" }
+  /** Send one item's whole gallery. */
+  | { kind: "media"; itemId: string; text?: string }
   | { kind: "silent" };
 
 export type TurnTrace = {

@@ -815,3 +815,149 @@ export async function copyCatalogItems(
     return { copied: items.length, skusCleared };
   });
 }
+
+/* ------------------------------------------------------------------ for the AI agent */
+
+/**
+ * What a branch sells, for the agent's tool descriptions: categories by path, the business's
+ * filterable fields and types, the currency. Null when the branch has no active items (no tools then).
+ */
+export async function catalogShape(db: Db, organizationId: string, branchId: string) {
+  const [count] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(catalogItem)
+    .where(
+      and(
+        eq(catalogItem.organizationId, organizationId),
+        eq(catalogItem.branchId, branchId),
+        eq(catalogItem.status, "active"),
+      ),
+    );
+  if (!count?.n) return null;
+  const [types, fields, categories, settings] = await Promise.all([
+    db
+      .select({ name: catalogType.name })
+      .from(catalogType)
+      .where(and(eq(catalogType.organizationId, organizationId), isNull(catalogType.archivedAt))),
+    db
+      .select()
+      .from(catalogField)
+      .where(
+        and(
+          eq(catalogField.organizationId, organizationId),
+          eq(catalogField.filterable, true),
+          isNull(catalogField.archivedAt),
+        ),
+      )
+      .orderBy(asc(catalogField.position)),
+    db
+      .select({ id: catalogCategory.id, name: catalogCategory.name, parentId: catalogCategory.parentId })
+      .from(catalogCategory)
+      .where(and(eq(catalogCategory.organizationId, organizationId), eq(catalogCategory.branchId, branchId))),
+    db.execute(sql`select catalog from organization_settings where organization_id = ${organizationId}`),
+  ]);
+  const path = (id: string) => {
+    const names: string[] = [];
+    for (let c = categories.find((x) => x.id === id), g = 0; c && g < 10; g++) {
+      names.unshift(c.name);
+      c = categories.find((x) => x.id === c?.parentId);
+    }
+    return names.join(" › ");
+  };
+  const seen = new Set<string>();
+  return {
+    itemCount: count.n,
+    currency: (rowsOf<{ catalog: { currency?: string } | null }>(settings)[0]?.catalog?.currency ?? null) as
+      | string
+      | null,
+    types: types.map((t) => t.name),
+    categories: categories
+      .map((c) => ({ id: c.id, path: path(c.id) }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    fields: fields
+      .filter((f) => (seen.has(f.key) ? false : (seen.add(f.key), true)))
+      .map((f) => ({
+        key: f.key,
+        label: f.label,
+        type: f.type as "number" | "boolean" | "select" | "multi_select" | "date",
+        options: f.options.map((o) => o.label),
+        unit: f.unit,
+      })),
+  };
+}
+
+/**
+ * The agent's catalogue tools' data access for one branch. `embed` makes a 512-dim query vector (or
+ * null without AI); `terms` turns words into a safe to_tsquery string.
+ */
+export function catalogAgentDeps(
+  db: Db,
+  args: {
+    organizationId: string;
+    branchId: string;
+    shape: NonNullable<Awaited<ReturnType<typeof catalogShape>>>;
+    embed: ((text: string) => Promise<number[] | null>) | null;
+    terms: (query: string) => string | null;
+  },
+) {
+  const { organizationId, branchId } = args;
+  return {
+    shape: args.shape,
+    async search(input: {
+      query?: string;
+      category?: string;
+      priceMin?: number;
+      priceMax?: number;
+      inStock?: boolean;
+      filters?: Record<string, unknown>;
+      limit?: number;
+    }) {
+      const q = input.query?.trim() ?? "";
+      const embedding = q && args.embed ? await args.embed(q).catch(() => null) : null;
+      const found = await searchCatalog(db, {
+        organizationId,
+        branchId,
+        terms: q ? args.terms(q) : null,
+        embedding,
+        filters: {
+          categoryId: input.category,
+          priceMin: input.priceMin,
+          priceMax: input.priceMax,
+          currency: args.shape.currency ?? undefined,
+          inStock: input.inStock,
+          fields: input.filters as CatalogSearchFilters["fields"],
+        },
+        limit: input.limit ?? 6,
+      });
+      const cards = await catalogCards(db, {
+        organizationId,
+        branchId,
+        ids: found.ids,
+        descriptionChars: 160,
+      });
+      return {
+        ignoredFilters: found.ignoredFilters,
+        items: cards.map((c) => ({
+          id: c.id,
+          title: c.title,
+          summary: [c.category, ...c.details, c.description].filter(Boolean).join(". ").slice(0, 300),
+          price: c.priceText,
+          available: c.variants.some((v) => v.available),
+          options: c.variants.length,
+          hasPhoto: !!c.primaryMediaId,
+        })),
+      };
+    },
+    async get(itemId: string) {
+      const [card] = await catalogCards(db, {
+        organizationId,
+        branchId,
+        ids: [itemId],
+        descriptionChars: 1500,
+      });
+      if (!card) return null;
+      const { primaryMediaId, ...rest } = card;
+      return { ...rest, hasPhoto: !!primaryMediaId };
+    },
+  };
+}

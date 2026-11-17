@@ -1,4 +1,5 @@
 import { toolNames } from "./builtins";
+import { catalogToolNames } from "./catalog";
 import type { AgentProfile, ChatLine, ContactFacts, RunContext } from "./types";
 
 /*
@@ -43,6 +44,16 @@ export function systemPrompt(agent: AgentProfile): string {
       `- When the customer is clearly done (thanks, bye, nothing else needed), use ${toolNames.close} with a short goodbye.`,
       `- A short "ok" right after you answered usually means they're done; a short "ok" while you're waiting for their answer is not.`,
     ].join("\n"),
+    agent.catalog
+      ? [
+          "## What the business sells",
+          `- For anything about products, services, prices, sizes, stock or "do you have…", use ${catalogToolNames.search} (exact wishes go in its filters). Use ${catalogToolNames.get} before quoting the price of a specific option.`,
+          "- Prices, stock and lengths only ever come from those results. Never state a price you didn't find there in this chat.",
+          `- To show items, use ${catalogToolNames.show}: it sends each one's photo, name and price with buttons. Don't list prices in text when you can show the items.`,
+          `- When they want more photos or videos of one item, use ${catalogToolNames.media}.`,
+          "- If nothing matches, say so and suggest something close or a person; never make up an item.",
+        ].join("\n")
+      : "",
     [
       "## Choices",
       `When the customer should pick between a few clear options, use ${toolNames.options} instead of typing the options out.`,

@@ -22,6 +22,9 @@ import { agentPatchSchema, agentSettingsSchema, agentStarters } from "@relay/cor
 import {
   aiCredits,
   and,
+  catalogAgentDeps,
+  catalogCards,
+  catalogShape,
   desc,
   eq,
   gte,
@@ -35,6 +38,7 @@ import {
   storeFile,
   sum,
 } from "@relay/db";
+import { catalogEmbeddingDimensions } from "@relay/db/schema";
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
@@ -290,6 +294,8 @@ export function agentRoutes(ctx: AppContext) {
       languages: agent.languages,
       handoffWhen: agent.handoff.when,
     };
+    const shape = await catalogShape(ctx.db, orgId, c.var.branchId);
+    profile.catalog = !!shape;
     const runCtx: RunContext = {
       orgId,
       branchId: c.var.branchId,
@@ -301,9 +307,21 @@ export function agentRoutes(ctx: AppContext) {
       now: new Date(),
     };
     const embed = createEmbedder(ctx.config);
+    const embedCatalog = createEmbedder(ctx.config, { dimensions: catalogEmbeddingDimensions });
     const found: { source: string; text: string }[] = [];
     const tools = builtinTools({
       editableFields: fields,
+      ...(shape
+        ? {
+            catalog: catalogAgentDeps(ctx.db, {
+              organizationId: orgId,
+              branchId: c.var.branchId,
+              shape,
+              embed: async (text) => (await embedCatalog([text])).embeddings[0] ?? null,
+              terms: searchTerms,
+            }),
+          }
+        : {}),
       searchKnowledge: async (query) => {
         const embedding = (await embed([query]).catch(() => null))?.embeddings[0] ?? null;
         const hits = await searchKnowledge(ctx.db, {
@@ -354,8 +372,19 @@ export function agentRoutes(ctx: AppContext) {
           }),
       });
       await ctx.db.update(A).set({ triedAt: new Date() }).where(eq(A.id, agent.id));
+      // Items Mira chose to show, as the cards the customer would get.
+      const shownIds =
+        result.outcome.kind === "items"
+          ? result.outcome.itemIds
+          : result.outcome.kind === "media"
+            ? [result.outcome.itemId]
+            : [];
+      const cards = shownIds.length
+        ? await catalogCards(ctx.db, { organizationId: orgId, branchId: c.var.branchId, ids: shownIds })
+        : [];
       return c.json({
         outcome: result.outcome,
+        cards,
         tools: result.trace.tools.map((t) => ({ name: t.name, input: t.input, ok: t.result.ok })),
         knowledge: found,
         usage: result.trace.calls.map((call) => ({

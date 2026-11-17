@@ -4,6 +4,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import {
   type AgentProfile,
   builtinTools,
+  catalogToolNames,
   chatMessages,
   chunkText,
   contextNote,
@@ -17,6 +18,7 @@ import {
   maxToolResultChars,
   mixesScripts,
   modelFor,
+  moneyAmounts,
   qaChunk,
   type RunContext,
   runTurn,
@@ -387,6 +389,116 @@ describe("turn loop", () => {
       reason: "The assistant couldn't answer",
       summary: "The assistant gave no answer to the customer's last message twice in a row.",
     });
+  });
+});
+
+describe("catalogue", () => {
+  const withCatalog = builtinTools({
+    searchKnowledge: async () => [],
+    editableFields: [],
+    catalog: {
+      shape: {
+        currency: "AED",
+        categories: [{ id: "ctc_1", path: "Living › Sofas" }],
+        fields: [{ key: "colour", label: "Colour", type: "select", options: ["Grey", "Blue"] }],
+        types: ["Furniture"],
+      },
+      search: async (input) => ({
+        items:
+          input.priceMax && input.priceMax < 1000
+            ? []
+            : [
+                {
+                  id: "cti_sofa",
+                  title: "Sofa Oslo",
+                  summary: "Three seater",
+                  price: "AED 1,800",
+                  available: true,
+                  options: 2,
+                  hasPhoto: true,
+                },
+              ],
+        ignoredFilters: [],
+      }),
+      get: async () => ({
+        id: "cti_sofa",
+        variants: [{ title: "Grey", price: { amount: 1800, currency: "AED", text: "AED 1,800" } }],
+      }),
+    },
+  });
+
+  it("describes the business's categories and filters to the model", () => {
+    const search = withCatalog.find((t) => t.name === catalogToolNames.search);
+    assert.match(search?.description ?? "", /Living › Sofas = ctc_1/);
+    assert.match(search?.description ?? "", /colour \(one of: Grey, Blue\)/);
+  });
+
+  it("shows items as cards, without repeats", async () => {
+    const { caller } = scripted([
+      respond({ toolCalls: [{ id: "s", name: catalogToolNames.search, input: { query: "sofa" } }] }),
+      respond({
+        toolCalls: [
+          {
+            id: "x",
+            name: catalogToolNames.show,
+            input: { itemIds: ["cti_sofa", "cti_sofa"], text: "Here you go" },
+          },
+        ],
+      }),
+    ]);
+    const res = await runTurn({
+      model: "f",
+      system: "s",
+      messages: [],
+      tools: withCatalog,
+      ctx,
+      callModel: caller,
+    });
+    assert.deepEqual(res.outcome, {
+      kind: "items",
+      itemIds: ["cti_sofa"],
+      action: "order",
+      text: "Here you go",
+    });
+  });
+
+  it("never sends a price that no search or the chat gave", async () => {
+    const { caller, seen } = scripted([
+      respond({ text: "The Oslo sofa is AED 999." }),
+      respond({ toolCalls: [{ id: "g", name: catalogToolNames.get, input: { itemId: "cti_sofa" } }] }),
+      respond({ text: "The grey Oslo sofa is AED 1,800." }),
+    ]);
+    const res = await runTurn({
+      model: "f",
+      system: "s",
+      messages: [],
+      tools: withCatalog,
+      ctx,
+      callModel: caller,
+    });
+    assert.deepEqual(res.outcome, { kind: "reply", text: "The grey Oslo sofa is AED 1,800." });
+    assert.match(JSON.stringify(seen[1]), /states a price \(999\)/);
+  });
+
+  it("lets a price already in the chat be repeated", async () => {
+    const { caller } = scripted([respond({ text: "Yes, still AED 1,800." })]);
+    const res = await runTurn({
+      model: "f",
+      system: "s",
+      messages: [
+        { role: "assistant", content: "The grey Oslo sofa is AED 1,800." },
+        { role: "user", content: "same price?" },
+      ],
+      tools: withCatalog,
+      ctx,
+      callModel: caller,
+    });
+    assert.deepEqual(res.outcome, { kind: "reply", text: "Yes, still AED 1,800." });
+  });
+
+  it("reads money however it's written", () => {
+    assert.deepEqual(moneyAmounts("AED 1,200 or ₹499, about 250 dirhams, $12.50"), [1200, 499, 250, 12.5]);
+    assert.deepEqual(moneyAmounts("We have 3 sofas in 2 colours"), []);
   });
 });
 

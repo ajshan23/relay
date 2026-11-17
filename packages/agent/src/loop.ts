@@ -1,4 +1,5 @@
 import { toolNames } from "./builtins";
+import { catalogToolNames, numbersIn, unknownAmounts } from "./catalog";
 import { whatsappText } from "./prompt";
 import { envelope, runTool } from "./tools";
 import type {
@@ -55,6 +56,10 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
   const messages = [...input.messages];
   let toolCount = 0;
   let rewroteMixed = false;
+  let rewrotePrice = false;
+  // With a catalogue, amounts in a reply must come from this chat or this turn's tool results.
+  const priceGuard = byName.has(catalogToolNames.search);
+  const known = priceGuard ? numbersIn(JSON.stringify(input.messages)) : new Set<number>();
   let retriedEmpty = false;
 
   for (let call = 0; call < limits.maxModelCalls; call++) {
@@ -97,6 +102,15 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
           },
           trace,
         };
+      // A price nobody gave: ask once for a search first (it never reaches the customer).
+      if (text && priceGuard && !rewrotePrice && unknownAmounts(text, known).length) {
+        rewrotePrice = true;
+        messages.push(...response.messages, {
+          role: "system",
+          content: `That message was not sent: it states a price (${unknownAmounts(text, known).join(", ")}) that isn't in your search results or this chat. Use ${catalogToolNames.search} or ${catalogToolNames.get} and quote only what they return, or say you'll check.`,
+        });
+        continue;
+      }
       // A stray word from another language ("your team can जवाब faster"): ask once for a clean rewrite.
       if (text && !rewroteMixed && mixesScripts(text)) {
         rewroteMixed = true;
@@ -162,6 +176,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
         );
       }
       trace.tools.push({ name: toolCall.name, input: toolCall.input, result });
+      if (priceGuard) for (const n of numbersIn(JSON.stringify(result))) known.add(n);
       results.push({ call: toolCall, result });
     }
     messages.push({
@@ -249,6 +264,19 @@ function endingOutcome(call: ToolCall, text: string, tool: AgentTool<unknown>): 
       ...(data.buttonText ? { buttonText: String(data.buttonText) } : {}),
     };
   }
+  if (call.name === catalogToolNames.show)
+    return {
+      kind: "items",
+      itemIds: [...new Set(data.itemIds as string[])],
+      action: (data.action as "order" | "book" | "none") ?? "order",
+      ...(data.text ? { text: whatsappText(String(data.text)) } : text ? { text } : {}),
+    };
+  if (call.name === catalogToolNames.media)
+    return {
+      kind: "media",
+      itemId: String(data.itemId),
+      ...(data.text ? { text: whatsappText(String(data.text)) } : {}),
+    };
   if (tool.kind === "handoff")
     return {
       kind: "handoff",

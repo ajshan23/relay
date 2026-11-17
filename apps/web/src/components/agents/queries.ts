@@ -52,10 +52,25 @@ export type TryOutcome =
   | { kind: "options"; text: string; options: { id: string; title: string }[] }
   | { kind: "handoff"; reason: string; summary: string; text?: string }
   | { kind: "close"; reason: string; text?: string }
+  | { kind: "items"; itemIds: string[]; text?: string; action: "order" | "book" | "none" }
+  | { kind: "media"; itemId: string; text?: string }
   | { kind: "silent" };
+
+/** An item as Mira shows it (from the catalogue). */
+export type TryCard = {
+  id: string;
+  title: string;
+  description: string;
+  priceText: string | null;
+  details: string[];
+  primaryMediaId: string | null;
+  mediaCount: number;
+  variants: { id: string; title: string; available: boolean }[];
+};
 
 export type TryResult = {
   outcome: TryOutcome;
+  cards: TryCard[];
   tools: { name: string; input: unknown; ok: boolean }[];
   knowledge: { source: string; text: string }[];
   usage: {

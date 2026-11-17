@@ -8,8 +8,10 @@ import { Tag } from "@relay/ui/components/tag";
 import { TextArea } from "@relay/ui/components/text-input";
 import { Button } from "@relay/ui/ui/button";
 import { useEffect, useRef, useState } from "react";
+import { mediaUrl } from "@/components/catalog/items-view";
+import { useBranch } from "@/components/shell/branch-context";
 import { errorText } from "./agents-page";
-import { type Agent, type TryResult, useTryAgent } from "./queries";
+import { type Agent, type TryCard, type TryResult, useTryAgent } from "./queries";
 
 /*
  * Try: a pretend WhatsApp chat with the agent. Each message runs one real turn (same prompt, tools and
@@ -19,7 +21,13 @@ import { type Agent, type TryResult, useTryAgent } from "./queries";
 
 type Line = { id: number } & (
   | { from: "customer"; text: string }
-  | { from: "agent"; text: string; options?: { id: string; title: string }[] }
+  | {
+      from: "agent";
+      text: string;
+      options?: { id: string; title: string }[];
+      cards?: TryCard[];
+      action?: "order" | "book" | "none";
+    }
   | { from: "event"; text: string }
 );
 
@@ -81,6 +89,30 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
             if (o.text) add.push(line({ from: "agent", text: o.text }));
             add.push(line({ from: "event", text: `${agent.name} would close this chat.` }));
             setEnded(true);
+          }
+          if (o.kind === "items") {
+            // What the model sees next turn: what was shown, by name and price.
+            const shown = r.cards
+              .map((c) => `${c.title}${c.priceText ? ` (${c.priceText})` : ""}`)
+              .join("; ");
+            add.push(
+              line({
+                from: "agent",
+                text: [o.text, `[Showed: ${shown}]`].filter(Boolean).join("\n"),
+                cards: r.cards,
+                action: o.action,
+              }),
+            );
+          }
+          if (o.kind === "media") {
+            const card = r.cards[0];
+            if (o.text) add.push(line({ from: "agent", text: o.text }));
+            add.push(
+              line({
+                from: "event",
+                text: `${agent.name} would send ${card ? `all ${card.mediaCount} photos and videos of ${card.title}` : "that item's photos and videos"}.`,
+              }),
+            );
           }
           if (o.kind === "silent")
             add.push(line({ from: "event", text: `${agent.name} chose not to reply.` }));
@@ -155,9 +187,25 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
                   <li key={l.id} className="flex max-w-[85%] items-end gap-2 self-start">
                     <AgentAvatar name={agent.name} size="xs" decorative />
                     <div className="flex flex-col gap-1.5">
-                      <div className="rounded-lg border bg-card px-3 py-2 text-sm whitespace-pre-wrap">
-                        {l.text}
-                      </div>
+                      {l.cards?.length ? (
+                        <>
+                          {l.text.replace(/\n?\[Showed: [^\]]*\]$/, "") ? (
+                            <div className="rounded-lg border bg-card px-3 py-2 text-sm whitespace-pre-wrap">
+                              {l.text.replace(/\n?\[Showed: [^\]]*\]$/, "")}
+                            </div>
+                          ) : null}
+                          <TryCards
+                            cards={l.cards}
+                            action={l.action ?? "order"}
+                            disabled={ended || tryAgent.isPending || i !== lines.length - 1}
+                            onTap={(label, card) => send(`${label}: ${card.title}`)}
+                          />
+                        </>
+                      ) : (
+                        <div className="rounded-lg border bg-card px-3 py-2 text-sm whitespace-pre-wrap">
+                          {l.text}
+                        </div>
+                      )}
                       {l.options ? (
                         <div className="flex flex-wrap gap-1.5">
                           {l.options.map((o) => (
@@ -283,4 +331,56 @@ const toolWords: Record<string, string> = {
 
 function formatUsd(n: number) {
   return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
+/** Item cards as the customer gets them: main photo, name, price, and the buttons. */
+function TryCards({
+  cards,
+  action,
+  disabled,
+  onTap,
+}: {
+  cards: TryCard[];
+  action: "order" | "book" | "none";
+  disabled: boolean;
+  onTap: (label: string, card: TryCard) => void;
+}) {
+  const branch = useBranch().branch.id;
+  const buttons = ["More details", ...(action === "order" ? ["Order"] : action === "book" ? ["Book"] : [])];
+  return (
+    <div className="flex max-w-[22rem] gap-2 overflow-x-auto pb-1 sm:max-w-md">
+      {cards.map((c) => (
+        <div
+          key={c.id}
+          className="flex w-44 shrink-0 flex-col overflow-hidden rounded-lg border bg-card text-sm"
+        >
+          {c.primaryMediaId ? (
+            // biome-ignore lint/performance/noImgElement: served by our API with auth cookies
+            <img
+              src={mediaUrl(branch, c.primaryMediaId, true)}
+              alt=""
+              className="aspect-square w-full bg-muted object-cover"
+            />
+          ) : null}
+          <div className="flex flex-1 flex-col gap-0.5 p-2">
+            <span className="line-clamp-2 font-medium">{c.title}</span>
+            <span className="text-xs text-muted-foreground">{c.priceText ?? "Price on request"}</span>
+          </div>
+          <div className="flex flex-col border-t">
+            {buttons.map((b) => (
+              <button
+                key={b}
+                type="button"
+                disabled={disabled}
+                onClick={() => onTap(b, c)}
+                className="border-b px-2 py-1.5 text-xs font-medium text-primary last:border-0 hover:bg-accent disabled:opacity-50"
+              >
+                {b}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }

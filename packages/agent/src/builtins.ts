@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type CatalogDeps, catalogTools } from "./catalog";
 import { defineTool } from "./tools";
 import type { AgentTool, RunContext } from "./types";
 
@@ -16,6 +17,8 @@ export type BuiltinDeps = {
   ) => Promise<{ saved: string[] }>;
   /** Contact field keys the business lets the agent fill in. Empty: only tags. */
   editableFields: { key: string; label: string }[];
+  /** The branch's catalogue, when it has items. */
+  catalog?: CatalogDeps;
 };
 
 export const toolNames = {
@@ -123,5 +126,6 @@ export function builtinTools(deps: BuiltinDeps): AgentTool<unknown>[] {
       }),
     );
   }
+  if (deps.catalog) tools.push(...catalogTools(deps.catalog));
   return tools;
 }
