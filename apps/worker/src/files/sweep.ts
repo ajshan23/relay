@@ -1,25 +1,16 @@
 import type { FileStorage } from "@relay/core";
-import { type createDb, recountStorage, releaseStorage, schema, sql } from "@relay/db";
+import { type createDb, fileInUse, recountStorage, releaseStorage, schema, sql } from "@relay/db";
 
 /*
  * Deletes stored files nothing uses any more (their conversations or templates were deleted), once
  * they've been unused for a week. Runs daily on the maintenance queue. The object goes first, then the
  * row, so a failure leaves a row that the next run retries, never an object without a row. Afterwards
  * every business's storage total is recounted from what is really stored.
- *
- * "Used" means something points at the file: a message attachment (chats, templates, automations), a
- * knowledge file, an AI agent's avatar, a catalogue item's gallery. Add any new table that keeps a stored_file id here, or its
- * files will be deleted from under it.
+ * "Used" is fileInUse in @relay/db (attachments, knowledge files, agent pictures, catalogue galleries).
  */
 
 type Db = ReturnType<typeof createDb>["db"];
 const BATCH = 200;
-
-export const fileReferences = sql`
-  exists (select 1 from ${schema.attachment} a where a.file_id = f.id)
-  or exists (select 1 from ${schema.knowledgeSource} k where k.file_id = f.id)
-  or exists (select 1 from ${schema.aiAgent} g where g.avatar_file_id = f.id)
-  or exists (select 1 from ${schema.catalogMedia} m where m.file_id = f.id)`;
 
 export function createFileSweep({ db, storage }: { db: Db; storage: FileStorage }) {
   return async () => {
@@ -29,7 +20,7 @@ export function createFileSweep({ db, storage }: { db: Db; storage: FileStorage 
       const res = await db.execute(sql`
         select f.id, f.organization_id, f.size_bytes, f.storage_key, f.preview_key
         from ${f} f
-        where f.last_used_at < (now() at time zone 'utc') - interval '7 days' and not (${fileReferences})
+        where f.last_used_at < (now() at time zone 'utc') - interval '7 days' and not ${fileInUse}
         limit ${BATCH}`);
       const orphans = (Array.isArray(res) ? res : []).map((r) => {
         const row = r as Record<string, string | number | null>;

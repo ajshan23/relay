@@ -8,6 +8,7 @@ import { Redis } from "ioredis";
 import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
+import { type MediaJob as CatalogMediaJob, createCatalogMediaProcessor } from "./catalog/media";
 import { createMediaProcessor } from "./channels/media";
 import { createOnboardingProcessor, type OnboardingJob } from "./channels/onboarding";
 import { createOutboxProcessor, type OutboxJob } from "./channels/outbox";
@@ -20,6 +21,7 @@ import { createReadProcessor, type ReadJob } from "./contacts/read";
 import { createSnoozeWaker } from "./conversations/snooze";
 import { createPreviewProcessor } from "./files/preview";
 import { createFileSweep } from "./files/sweep";
+import { onePerOrg } from "./lib/per-org";
 import { createRequeue, redisMemory } from "./maintenance/requeue";
 
 const config = env();
@@ -224,6 +226,33 @@ const previews = new Worker(queues.previews, createPreviewProcessor({ db, storag
 });
 previews.on("failed", (job, err) => console.warn(`preview ${job?.data.fileId} failed: ${err.message}`));
 
+/* Catalogue gallery files: prepared for WhatsApp (photos resized, videos converted), one at a time per business. */
+const prepareCatalogMedia = createCatalogMediaProcessor({
+  db,
+  storage: fileStorage(),
+  previews: previewQueue,
+});
+const catalogMedia = new Worker<CatalogMediaJob>(
+  queues.catalogMedia,
+  onePerOrg<CatalogMediaJob>(
+    connection,
+    "catalog-media",
+    async (job) =>
+      (
+        await db
+          .select({ org: schema.catalogMedia.organizationId })
+          .from(schema.catalogMedia)
+          .where(eq(schema.catalogMedia.id, job.data.mediaId))
+          .limit(1)
+      )[0]?.org ?? null,
+    prepareCatalogMedia,
+  ),
+  { connection, concurrency: 3 },
+);
+catalogMedia.on("failed", (job, err) =>
+  console.warn(`catalog media ${job?.data.mediaId} failed: ${err.message}`),
+);
+
 /* Customer media: copied from Meta into our storage soon after arrival. */
 const media = new Worker<MediaJob>(
   queues.media,
@@ -332,6 +361,7 @@ async function shutdown() {
     webhooks.close(),
     outbox.close(),
     media.close(),
+    catalogMedia.close(),
     templates.close(),
     contactImports.close(),
     contactFiles.close(),

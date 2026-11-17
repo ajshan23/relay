@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { createDb } from "./client";
-import { storedFile } from "./schema/messaging";
+import { aiAgent, knowledgeSource } from "./schema/agents";
+import { catalogMedia } from "./schema/catalog";
+import { attachment, storedFile } from "./schema/messaging";
 import { type QuotaMode, releaseStorage, reserveStorage } from "./storage-usage";
 
 /*
@@ -84,4 +86,39 @@ export async function storeFile(
   const file = row ?? (await findStoredFile(db, input.organizationId, sha));
   if (!file) throw new Error("Stored file vanished");
   return { file, reused: !row };
+}
+
+/**
+ * True (SQL) when something still points at stored file `f`: a message attachment (chats, templates,
+ * automations), a knowledge file, an AI agent's picture, a catalogue gallery file. Add any new table
+ * that keeps a stored_file id here, or the sweep deletes its files.
+ */
+export const fileInUse = sql`(
+  exists (select 1 from ${attachment} a where a.file_id = f.id)
+  or exists (select 1 from ${knowledgeSource} k where k.file_id = f.id)
+  or exists (select 1 from ${aiAgent} g where g.avatar_file_id = f.id)
+  or exists (select 1 from ${catalogMedia} m where m.file_id = f.id))`;
+
+/**
+ * Deletes a business's stored file right away if nothing uses it any more (and gives the space back),
+ * instead of waiting for the nightly sweep. Returns whether it was deleted.
+ */
+export async function deleteFileIfUnused(
+  db: Db,
+  storage: { delete(key: string): Promise<void> },
+  organizationId: string,
+  fileId: string,
+) {
+  const res = await db.execute(sql`
+    delete from ${storedFile} f
+    where f.id = ${fileId} and f.organization_id = ${organizationId} and not ${fileInUse}
+    returning f.storage_key, f.preview_key, f.size_bytes`);
+  const row = (Array.isArray(res) ? res[0] : undefined) as
+    | { storage_key: string; preview_key: string | null; size_bytes: string | number }
+    | undefined;
+  if (!row) return false;
+  await releaseStorage(db, organizationId, Number(row.size_bytes));
+  await storage.delete(row.storage_key).catch(() => {});
+  if (row.preview_key) await storage.delete(row.preview_key).catch(() => {});
+  return true;
 }

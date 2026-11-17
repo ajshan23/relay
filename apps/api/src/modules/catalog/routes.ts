@@ -34,6 +34,7 @@ import { requireSession } from "../auth/session";
 import { branchAccess, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { catalogMediaRoutes } from "./media";
 
 /*
  * The selected branch's catalogue (?branch=). Types and their fields are shared by the business;
@@ -53,6 +54,7 @@ import { type BranchEnv, requireBranch } from "../contacts/shared";
  *   PUT    /api/catalog/items/:id            replace item + variants
  *   DELETE /api/catalog/items/:id
  *   POST   /api/catalog/items/bulk           { ids, action: archive | activate | delete }
+ *   /api/catalog/media/*                      an item's gallery (media.ts)
  * Owners, admins and the branch's managers change things; anyone in the branch may look.
  */
 
@@ -61,6 +63,7 @@ const PAGE = 50;
 export function catalogRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.route("/media", catalogMediaRoutes(ctx));
   const T = schema.catalogType;
   const F = schema.catalogField;
   const C = schema.catalogCategory;

@@ -22,6 +22,7 @@ import { env } from "./env";
  *   files/<org>/<sha256>          every stored file, once per business (see @relay/db files.ts)
  *   imports/<org>/<id>.<ext>      uploaded spreadsheets (S3 deletes them after 30 days)
  *   exports/<org>/<id>.<ext>      exports (S3 deletes them after a day)
+ *   uploads/<org>/<id>            browser uploads waiting to be prepared (S3 deletes them after a day)
  */
 
 export type FileStorage = {
@@ -39,6 +40,11 @@ export type FileStorage = {
     key: string,
     opts: { expiresIn?: number; fileName?: string | null; contentType?: string | null; inline?: boolean },
   ): Promise<string | null>;
+  /**
+   * A short-lived link the browser uploads one file to directly (HTTP PUT), so large videos never pass
+   * through the API. Null on local disk: the caller takes the upload itself.
+   */
+  signedUploadUrl(key: string, opts: { contentType: string; expiresIn?: number }): Promise<string | null>;
 };
 
 /** The repository root, so relative paths mean the same thing for the API, the worker and scripts. */
@@ -71,6 +77,9 @@ export function localFileStorage(dir: string): FileStorage {
       await rm(pathFor(key), { force: true });
     },
     async signedUrl() {
+      return null;
+    },
+    async signedUploadUrl() {
       return null;
     },
   };
@@ -141,6 +150,11 @@ export function s3FileStorage(opts: { bucket: string; region: string; endpoint?:
         }),
         { expiresIn: o.expiresIn ?? 300 },
       );
+    },
+    async signedUploadUrl(key, o) {
+      return getSignedUrl(client, new PutObjectCommand({ Bucket, Key: key, ContentType: o.contentType }), {
+        expiresIn: o.expiresIn ?? 900,
+      });
     },
   };
 }

@@ -9,6 +9,7 @@ import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { useSearchParams } from "next/navigation";
+import { Gallery } from "@/components/catalog/gallery";
 import { ItemsView } from "@/components/catalog/items-view";
 import { TypesView } from "@/components/catalog/types-view";
 import { ApiError } from "@/lib/api";
@@ -82,7 +83,7 @@ export function AgentsPage() {
             <h1 className="text-2xl font-semibold tracking-tight">{head.title}</h1>
             <p className="text-sm text-muted-foreground">{head.description}</p>
           </header>
-          {view === "items" ? <ItemsView /> : <TypesView />}
+          {view === "items" ? <ItemsView gallery={(item) => <Gallery item={item} />} /> : <TypesView />}
         </>
       ) : q.isPending ? (
         <div className="flex flex-col gap-4">
