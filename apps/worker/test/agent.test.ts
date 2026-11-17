@@ -432,6 +432,36 @@ describe("AI agent in chats", () => {
     );
   });
 
+  it("steps back from a chat it's in when it is paused", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "hello mira");
+    await until("the first answer", async () => (await agentMessages(chat.conversationId)).length === 1);
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await db.update(schema.aiAgent).set({ status: "paused" }).where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      await customerSays(chat, "are you there?");
+      const run = await until("the run to end", async () => {
+        const r = await agentRun(chat.conversationId);
+        return r?.status === "completed" ? r : null;
+      });
+      assert.equal((run.output as { ended: string }).ended, "paused");
+      const msgs = await agentMessages(chat.conversationId);
+      assert.deepEqual(
+        msgs.map((m) => m.type),
+        ["text", "note"],
+        "no reply after the pause, just a note for the team",
+      );
+      assert.equal((await chatRow(chat.conversationId))?.automationRunId, null);
+      // While paused it doesn't take new chats either.
+      const other = await newChat();
+      await customerSays(other, "hi there");
+      await new Promise((res) => setTimeout(res, 1500));
+      assert.equal(await agentRun(other.conversationId), null);
+    } finally {
+      await db.update(schema.aiAgent).set({ status: "live" }).where(eq(schema.aiAgent.id, ids.agent));
+    }
+  });
+
   it("closes the chat when the customer is done", async () => {
     const chat = await newChat();
     await customerSays(chat, "ok bye");

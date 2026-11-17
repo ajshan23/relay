@@ -92,6 +92,7 @@ export function AgentsPage() {
                 <span className="font-medium text-foreground">{head.title}:</span> {head.description}
               </p>
             </div>
+            {q.data.canManage ? <LiveButton agent={agent} /> : null}
           </header>
           {!q.data.aiReady ? (
             <Panel className="flex items-start gap-3 border-warning bg-warning-soft text-[13px]">
@@ -112,6 +113,37 @@ export function AgentsPage() {
         </>
       )}
     </div>
+  );
+}
+
+/** Pause or go live from any view, not only on the Go live page. */
+function LiveButton({ agent }: { agent: Agent }) {
+  const { setStatus } = useAgentActions();
+  const live = agent.status === "live";
+  return (
+    <Button
+      variant={live ? "outline" : "default"}
+      size="sm"
+      disabled={setStatus.isPending}
+      onClick={() =>
+        setStatus.mutate(
+          { id: agent.id, status: live ? "paused" : "live" },
+          {
+            onSuccess: () =>
+              live
+                ? notify.success(`${agent.name} is paused`, {
+                    description:
+                      "It stops answering new messages. Chats it's in now go back to your team on their next message.",
+                  })
+                : notify.success(`${agent.name} is live`),
+            onError: (err) => notify.error(live ? "Not paused" : "Not live", { description: errorText(err) }),
+          },
+        )
+      }
+    >
+      <Icon name={live ? "pause" : "play"} />
+      {live ? "Pause" : "Go live"}
+    </Button>
   );
 }
 

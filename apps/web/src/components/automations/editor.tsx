@@ -13,7 +13,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@relay/ui/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@relay/ui/ui/tabs";
@@ -26,11 +25,11 @@ import { useBranch } from "@/components/shell/branch-context";
 import { ApiError } from "@/lib/api";
 import { Canvas } from "./canvas";
 import { connect, disconnect, insertStep, removeStep, updateConfig } from "./ops";
+import { PauseButton } from "./pause-switch";
 import {
   automationKeys,
   type SaveBody,
   useAutomation,
-  useAutomationAction,
   useEditorOptions,
   useRestoreVersion,
   useSaveAutomation,
@@ -197,7 +196,6 @@ export function AutomationEditor({ id }: { id: string }) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [state]);
 
-  const action = useAutomationAction(id);
   const restore = useRestoreVersion(id);
 
   if (detail.isError)
@@ -374,33 +372,16 @@ export function AutomationEditor({ id }: { id: string }) {
               ) : (
                 <DropdownMenuItem disabled>Not published yet</DropdownMenuItem>
               )}
-              {canManage && liveVersion ? (
-                <>
-                  <DropdownMenuSeparator />
-                  {automation.status === "live" ? (
-                    <DropdownMenuItem onSelect={() => action.mutate("pause")}>
-                      Pause (no new runs)
-                    </DropdownMenuItem>
-                  ) : (
-                    <DropdownMenuItem
-                      onSelect={() =>
-                        action.mutate("resume", {
-                          onError: (err) =>
-                            notify.error("Not resumed", {
-                              description: err instanceof ApiError ? err.message : undefined,
-                            }),
-                        })
-                      }
-                    >
-                      Resume
-                    </DropdownMenuItem>
-                  )}
-                </>
-              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
           {canManage ? (
             <>
+              <PauseButton
+                id={automation.id}
+                name={automation.name}
+                status={automation.status}
+                hasLiveVersion={!!liveVersion}
+              />
               <Button
                 variant="outline"
                 size="sm"

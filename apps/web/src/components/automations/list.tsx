@@ -17,6 +17,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PauseSwitch } from "./pause-switch";
 import {
   type AutomationStatus,
   type AutomationSummary,
@@ -46,6 +47,7 @@ export function AutomationsPage() {
   const [creating, setCreating] = useState(false);
   const numbers = list.data?.numbers ?? [];
   const statuses = views[view]?.statuses;
+  const canManage = !!list.data?.canManage;
   const rows = (list.data?.automations ?? []).filter((a) => !statuses || statuses.includes(a.status));
 
   const columns = useMemo(
@@ -70,9 +72,19 @@ export function AutomationsPage() {
       col.accessor("status", {
         header: "Status",
         cell: ({ row }) => (
-          <Tag size="sm" tone={statusTone[row.original.status]}>
-            {statusLabel[row.original.status]}
-          </Tag>
+          <span className="flex items-center gap-2">
+            {canManage ? (
+              <PauseSwitch
+                id={row.original.id}
+                name={row.original.name}
+                status={row.original.status}
+                hasLiveVersion={!!row.original.liveVersionId}
+              />
+            ) : null}
+            <Tag size="sm" tone={statusTone[row.original.status]}>
+              {statusLabel[row.original.status]}
+            </Tag>
+          </span>
         ),
       }),
       col.accessor("runs7d", {
@@ -95,7 +107,7 @@ export function AutomationsPage() {
         cell: ({ row }) => <span className="text-muted-foreground">{when(row.original.updatedAt)}</span>,
       }),
     ],
-    [numbers],
+    [numbers, canManage],
   );
 
   const newButton = list.data?.canManage ? (

@@ -62,7 +62,7 @@ const finished = new Set(["completed", "failed", "cancelled"]);
 const isLive = (r: RunRow | null | undefined) => !!r && !finished.has(r.status);
 
 /** How a run ended (its output), read before answering an unclaimed chat again. */
-type Ended = "handoff" | "close" | "idle" | "max_turns" | "send_failed" | "not_live" | "stopped";
+type Ended = "handoff" | "close" | "idle" | "max_turns" | "send_failed" | "not_live" | "stopped" | "paused";
 
 export type AgentRuntimeDeps = {
   db: Db;
@@ -340,6 +340,26 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           }),
         );
         return "max_turns";
+      }
+      // Paused (or set back to draft) since the chat started: step back and leave the chat to the team.
+      const stillLive = await ctx.step(`t${turn}:live`, async () => {
+        const [row] = await db
+          .select({ status: schema.aiAgent.status })
+          .from(schema.aiAgent)
+          .where(eq(schema.aiAgent.id, agent.id))
+          .limit(1);
+        return row?.status === "live";
+      });
+      if (!stillLive) {
+        await ctx.step(`t${turn}:paused`, () =>
+          addNote(
+            input,
+            agent,
+            `${ctx.runId}:t${turn}:paused`,
+            `${agent.name} is paused, so this chat is back with your team.`,
+          ),
+        );
+        return "paused";
       }
       const typingStep = `t${turn}:typing`;
       await ctx.step(typingStep, () => d.showTyping(input.conversationId, `${ctx.runId}_t${turn}`));
