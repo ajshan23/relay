@@ -363,10 +363,30 @@ describe("turn loop", () => {
     assert.equal(toolMessage?.content.length, 3);
   });
 
-  it("an empty answer is silence, not an empty message", async () => {
-    const { caller } = scripted([respond({ text: "   " })]);
-    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
-    assert.deepEqual(res.outcome, { kind: "silent" });
+  it("asks again after an empty answer, and hands over if it stays empty", async () => {
+    const once = scripted([
+      respond({ text: "" }),
+      respond({
+        toolCalls: [
+          {
+            id: "h",
+            name: toolNames.handoff,
+            input: { reason: "wants pricing", summary: "Asked for Meta prices." },
+          },
+        ],
+      }),
+    ]);
+    const r1 = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: once.caller });
+    assert.equal(r1.outcome.kind, "handoff");
+    assert.match(JSON.stringify(once.seen[1]), /You sent nothing/);
+
+    const twice = scripted([respond({ text: "   " }), respond({ text: "" })]);
+    const r2 = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: twice.caller });
+    assert.deepEqual(r2.outcome, {
+      kind: "handoff",
+      reason: "The assistant couldn't answer",
+      summary: "The assistant gave no answer to the customer's last message twice in a row.",
+    });
   });
 });
 

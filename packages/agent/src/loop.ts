@@ -55,6 +55,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
   const messages = [...input.messages];
   let toolCount = 0;
   let rewroteMixed = false;
+  let retriedEmpty = false;
 
   for (let call = 0; call < limits.maxModelCalls; call++) {
     const response = await step(`${prefix}:model${call}`, () =>
@@ -106,7 +107,26 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
         });
         continue;
       }
-      return { outcome: text ? { kind: "reply", text } : { kind: "silent" }, trace };
+      if (text) return { outcome: { kind: "reply", text }, trace };
+      // Nothing at all (the model only "thought" and stopped). The customer is waiting, so ask once
+      // more; if it still says nothing, a person takes the chat rather than leaving it unanswered.
+      if (!retriedEmpty) {
+        retriedEmpty = true;
+        messages.push(...response.messages, {
+          role: "system",
+          content:
+            "You sent nothing, and the customer is waiting. Reply to them now, or call the tool you meant to use.",
+        });
+        continue;
+      }
+      return {
+        outcome: {
+          kind: "handoff",
+          reason: "The assistant couldn't answer",
+          summary: "The assistant gave no answer to the customer's last message twice in a row.",
+        },
+        trace,
+      };
     }
 
     // A turn-ending tool wins over anything else asked for in the same response.
