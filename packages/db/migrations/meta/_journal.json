@@ -183,6 +183,13 @@
       "when": 1794936832241,
       "tag": "0025_storage_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794937176047,
+      "tag": "0026_catalog",
+      "breakpoints": true
     }
   ]
 }

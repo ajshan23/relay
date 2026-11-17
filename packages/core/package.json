@@ -12,7 +12,8 @@
     "./sheets": "./src/sheets.ts",
     "./broadcasts": "./src/broadcasts.ts",
     "./automations": "./src/automations/index.ts",
-    "./agents": "./src/agents.ts"
+    "./agents": "./src/agents.ts",
+    "./catalog": "./src/catalog.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -8,7 +8,7 @@ import { type createDb, recountStorage, releaseStorage, schema, sql } from "@rel
  * every business's storage total is recounted from what is really stored.
  *
  * "Used" means something points at the file: a message attachment (chats, templates, automations), a
- * knowledge file, an AI agent's avatar. Add any new table that keeps a stored_file id here, or its
+ * knowledge file, an AI agent's avatar, a catalogue item's gallery. Add any new table that keeps a stored_file id here, or its
  * files will be deleted from under it.
  */
 
@@ -18,7 +18,8 @@ const BATCH = 200;
 export const fileReferences = sql`
   exists (select 1 from ${schema.attachment} a where a.file_id = f.id)
   or exists (select 1 from ${schema.knowledgeSource} k where k.file_id = f.id)
-  or exists (select 1 from ${schema.aiAgent} g where g.avatar_file_id = f.id)`;
+  or exists (select 1 from ${schema.aiAgent} g where g.avatar_file_id = f.id)
+  or exists (select 1 from ${schema.catalogMedia} m where m.file_id = f.id)`;
 
 export function createFileSweep({ db, storage }: { db: Db; storage: FileStorage }) {
   return async () => {

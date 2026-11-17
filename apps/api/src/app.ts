@@ -10,6 +10,7 @@ import { linkRoutes } from "./modules/automations/links";
 import { automationRoutes } from "./modules/automations/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { broadcastRoutes } from "./modules/broadcasts/routes";
+import { catalogRoutes } from "./modules/catalog/routes";
 import { channelRoutes } from "./modules/channels/routes";
 import { contactImportRoutes } from "./modules/contacts/imports";
 import { contactListRoutes } from "./modules/contacts/lists";
@@ -52,6 +53,7 @@ export function createApp(ctx: AppContext) {
   app.route("/api/broadcasts", broadcastRoutes(ctx));
   app.route("/api/automations", automationRoutes(ctx));
   app.route("/api/agents", agentRoutes(ctx));
+  app.route("/api/catalog", catalogRoutes(ctx));
   app.route("/api/settings", settingsRoutes(ctx));
   // Sub-paths first, so "/api/contacts/:id" doesn't swallow them.
   app.route("/api/contacts/fields", contactFieldRoutes(ctx));

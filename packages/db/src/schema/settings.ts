@@ -11,12 +11,19 @@ export type BroadcastRules = {
 
 export const defaultBroadcastRules: BroadcastRules = { frequencyCap: 2, skipLiveChats: true };
 
+/** Business-wide catalogue settings. */
+export type CatalogSettings = {
+  /** ISO 4217 code new prices start in ("AED", "INR"). */
+  currency: string;
+};
+
 /** One row per organization for settings that don't belong to a channel or branch. */
 export const organizationSettings = pgTable("organization_settings", {
   organizationId: text("organization_id")
     .primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
   broadcast: jsonb("broadcast").$type<Partial<BroadcastRules>>().notNull().default({}),
+  catalog: jsonb("catalog").$type<Partial<CatalogSettings>>().notNull().default({}),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

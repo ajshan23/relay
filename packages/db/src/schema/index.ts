@@ -3,6 +3,7 @@ export * from "./agents";
 export * from "./auth";
 export * from "./automations";
 export * from "./branches";
+export * from "./catalog";
 export * from "./broadcasts";
 export * from "./channels";
 export * from "./contacts";

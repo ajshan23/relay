@@ -46,6 +46,13 @@ export const idPrefixes = {
   knowledgeChunk: "kc",
   aiUsage: "aiu",
   aiGap: "gap",
+  catalogType: "ctt",
+  catalogField: "ctf",
+  catalogCategory: "ctc",
+  catalogItem: "cti",
+  catalogVariant: "ctv",
+  catalogMedia: "ctm",
+  catalogImport: "cim",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;

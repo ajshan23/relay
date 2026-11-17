@@ -9,6 +9,8 @@ import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { useSearchParams } from "next/navigation";
+import { ItemsView } from "@/components/catalog/items-view";
+import { TypesView } from "@/components/catalog/types-view";
 import { ApiError } from "@/lib/api";
 import { GoLiveView } from "./go-live";
 import { ImproveView } from "./improve";
@@ -42,7 +44,18 @@ const titles: Record<string, { title: string; description: string }> = {
     title: "Questions and answers",
     description: "Exact answers to the questions customers ask most, and short notes.",
   },
+  items: {
+    title: "Catalogue",
+    description: "What this branch sells, with prices, photos and videos. Mira shows them to customers.",
+  },
+  "types-and-fields": {
+    title: "Types and fields",
+    description: "The kinds of things you sell and the details each one has. Shared by every branch.",
+  },
 };
+
+/** Catalogue views work without an AI agent: the team uses the catalogue too. */
+const catalogViews = new Set(["items", "types-and-fields"]);
 
 export const statusWords: Record<Agent["status"], { label: string; tone: "good" | "plain" | "warning" }> = {
   live: { label: "Live", tone: "good" },
@@ -63,7 +76,15 @@ export function AgentsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 pt-6 pb-16 sm:px-8">
-      {q.isPending ? (
+      {catalogViews.has(view) ? (
+        <>
+          <header className="flex flex-col gap-1">
+            <h1 className="text-2xl font-semibold tracking-tight">{head.title}</h1>
+            <p className="text-sm text-muted-foreground">{head.description}</p>
+          </header>
+          {view === "items" ? <ItemsView /> : <TypesView />}
+        </>
+      ) : q.isPending ? (
         <div className="flex flex-col gap-4">
           <Skeleton className="h-10 w-64" />
           <Skeleton className="h-48 w-full" />

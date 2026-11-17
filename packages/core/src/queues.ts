@@ -33,6 +33,13 @@ export const queues = {
   onboarding: "onboarding",
   /** AI agent knowledge: "index" one source (job id index_<source id>_<revision>), one business at a time. */
   knowledge: "knowledge",
+  /**
+   * The catalogue: "embed" a branch's changed items (job id embed_<branch>_<10 s slot>), "import" an
+   * Excel/CSV file (job id the import id).
+   */
+  catalog: "catalog",
+  /** Catalogue gallery files: "prepare" one upload for WhatsApp (job id the media id). */
+  catalogMedia: "catalog-media",
 } as const;
 
 export type QueueName = (typeof queues)[keyof typeof queues];
