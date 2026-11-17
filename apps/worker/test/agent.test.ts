@@ -683,6 +683,30 @@ describe("AI agent in chats", () => {
     assert.ok(calls.at(-1)?.tools.some((t) => t.name === catalogToolNames.search));
   });
 
+  it("uses Teach changes from the next message, also in a chat already going", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "hello there");
+    await until("the first answer", async () => (await agentMessages(chat.conversationId)).length === 1);
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    const [before] = await db.select().from(schema.aiAgent).where(eq(schema.aiAgent.id, ids.agent));
+    await db
+      .update(schema.aiAgent)
+      .set({ role: "sales assistant", instructions: "Sell laptops and phones." })
+      .where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      const n = calls.length;
+      await customerSays(chat, "and now?");
+      await until("the second answer", async () => calls.length > n);
+      assert.match(calls.at(-1)?.system ?? "", /You are Mira, sales assistant/);
+      assert.match(calls.at(-1)?.system ?? "", /Sell laptops and phones\./);
+    } finally {
+      await db
+        .update(schema.aiAgent)
+        .set({ role: before?.role ?? "", instructions: before?.instructions ?? "" })
+        .where(eq(schema.aiAgent.id, ids.agent));
+    }
+  });
+
   it("sends nothing when the reply window is closed", async () => {
     const chat = await newChat(false);
     await customerSays(chat, "hello late");

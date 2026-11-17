@@ -324,9 +324,12 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   async function converse(
     ctx: WorkflowContext,
     input: AgentRunInput,
-    agent: LoadedAgent,
+    started: LoadedAgent,
     onTurn: (n: number) => void,
   ): Promise<Ended> {
+    // The agent as of this turn: re-read before every answer (below), so a change to Teach, knowledge
+    // or the catalogue applies from the customer's next message, also in chats already going.
+    let agent = started;
     const key = automationEvents.messageReceived;
     const scope = input.conversationId;
     // Where the next wait looks back from: messages written since then count (none are skipped).
@@ -384,16 +387,14 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         );
         return "max_turns";
       }
-      // Paused (or set back to draft) since the chat started: step back and leave the chat to the team.
-      const stillLive = await ctx.step(`t${turn}:live`, async () => {
-        const [row] = await db
-          .select({ status: schema.aiAgent.status })
-          .from(schema.aiAgent)
-          .where(eq(schema.aiAgent.id, agent.id))
-          .limit(1);
-        return row?.status === "live";
+      // Paused (or set back to draft) since the chat started: step back. Otherwise answer with the
+      // agent's current settings. Turns recorded before this re-read hold a plain true/false.
+      const now = await ctx.step(`t${turn}:live`, async (): Promise<LoadedAgent | false> => {
+        const fresh = await loadAgent(agent.id, input.organizationId);
+        return fresh?.status === "live" ? fresh : false;
       });
-      if (!stillLive) {
+      if (now && typeof now === "object") agent = { ...now, triggerAnswered: agent.triggerAnswered };
+      if (!now) {
         await ctx.step(`t${turn}:paused`, () =>
           addNote(
             input,
