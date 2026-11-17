@@ -15,6 +15,7 @@ import {
   type ModelCaller,
   type ModelResponse,
   maxToolResultChars,
+  mixesScripts,
   modelFor,
   qaChunk,
   type RunContext,
@@ -208,6 +209,80 @@ describe("turn loop", () => {
     assert.deepEqual(res.outcome, { kind: "close", reason: "done", text: "Take care!" });
   });
 
+  it("carries out an ending tool the model typed as text, and never sends it", async () => {
+    const { caller } = scripted([
+      respond({
+        text: 'close_chat{"reason":"Customer said ok","text":"You\'re welcome, Ajmal. Message us anytime."}',
+      }),
+    ]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, {
+      kind: "close",
+      reason: "Customer said ok",
+      text: "You're welcome, Ajmal. Message us anytime.",
+    });
+  });
+
+  it("asks again when a read tool is typed as text or a typed call can't be read", async () => {
+    const { caller, seen } = scripted([
+      respond({ text: 'functions.search_knowledge({"query":"timings"})' }),
+      respond({ text: "close_chat{oops" }),
+      respond({ text: "We're open 9am to 7pm." }),
+    ]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, { kind: "reply", text: "We're open 9am to 7pm." });
+    const note = JSON.stringify(seen[1]);
+    assert.match(note, /wrote a tool call as text/);
+    assert.equal(res.trace.tools.length, 0);
+  });
+
+  it("hands over when it says it is connecting the customer, but not when it only offers", async () => {
+    const promise = scripted([
+      respond({ text: "Sure — I’ll connect you with the team for a quick walkthrough." }),
+    ]);
+    const res = await runTurn({
+      model: "f",
+      system: "s",
+      messages: [],
+      tools,
+      ctx,
+      callModel: promise.caller,
+    });
+    assert.equal(res.outcome.kind, "handoff");
+    assert.equal("text" in res.outcome, false, "the business's own hand-over message is sent instead");
+
+    for (const offer of [
+      "If you want, I can also hand you to the team for a walkthrough.",
+      "Shall I connect you with the team?",
+    ]) {
+      const s = scripted([respond({ text: offer })]);
+      const r = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: s.caller });
+      assert.deepEqual(r.outcome, { kind: "reply", text: offer });
+    }
+  });
+
+  it("asks once for a rewrite when an English reply has a word in another script", async () => {
+    const mixed = "It keeps all 4 branches in one inbox, so your team can जवाब faster.";
+    const { caller, seen } = scripted([
+      respond({ text: mixed }),
+      respond({ text: "It keeps all 4 branches in one inbox, so your team can reply faster." }),
+    ]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, {
+      kind: "reply",
+      text: "It keeps all 4 branches in one inbox, so your team can reply faster.",
+    });
+    assert.match(JSON.stringify(seen[1]), /mixed languages/);
+    assert.equal(mixesScripts(mixed), true);
+    assert.equal(
+      mixesScripts("हाँ, Relay आपके WhatsApp चैट्स को एक inbox में रखता है।"),
+      false,
+      "Hindi naming products is fine",
+    );
+    assert.equal(mixesScripts("نعم، Relay يعمل مع WhatsApp."), false);
+    assert.equal(mixesScripts("Plain English only."), false);
+  });
+
   it("says it can't answer and keeps the question", async () => {
     const { caller } = scripted([
       respond({
@@ -244,7 +319,7 @@ describe("turn loop", () => {
     });
     assert.match(
       contextNote(ctx, {}, ["English", "Hindi"]),
-      /if the customer.s last message is in English or Hindi, reply in that same language\. If it is in any other language, reply in English\.$/,
+      /if the customer.s last message is in English or Hindi, reply in that same language\. If it is in any other language, reply in English\. Use only that one language in your whole reply\.$/,
     );
     assert.doesNotMatch(contextNote(ctx, {}), /Reply only/);
   });

@@ -54,6 +54,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
   const trace: TurnTrace = { calls: [], tools: [] };
   const messages = [...input.messages];
   let toolCount = 0;
+  let rewroteMixed = false;
 
   for (let call = 0; call < limits.maxModelCalls; call++) {
     const response = await step(`${prefix}:model${call}`, () =>
@@ -68,8 +69,45 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
     await input.onModelCall?.(response, call);
 
     const text = whatsappText(response.text);
-    if (!response.toolCalls.length)
+    if (!response.toolCalls.length) {
+      // Models sometimes type a tool call out as text ("close_chat{...}"). Never send that: an ending
+      // tool is carried out as if it had been called; anything else is asked for again, properly.
+      const typed = typedToolCall(response.text, byName);
+      if (typed) {
+        const tool = byName.get(typed.call.name) as AgentTool<unknown>;
+        if (tool.kind !== "read" && tool.kind !== "write") {
+          const outcome = endingOutcome(typed.call, typed.before, tool);
+          if (outcome) return { outcome, trace };
+        }
+        messages.push(...response.messages, {
+          role: "system",
+          content: `That message was not sent: you wrote a tool call as text. Call ${typed.call.name} as a tool, or write your reply to the customer in plain words.`,
+        });
+        continue;
+      }
+      // Saying "I'll connect you with the team" without calling the tool leaves the customer waiting
+      // for nobody, so a promise like that is carried out.
+      if (text && byName.has(toolNames.handoff) && promisesHandover(text))
+        return {
+          outcome: {
+            kind: "handoff",
+            reason: "The customer wants to talk to the team",
+            summary: `The assistant told the customer: "${text.slice(0, 300)}"`,
+          },
+          trace,
+        };
+      // A stray word from another language ("your team can जवाब faster"): ask once for a clean rewrite.
+      if (text && !rewroteMixed && mixesScripts(text)) {
+        rewroteMixed = true;
+        messages.push(...response.messages, {
+          role: "system",
+          content:
+            "That message was not sent: it mixed languages. Write it again entirely in the customer's language, with no words from any other language.",
+        });
+        continue;
+      }
       return { outcome: text ? { kind: "reply", text } : { kind: "silent" }, trace };
+    }
 
     // A turn-ending tool wins over anything else asked for in the same response.
     const ending = response.toolCalls.find((c) => {
@@ -124,6 +162,55 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
     },
     trace,
   };
+}
+
+/**
+ * A tool call the model wrote as text instead of calling it: `close_chat{"reason":…}`, also with a
+ * `functions.` prefix or in brackets, possibly after a few words. Unreadable input stays null, so the
+ * tool's own check turns it down.
+ */
+export function typedToolCall(
+  raw: string,
+  tools: Map<string, AgentTool<unknown>>,
+): { call: ToolCall; before: string } | null {
+  for (const m of raw.matchAll(/(?:functions\.)?\b([a-z][a-z_]{2,40})\s*\(?\s*\{/g)) {
+    const name = m[1] as string;
+    if (!tools.has(name)) continue;
+    const start = (m.index ?? 0) + m[0].lastIndexOf("{");
+    const end = raw.lastIndexOf("}");
+    let input: unknown = null;
+    try {
+      input = JSON.parse(raw.slice(start, end + 1));
+    } catch {
+      input = null;
+    }
+    return { call: { id: `typed_${name}`, name, input }, before: whatsappText(raw.slice(0, m.index)) };
+  }
+  return null;
+}
+
+/**
+ * The agent saying it is handing the chat over right now ("I'll connect you with the team"), as opposed
+ * to offering to ("I can connect you if you like?"). English only; the prompt covers other languages.
+ */
+export function promisesHandover(text: string): boolean {
+  if (text.includes("?") || /\bif you\b/i.test(text)) return false;
+  return /\b(?:I['’]ll|I will|I['’]m going to|I am going to|let me|I['’]m|I am)\s+(?:now\s+|just\s+|quickly\s+)?(?:connect|pass|hand|transfer|forward|put)(?:ing)?\s+you\b/i.test(
+    text,
+  );
+}
+
+/**
+ * A reply in the Latin alphabet with a few words in another script dropped in. The other way round is
+ * normal (a Hindi or Arabic reply naming "Relay" or "WhatsApp"), so only this direction counts.
+ */
+export function mixesScripts(text: string): boolean {
+  const latin = text.match(/\p{Script=Latin}/gu)?.length ?? 0;
+  const other =
+    text.match(
+      /[\p{Script=Devanagari}\p{Script=Arabic}\p{Script=Bengali}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Malayalam}\p{Script=Gujarati}\p{Script=Gurmukhi}\p{Script=Kannada}\p{Script=Cyrillic}\p{Script=Han}]/gu,
+    )?.length ?? 0;
+  return other >= 2 && latin > other * 4;
 }
 
 /** Reads a turn-ending tool call. An invalid one returns null so the model's text (if any) is used. */

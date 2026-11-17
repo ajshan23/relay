@@ -21,6 +21,7 @@ import { newId, type Publisher, previewText, publishInboxEvent } from "@relay/co
 import {
   type AgentRunInput,
   type AgentRunLabels,
+  agentHandoffSchema,
   agentLimits,
   agentWorkflow,
   withinAgentHours,
@@ -222,7 +223,13 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       let turns = 0;
       let ended: Ended = "idle";
       try {
-        const agent = await ctx.step("load agent", () => loadAgent(input.agentId, input.organizationId));
+        // Recorded with the agent (not as a step of its own) so runs started before this check replay.
+        const agent = await ctx.step("load agent", async () => {
+          const a = await loadAgent(input.agentId, input.organizationId);
+          return a && input.trigger
+            ? { ...a, triggerAnswered: await lastWordIsOurs(input.conversationId) }
+            : a;
+        });
         if (agent?.status !== "live") {
           ended = "not_live";
         } else {
@@ -282,7 +289,22 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       editableFields: fields,
     };
   }
-  type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>>;
+  type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>> & {
+    /** The chat's last message was already ours (an automation answered the trigger before handing over). */
+    triggerAnswered?: boolean;
+  };
+
+  /** True when the newest message in the chat (notes and reactions aside) went out from the business. */
+  async function lastWordIsOurs(conversationId: string) {
+    const m = schema.message;
+    const [last] = await db
+      .select({ direction: m.direction })
+      .from(m)
+      .where(and(eq(m.conversationId, conversationId), ne(m.type, "reaction"), ne(m.type, "note")))
+      .orderBy(desc(m.createdAt), desc(m.id))
+      .limit(1);
+    return last?.direction === "outbound";
+  }
 
   async function converse(
     ctx: WorkflowContext,
@@ -294,7 +316,9 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const scope = input.conversationId;
     // Where the next wait looks back from: messages written since then count (none are skipped).
     let lookbackFrom = "load agent";
-    let pending = !!input.trigger;
+    // Answer the message that started the run, unless an automation already did ("Hi" → "Hi" → hand to
+    // AI): then wait for the customer's next message instead of greeting them a second time.
+    let pending = !!input.trigger && !agent.triggerAnswered;
     if (input.greeting) {
       const sent = await ctx.step("greeting", () =>
         sendText(input, agent, `${ctx.runId}:greeting`, input.greeting as string),
@@ -699,8 +723,9 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     o: Extract<TurnOutcome, { kind: "handoff" }>,
   ) {
     if (o.text) await sendText(input, agent, stepKey, o.text);
-    if (agent.handoff.message.trim())
-      await sendText(input, agent, `${stepKey}:bye`, agent.handoff.message.trim());
+    // The customer always hears that a person is coming, even if the business cleared the message.
+    const bye = agent.handoff.message.trim() || (o.text ? "" : agentHandoffSchema.parse({}).message);
+    if (bye) await sendText(input, agent, `${stepKey}:bye`, bye);
     await addNote(input, agent, stepKey, `${agent.name} handed this chat over: ${o.reason}.\n${o.summary}`);
     const [c] = await db
       .update(schema.conversation)

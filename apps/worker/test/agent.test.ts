@@ -314,6 +314,41 @@ before(async () => {
     definition: def,
     checksum: "test",
   });
+  // An automation on "start bot" that answers itself, then hands to the agent with no greeting.
+  const def2 = emptyDefinition({
+    type: "message_received",
+    mode: "keyword",
+    keywords: ["start bot"],
+    match: "exact",
+  });
+  def2.rules = { ...def2.rules, skipIfAssigned: false };
+  def2.nodes = [
+    { id: "hi", type: "send_message", version: 1, config: { text: "Hi there", media: null } },
+    { id: "hand", type: "hand_to_ai", version: 1, config: { agentId: ids.agent, greeting: "" } },
+  ];
+  def2.edges = [
+    { id: "e1", source: "trigger", sourceHandle: "next", target: "hi" },
+    { id: "e2", source: "hi", sourceHandle: "next", target: "hand" },
+  ];
+  await db.insert(schema.automation).values({
+    id: `${ids.automation}b`,
+    organizationId: ids.org,
+    branchId: ids.branch,
+    name: "Hi, then Mira",
+    channelAccountId: ids.channel,
+    status: "live",
+    draft: def2,
+    liveVersionId: `${ids.version}b`,
+    triggerType: "message_received",
+  });
+  await db.insert(schema.automationVersion).values({
+    id: `${ids.version}b`,
+    automationId: `${ids.automation}b`,
+    organizationId: ids.org,
+    number: 1,
+    definition: def2,
+    checksum: "test",
+  });
   await automations.startWorker(worker);
 });
 
@@ -498,6 +533,20 @@ describe("AI agent in chats", () => {
     await customerSays(chat, "cool");
     await until("the answer", async () => (await agentMessages(chat.conversationId)).length === 2);
     assert.equal(textOf((await agentMessages(chat.conversationId))[1] as never), "You said: cool");
+  });
+
+  it("doesn't answer again what an automation already answered before handing over", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "start bot");
+    await until("Mira in charge", async () => (await chatRow(chat.conversationId))?.aiAgentId === ids.agent);
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    assert.equal((await agentMessages(chat.conversationId)).length, 0, "no second greeting");
+    await customerSays(chat, "prices?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.equal(textOf(reply as never), "You said: prices?");
   });
 
   it("sends nothing when the reply window is closed", async () => {

@@ -20,7 +20,9 @@ export function systemPrompt(agent: AgentProfile): string {
       `- Tone: ${agent.tone || "friendly"}. Sound like a helpful person from the business, not a robot.`,
       "- Keep messages short: one to four sentences. No headings, tables or long lists. Use *bold* rarely.",
       `- ${languages}`,
+      "- Write each message entirely in one language and one script. Never mix in words from another language.",
       "- Ask one thing at a time.",
+      "- Never write tool names, code or JSON in a message. To use a tool, call it.",
     ].join("\n"),
     [
       "## What you know",
@@ -33,6 +35,13 @@ export function systemPrompt(agent: AgentProfile): string {
       `Use ${toolNames.handoff} when the customer asks for a person, when you can't help after searching, when they are upset or complaining, or when they want something you can't do.${
         agent.handoffWhen.trim() ? ` Also: ${agent.handoffWhen.trim()}` : ""
       }`,
+      `- Saying you'll pass them on does nothing by itself: only ${toolNames.handoff} reaches the team. If you offered a person and the customer says yes, call ${toolNames.handoff} right away.`,
+      `- It tells the customer a person is coming, so don't also write your own "I'll connect you" message.`,
+    ].join("\n"),
+    [
+      "## Ending",
+      `- When the customer is clearly done (thanks, bye, nothing else needed), use ${toolNames.close} with a short goodbye.`,
+      `- A short "ok" right after you answered usually means they're done; a short "ok" while you're waiting for their answer is not.`,
     ].join("\n"),
     [
       "## Choices",
@@ -69,7 +78,7 @@ export function contextNote(ctx: RunContext, contact: ContactFacts, languages: s
     lines.push(
       languages.length === 1
         ? `Reply only in ${languages[0]}, whatever language the customer writes in.`
-        : `Language: if the customer's last message is in ${languages.join(" or ")}, reply in that same language. If it is in any other language, reply in ${languages[0]}.`,
+        : `Language: if the customer's last message is in ${languages.join(" or ")}, reply in that same language. If it is in any other language, reply in ${languages[0]}. Use only that one language in your whole reply.`,
     );
   return lines.join("\n");
 }
