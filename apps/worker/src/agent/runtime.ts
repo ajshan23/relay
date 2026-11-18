@@ -43,6 +43,7 @@ import {
   type createDb,
   desc,
   eq,
+  gt,
   inArray,
   insertOutboundMessage,
   ne,
@@ -70,6 +71,10 @@ import type { VoiceListener } from "./voice";
  */
 
 type Db = ReturnType<typeof createDb>["db"];
+
+/** A photo, voice note or video with no caption: the customer's words usually follow. */
+const isBareMedia = (e: InboundEventPayload) =>
+  ["image", "audio", "video"].includes(e.type) && !e.text.trim();
 type Conversation = typeof schema.conversation.$inferSelect;
 const finished = new Set(["completed", "failed", "cancelled"]);
 const isLive = (r: RunRow | null | undefined) => !!r && !finished.has(r.status);
@@ -321,6 +326,24 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     triggerAnswered?: boolean;
   };
 
+  /** The customer wrote something (reactions aside) after `since`. */
+  async function customerWroteSince(conversationId: string, since: Date) {
+    const m = schema.message;
+    const [row] = await db
+      .select({ id: m.id })
+      .from(m)
+      .where(
+        and(
+          eq(m.conversationId, conversationId),
+          eq(m.direction, "inbound"),
+          ne(m.type, "reaction"),
+          gt(m.createdAt, since),
+        ),
+      )
+      .limit(1);
+    return !!row;
+  }
+
   /** True when the newest message in the chat (notes and reactions aside) went out from the business. */
   async function lastWordIsOurs(conversationId: string) {
     const m = schema.message;
@@ -349,6 +372,9 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     // Answer the message that started the run, unless an automation already did ("Hi" → "Hi" → hand to
     // AI): then wait for the customer's next message instead of greeting them a second time.
     let pending = !!input.trigger && !agent.triggerAnswered;
+    // Drafts dropped in a row because the customer wrote again while they were being written.
+    let rethinks = 0;
+    let rethinking = false;
     if (input.greeting) {
       const sent = await ctx.step("greeting", () =>
         sendText(input, agent, `${ctx.runId}:greeting`, input.greeting as string),
@@ -373,19 +399,25 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         latest = got.event.payload;
         lookbackFrom = name;
       }
+      // A photo or voice note with no words: the question usually follows, so wait a little longer.
+      let bareMedia = latest
+        ? isBareMedia(latest)
+        : pending && !rethinking && !!input.trigger && !input.trigger.text.trim();
       pending = false;
+      rethinking = false;
       // Several quick messages ("hi" / "price?" / "for 2") make one answer.
       for (let k = 0; k < agentLimits.gatherMax; k++) {
         const name = `t${turn}:more${k}`;
         const more = await ctx.waitForEvent<InboundEventPayload>(name, {
           key,
           scope,
-          timeoutMs: agentLimits.gatherMs,
+          timeoutMs: bareMedia ? agentLimits.gatherAfterMediaMs : agentLimits.gatherMs,
           lookbackFrom,
         });
         if (more.timedOut) break;
         if (more.event.payload.optOut === "stop") return "stopped";
         latest = more.event.payload;
+        bareMedia = isBareMedia(latest);
         lookbackFrom = name;
       }
       onTurn(turn);
@@ -471,15 +503,33 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       }
       const typingStep = `t${turn}:typing`;
       await ctx.step(typingStep, () => d.showTyping(input.conversationId, `${ctx.runId}_t${turn}`));
-      const outcome = await oneTurn(ctx, input, agent, turn);
+      const read: { at?: Date } = {};
+      const outcome = await oneTurn(ctx, input, agent, turn, read);
       lookbackFrom = typingStep;
       const stepKey = `${ctx.runId}:t${turn}`;
+      // Just before the answer goes out: if the customer wrote again since the chat was read, drop
+      // this draft and answer everything together (decided inside the send step, so replays agree).
+      let superseded = false;
+      const sendUnlessStale = <T extends { ok: boolean }>(send: () => Promise<T>) =>
+        ctx.step(
+          `t${turn}:send`,
+          async (): Promise<T | { ok: true; superseded: true }> =>
+            rethinks < agentLimits.maxRethinks &&
+            read.at &&
+            (await customerWroteSince(input.conversationId, read.at))
+              ? { ok: true, superseded: true }
+              : send(),
+        );
       switch (outcome.kind) {
         case "silent":
           break;
         case "reply": {
-          const sent = await ctx.step(`t${turn}:send`, () => sendText(input, agent, stepKey, outcome.text));
+          const sent = await sendUnlessStale(() => sendText(input, agent, stepKey, outcome.text));
           if (!sent.ok) return "send_failed";
+          if ("superseded" in sent) {
+            superseded = true;
+            break;
+          }
           if (outcome.gap) {
             const question = outcome.gap;
             await ctx.step(`t${turn}:gap`, () => noteGap(input, agent, `${stepKey}:gap`, question));
@@ -487,12 +537,16 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           break;
         }
         case "options": {
-          const sent = await ctx.step(`t${turn}:send`, () => sendOptions(input, agent, stepKey, outcome));
+          const sent = await sendUnlessStale(() => sendOptions(input, agent, stepKey, outcome));
           if (!sent.ok) return "send_failed";
+          if ("superseded" in sent) {
+            superseded = true;
+            break;
+          }
           break;
         }
         case "items": {
-          const sent = await ctx.step(`t${turn}:send`, () =>
+          const sent = await sendUnlessStale(() =>
             presenter.showItems({
               organizationId: input.organizationId,
               branchId: input.branchId,
@@ -504,10 +558,14 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
             }),
           );
           if (!sent.ok) return "send_failed";
+          if ("superseded" in sent) {
+            superseded = true;
+            break;
+          }
           break;
         }
         case "media": {
-          const sent = await ctx.step(`t${turn}:send`, () =>
+          const sent = await sendUnlessStale(() =>
             presenter.showGallery({
               organizationId: input.organizationId,
               branchId: input.branchId,
@@ -518,6 +576,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
             }),
           );
           if (!sent.ok) return "send_failed";
+          if ("superseded" in sent) {
+            superseded = true;
+            break;
+          }
           break;
         }
         case "handoff":
@@ -527,6 +589,15 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           await ctx.step(`t${turn}:close`, () => closeChat(input, agent, stepKey, outcome));
           return "close";
       }
+      if (superseded) {
+        // Answer again straight away with the new messages (and any that follow in the next seconds).
+        rethinks++;
+        rethinking = true;
+        pending = true;
+        lookbackFrom = `t${turn}:send`;
+        continue;
+      }
+      rethinks = 0;
     }
   }
 
@@ -536,6 +607,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     input: AgentRunInput,
     agent: LoadedAgent,
     turn: number,
+    /** Filled with when the chat was read, so a newer customer message can drop this draft. */
+    read: { at?: Date } = {},
   ): Promise<TurnOutcome> {
     const prefix = `t${turn}`;
     const left = await ctx.step(
@@ -556,6 +629,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       };
     const callModel = d.callModel;
 
+    read.at = new Date();
     const [lines, contact] = await Promise.all([
       chatLines(input.conversationId, {
         hears: agent.profile.hearsVoiceNotes ?? false,

@@ -44,6 +44,13 @@ export const agentLimits = {
   gatherMs: 3_500,
   /** At most this many extra messages are gathered into one turn. */
   gatherMax: 5,
+  /** After a photo, voice note or video with no text, wait this long for the words that usually follow. */
+  gatherAfterMediaMs: 8_000,
+  /**
+   * When the customer writes again while an answer is being written, the draft is dropped and the
+   * turn answered again with everything; at most this many times in a row, so a reply always goes out.
+   */
+  maxRethinks: 2,
 } as const;
 
 export const agentHandoffSchema = z.object({

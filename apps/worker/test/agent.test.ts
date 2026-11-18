@@ -73,9 +73,15 @@ const r = (partial: Partial<ModelResponse>): ModelResponse => ({
   ],
   ...partial,
 });
+/** "think slowly" makes the pretend model take a while, and says when it started (to write meanwhile). */
+let slowStarted: () => void = () => {};
 /** A pretend model that reacts to what the customer said. */
 const brain: ModelCaller = async (req) => {
   calls.push(req);
+  if (lastCustomerTexts(req.messages).join(" ").includes("think slowly")) {
+    slowStarted();
+    await new Promise((res) => setTimeout(res, 2500));
+  }
   const msgs = req.messages as Msg[];
   const toolMsg =
     msgs.at(-1)?.role === "tool"
@@ -727,6 +733,39 @@ describe("AI agent in chats", () => {
     } finally {
       await db.update(schema.aiAgent).set({ photos: "accurate" }).where(eq(schema.aiAgent.id, ids.agent));
     }
+  });
+
+  it("waits for the words after a bare photo, and makes one answer of both", async () => {
+    const chat = await newChat();
+    await customerSendsPhoto(chat);
+    // Longer than the usual 3.5 s gap, within the 8 s allowed after a photo with no caption.
+    await new Promise((res) => setTimeout(res, 5000));
+    await customerSays(chat, "in black?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.match(textOf(reply as never), /\[photo you looked at\] Photo #\d+ \/ in black\?$/);
+    await new Promise((res) => setTimeout(res, 1500));
+    assert.equal((await agentMessages(chat.conversationId)).length, 1, "one answer, not two");
+  });
+
+  it("drops a draft when the customer writes again meanwhile, and answers everything together", async () => {
+    const chat = await newChat();
+    const started = new Promise<void>((res) => {
+      slowStarted = res;
+    });
+    await customerSays(chat, "think slowly about phones");
+    await started;
+    await customerSays(chat, "and in blue?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.equal(textOf(reply as never), "You said: think slowly about phones / and in blue?");
+    await new Promise((res) => setTimeout(res, 1500));
+    assert.equal((await agentMessages(chat.conversationId)).length, 1, "the first draft never went out");
+    slowStarted = () => {};
   });
 
   it("makes one answer from several quick messages and keeps going", async () => {
