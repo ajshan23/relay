@@ -121,3 +121,59 @@ export const photoLimits = {
   /** How long a turn waits for a photo that is still being downloaded. */
   waitMs: 20_000,
 };
+
+// ------------------------------------------------------------------ voice replies
+
+/** When the agent answers with a voice note instead of text. */
+export type VoiceRepliesChoice = "off" | "voice_notes" | "always";
+
+/** Cartesia Sonic: about 1 credit per character; ~$0.05 per 1,000 on the Pro plan ($5 for 100K). */
+export const speechPerCharacterUsd = 0.00005;
+
+export function speechCostMicros(characters: number): number {
+  return Math.round(Math.max(0, characters) * speechPerCharacterUsd * 1_000_000);
+}
+
+export const voiceReplyLimits = {
+  /** Longer replies stay as text (a 40-second voice note is harder to follow than a message). */
+  maxCharacters: 600,
+  /** Credits for one voice reply, on top of the reply itself. */
+  credits: 1,
+};
+
+/**
+ * The language to speak a reply in, from its script, or null when it shouldn't be spoken (no letters,
+ * or a script the voice model doesn't cover). Mixed scripts go by the most-used one.
+ */
+export function speechLanguage(text: string): "en" | "ar" | "hi" | "ml" | null {
+  const count = (re: RegExp) => (text.match(re) ?? []).length;
+  const scores: [ReturnType<typeof speechLanguage>, number][] = [
+    ["ar", count(/[؀-ۿ]/g)],
+    ["hi", count(/[ऀ-ॿ]/g)],
+    ["ml", count(/[ഀ-ൿ]/g)],
+    ["en", count(/[A-Za-z]/g)],
+  ];
+  const other = count(/[ঀ-೿฀-鿿가-힯]/g);
+  const [lang, n] = scores.sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  if (!n || other > n) return null;
+  return lang;
+}
+
+/**
+ * The reply as it should be said: WhatsApp formatting, emojis and bullet marks removed. Links and
+ * long numbers can't be followed by ear, so `alsoAsText` says to send the text as well.
+ */
+export function speechText(reply: string): { say: string; alsoAsText: boolean } {
+  const alsoAsText = /https?:\/\/|www\.|\d[\d\s,.-]{5,}\d|@/.test(reply);
+  const say = reply
+    .replace(/https?:\/\/\S+/g, "the link below")
+    .replace(/[*_~`]/g, "")
+    .replace(/^\s*[-•]\s+/gm, "")
+    // An emoji ending a sentence ("in stock 😊 It's…") becomes a full stop; any other is dropped.
+    .replace(/([^\s.!?])\s*\p{Extended_Pictographic}️?(?=\s+\p{Lu})/gu, "$1.")
+    .replace(/\p{Extended_Pictographic}️?/gu, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+  return { say, alsoAsText };
+}

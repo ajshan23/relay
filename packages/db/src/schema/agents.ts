@@ -30,6 +30,8 @@ export const agentModel = pgEnum("ai_agent_model", ["fast", "smart"]);
 export const agentVoiceNotes = pgEnum("ai_agent_voice_notes", ["off", "accurate", "best"]);
 /** Photos: not looked at, described, or described with the more accurate model (2× credits). */
 export const agentPhotos = pgEnum("ai_agent_photos", ["off", "accurate", "best"]);
+/** Reply with a voice note: never, when the customer sent one, or to every plain reply. */
+export const agentVoiceReplies = pgEnum("ai_agent_voice_replies", ["off", "voice_notes", "always"]);
 
 /** Who gets the chat when the agent hands it over. */
 export type AgentHandoff = {
@@ -72,6 +74,7 @@ export const aiAgent = pgTable(
     model: agentModel("model").notNull().default("fast"),
     voiceNotes: agentVoiceNotes("voice_notes").notNull().default("accurate"),
     photos: agentPhotos("photos").notNull().default("accurate"),
+    voiceReplies: agentVoiceReplies("voice_replies").notNull().default("off"),
     handoff: jsonb("handoff").$type<AgentHandoff>().notNull(),
     /** Answer chats that no automation took and nobody is assigned to. */
     answerUnclaimed: boolean("answer_unclaimed").notNull().default(false),
@@ -170,7 +173,14 @@ export const knowledgeChunk = pgTable(
   ],
 );
 
-export const aiUsageKind = pgEnum("ai_usage_kind", ["reply", "embed", "try", "transcribe", "vision"]);
+export const aiUsageKind = pgEnum("ai_usage_kind", [
+  "reply",
+  "embed",
+  "try",
+  "transcribe",
+  "vision",
+  "speech",
+]);
 
 /** One model call: tokens, cost and credits. Unique per step so a replayed step is never counted twice. */
 export const aiUsage = pgTable(

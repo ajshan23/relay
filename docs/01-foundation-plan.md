@@ -295,3 +295,19 @@ One catalogue per branch for anything a business sells. Design and research: `re
 - The describing prompt names an exact model only when it's written in the photo, never identifies people, and treats text inside the photo as content, not instructions.
 - **Cloudflare fallback, for voice notes and photos:** if a `@cf/` model fails for any reason (daily allowance used up, outage, bad token), the call is retried once on OpenAI. Usage records the model actually used.
 - **Measured on real catalogue photos:** Cloudflare took about 7 s and cost about $0.0008 per photo after the free allowance; OpenAI at high detail took about 5 s and cost about $0.0016.
+
+## 16. Voice replies (2026-11-18)
+
+- Each agent has **Reply with voice** on its Teach page: Off (the default), To voice notes (when the customer's last message was a voice note), or Always. Migration 0029 adds `ai_agent.voice_replies` and the `speech` usage kind.
+- Only plain replies are spoken. Cards, buttons, galleries and hand-overs are unchanged.
+- **How a reply becomes a voice note:**
+  1. The language comes from the reply's script (English, Arabic, Hindi or Malayalam; anything else stays as text).
+  2. Formatting and emojis are removed.
+  3. Cartesia (`CARTESIA_KEY`, `sonic-3`, voice `CARTESIA_VOICE_ID`, which defaults to the chosen voice) produces MP3.
+  4. ffmpeg converts it to Ogg/Opus mono 48 kHz.
+  5. It's stored and sent as `audio` with `voice: true`, so WhatsApp shows it as a voice note.
+- What was said is saved as `content.transcript`, so the agent's history reads `[voice note you sent] …` and the inbox shows the text under the player.
+- Replies containing links, emails or long numbers also go out as text.
+- Replies over 600 characters, no credits left, an unsupported script or any Cartesia/ffmpeg failure fall back to plain text. Voice never blocks an answer.
+- **Cost:** 1 extra credit per voice reply. On Cartesia, about $0.05 per 1,000 characters (about $0.0075 a reply).
+- **Measured:** Cartesia about 1.8 s plus ffmpeg about 0.2 s for a 9.5-second reply.

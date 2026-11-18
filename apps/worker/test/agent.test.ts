@@ -44,6 +44,8 @@ const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}` };
 const voiceFiles = new Map<string, Uint8Array>();
 const spoken = new Map<number, string>();
 const heardWith: string[] = [];
+/** Each reply the pretend voice spoke, and in which language. */
+const spokenBy: { text: string; language: string }[] = [];
 /** Each photo the pretend vision model was shown: which model and how closely. */
 const looks: { model: string; detail: string }[] = [];
 
@@ -163,6 +165,25 @@ const automations = createAutomations({
         return { text: spoken.get(audio.byteLength) ?? "", language: "en", seconds: null, model };
       },
     }),
+    // Voice replies: a pretend voice and encoder (no Cartesia, no ffmpeg); files kept in memory.
+    voiceReplies: {
+      speak: async (text: string, language: string) => {
+        spokenBy.push({ text, language });
+        return { audio: new Uint8Array([7, 7, 7]), model: "sonic-3", characters: text.length };
+      },
+      storage: {
+        put: async (key: string, bytes: Uint8Array) => {
+          voiceFiles.set(key, bytes);
+        },
+        get: async (key: string) => voiceFiles.get(key) ?? new Uint8Array(),
+        exists: async (key: string) => voiceFiles.has(key),
+        delete: async () => {},
+      } as never,
+      encode: async (audio: Uint8Array) => ({
+        bytes: new Uint8Array([...audio, spokenBy.length]),
+        seconds: 4,
+      }),
+    },
     // Photos: a pretend vision model that numbers what it was shown.
     seePhotos: createPhotoReader({
       db,
@@ -766,6 +787,65 @@ describe("AI agent in chats", () => {
     await new Promise((res) => setTimeout(res, 1500));
     assert.equal((await agentMessages(chat.conversationId)).length, 1, "the first draft never went out");
     slowStarted = () => {};
+  });
+
+  it("answers a voice note with a voice note, and text with text, when set to", async () => {
+    await db
+      .update(schema.aiAgent)
+      .set({ voiceReplies: "voice_notes" })
+      .where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      const chat = await newChat();
+      await customerSendsVoiceNote(chat, 21_000, "is the phone in stock");
+      const [reply] = await until("the answer", async () => {
+        const m = await agentMessages(chat.conversationId);
+        return m.length ? m : null;
+      });
+      assert.equal(reply?.type, "audio");
+      const content = reply?.content as { voice?: boolean; transcript?: string; transcriptSeconds?: number };
+      assert.equal(content.voice, true, "sent as a WhatsApp voice note");
+      assert.equal(content.transcript, "You said: [voice note you listened to] is the phone in stock");
+      assert.equal(content.transcriptSeconds, 4);
+      assert.deepEqual(spokenBy.at(-1), {
+        text: "You said: [voice note you listened to] is the phone in stock",
+        language: "en",
+      });
+      const [att] = await db
+        .select()
+        .from(schema.attachment)
+        .where(eq(schema.attachment.messageId, reply?.id ?? ""));
+      assert.equal(att?.mimeType, "audio/ogg");
+      const speech = await db
+        .select({ credits: schema.aiUsage.credits, model: schema.aiUsage.model })
+        .from(schema.aiUsage)
+        .where(
+          sql`${schema.aiUsage.conversationId} = ${chat.conversationId} and ${schema.aiUsage.kind} = 'speech'`,
+        );
+      assert.deepEqual(speech, [{ credits: 1, model: "sonic-3" }]);
+
+      // A typed message gets a typed answer; the agent remembers what it said out loud.
+      await until(
+        "waiting for the next message",
+        async () => (await agentRun(chat.conversationId))?.status === "waiting",
+      );
+      const before = spokenBy.length;
+      await customerSays(chat, "ok thanks");
+      const replies = await until("the second answer", async () => {
+        const m = await agentMessages(chat.conversationId);
+        return m.length === 2 ? m : null;
+      });
+      assert.equal(replies[1]?.type, "text");
+      assert.equal(spokenBy.length, before, "not spoken");
+      const req = calls.at(-1);
+      assert.ok(
+        ((req?.messages ?? []) as Msg[]).some((m) =>
+          String(m.content).includes("[voice note you sent] You said:"),
+        ),
+        "its own voice note is in its history as text",
+      );
+    } finally {
+      await db.update(schema.aiAgent).set({ voiceReplies: "off" }).where(eq(schema.aiAgent.id, ids.agent));
+    }
   });
 
   it("makes one answer from several quick messages and keeps going", async () => {

@@ -25,6 +25,8 @@ export type AgentsOverview = {
   knowledge: { ready: number; all: number };
   credits: Credits;
   aiReady: boolean;
+  /** A voice service is set up on the server, so replies can be voice notes. */
+  voiceReady: boolean;
   canManage: boolean;
   starters: { id: string; label: string; role: string; instructions: string }[];
 };

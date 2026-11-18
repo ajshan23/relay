@@ -80,6 +80,8 @@ const agentFields = {
   voiceNotes: z.enum(["off", "accurate", "best"]),
   /** Photos: not looked at, described, or with the more accurate model (2× credits). */
   photos: z.enum(["off", "accurate", "best"]),
+  /** Reply with a voice note: never, when the customer sent one, or to every plain reply. */
+  voiceReplies: z.enum(["off", "voice_notes", "always"]),
   handoff: agentHandoffSchema,
   answerUnclaimed: z.boolean(),
   hours: agentHoursSchema,
@@ -97,6 +99,7 @@ export const agentSettingsSchema = z.object({
   model: agentFields.model.default("fast"),
   voiceNotes: agentFields.voiceNotes.default("accurate"),
   photos: agentFields.photos.default("accurate"),
+  voiceReplies: agentFields.voiceReplies.default("off"),
   answerUnclaimed: agentFields.answerUnclaimed.default(false),
   hours: agentFields.hours.default(null),
   editableFields: agentFields.editableFields.default([]),

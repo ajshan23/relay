@@ -28,7 +28,7 @@ class NotUsable extends Error {}
 const ffmpeg = () => process.env.FFMPEG_PATH || "ffmpeg";
 const ffprobe = () => process.env.FFPROBE_PATH || "ffprobe";
 
-function run(cmd: string, args: string[]) {
+export function run(cmd: string, args: string[]) {
   return new Promise<string>((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";

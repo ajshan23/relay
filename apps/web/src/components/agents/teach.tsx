@@ -29,6 +29,7 @@ type Draft = Pick<
   | "model"
   | "voiceNotes"
   | "photos"
+  | "voiceReplies"
   | "handoff"
   | "editableFields"
 >;
@@ -50,11 +51,21 @@ const draftOf = (a: Agent): Draft => ({
   model: a.model,
   voiceNotes: a.voiceNotes ?? "accurate",
   photos: a.photos ?? "accurate",
+  voiceReplies: a.voiceReplies ?? "off",
   handoff: a.handoff,
   editableFields: a.editableFields,
 });
 
-export function TeachView({ agent, canManage }: { agent: Agent; canManage: boolean }) {
+export function TeachView({
+  agent,
+  canManage,
+  voiceReady = false,
+}: {
+  agent: Agent;
+  canManage: boolean;
+  /** A voice service is set up on the server. */
+  voiceReady?: boolean;
+}) {
   const { update } = useAgentActions();
   const starters = useAgents().data?.starters ?? [];
   const branch = useBranch().branch;
@@ -333,6 +344,33 @@ export function TeachView({ agent, canManage }: { agent: Agent; canManage: boole
             : draft.photos === "best"
               ? "Better at small text, model numbers and prices. 2 credits per photo."
               : "Good for most photos. 1 credit per photo."}
+        </p>
+      </Section>
+
+      <Section
+        title="Reply with voice"
+        description="Let your agent answer with a WhatsApp voice note in your chosen voice, in English, Arabic or Hindi. Cards, buttons and hand-overs stay as they are."
+      >
+        <Segmented
+          aria-label="Reply with voice"
+          value={draft.voiceReplies}
+          disabled={!canManage || !voiceReady}
+          onChange={(v) => set("voiceReplies", v)}
+          options={[
+            { value: "off", label: "Off" },
+            { value: "voice_notes", label: "To voice notes" },
+            { value: "always", label: "Always" },
+          ]}
+          className="self-start"
+        />
+        <p className="text-[13px] text-muted-foreground">
+          {!voiceReady
+            ? "Voice replies aren't set up on this server yet."
+            : draft.voiceReplies === "off"
+              ? "Your agent always replies in text."
+              : draft.voiceReplies === "voice_notes"
+                ? "When a customer sends a voice note, your agent answers with one. 1 extra credit per voice reply."
+                : "Your agent answers every message with a voice note, and adds the text when it has a link or a long number. 1 extra credit per voice reply."}
         </p>
       </Section>
 

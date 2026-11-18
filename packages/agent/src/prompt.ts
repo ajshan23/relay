@@ -34,7 +34,12 @@ export function systemPrompt(agent: AgentProfile): string {
               : ""
           } Only if a photo is marked as not looked at, say you couldn't open it and ask them to describe what they need.`
         : "- You can't see photos. When the customer sends one, ask them kindly to describe what they need in words.",
-    ].join("\n"),
+      agent.repliesByVoice
+        ? "- Your replies may be sent as voice notes, so write them the way you'd say them out loud: short, natural sentences, with no lists, tables or symbols."
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
     [
       "## What you know",
       `- Before answering any question about the business (services, prices, timings, location, policies), use ${toolNames.search}.`,
@@ -163,7 +168,10 @@ export function voiceNoteLine(
   from: "customer" | "us",
   hears = true,
 ): string {
-  if (from === "us") return "[voice note]";
+  if (from === "us") {
+    const said = typeof content.transcript === "string" ? content.transcript.trim() : "";
+    return said ? `[voice note you sent] ${said}` : "[voice note]";
+  }
   if (typeof content.transcript === "string") {
     const said = content.transcript.trim();
     return said ? `[voice note you listened to] ${said}` : "[voice note you listened to: no words in it]";

@@ -15,6 +15,7 @@ import {
   type RunContext,
   runTurn,
   searchTerms,
+  speechConfigured,
   systemPrompt,
 } from "@relay/agent";
 import { fileStorage, newId } from "@relay/core";
@@ -170,6 +171,7 @@ export function agentRoutes(ctx: AppContext) {
       knowledge: sources ?? { ready: 0, all: 0 },
       credits,
       aiReady: aiConfigured(ctx.config),
+      voiceReady: speechConfigured(ctx.config),
       canManage: await canManage(c),
       starters: agentStarters,
     });
@@ -622,6 +624,8 @@ export function agentRoutes(ctx: AppContext) {
         voiceNoteCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'transcribe'), 0)::int`,
         photos: sql<number>`count(*) filter (where ${U.kind} = 'vision')::int`,
         photoCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'vision'), 0)::int`,
+        voiceReplies: sql<number>`count(*) filter (where ${U.kind} = 'speech')::int`,
+        voiceReplyCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'speech'), 0)::int`,
       })
       .from(U)
       .where(and(eq(U.organizationId, orgId), gte(U.createdAt, monthStart())));
@@ -635,6 +639,8 @@ export function agentRoutes(ctx: AppContext) {
         voiceNoteCredits: totals?.voiceNoteCredits ?? 0,
         photos: totals?.photos ?? 0,
         photoCredits: totals?.photoCredits ?? 0,
+        voiceReplies: totals?.voiceReplies ?? 0,
+        voiceReplyCredits: totals?.voiceReplyCredits ?? 0,
       },
     });
   });

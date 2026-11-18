@@ -33,6 +33,8 @@ export type AgentProfile = {
   hearsVoiceNotes?: boolean;
   /** Photos are described in words for the agent (its Photos setting isn't Off). */
   seesPhotos?: boolean;
+  /** Plain replies may go out as voice notes (its Voice replies setting isn't Off). */
+  repliesByVoice?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */

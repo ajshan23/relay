@@ -17,6 +17,9 @@ import type { AgentTool, ModelCaller, ModelResponse, Usage } from "./types";
  */
 
 export type ProviderEnv = {
+  CARTESIA_KEY?: string;
+  CARTESIA_VOICE_ID?: string;
+  CARTESIA_MODEL?: string;
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
@@ -295,4 +298,60 @@ async function cloudflareRun<R>(
     await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
   }
   throw last ?? new Error(`Cloudflare ${model} failed`);
+}
+
+// ------------------------------------------------------------------ voice replies (Cartesia)
+
+/** The business's chosen Cartesia voice (a voice in your Cartesia account). */
+export const defaultCartesiaVoice = "bdff86a3-41f5-43de-a31c-4fba045e9bb0";
+
+/** Speaks a reply: MP3 bytes from Cartesia, in the given language, in the agent's voice. */
+export type Speaker = (
+  text: string,
+  language: string,
+) => Promise<{ audio: Uint8Array; model: string; characters: number }>;
+
+/** True when voice replies can be made (a Cartesia key is set). */
+export function speechConfigured(env: ProviderEnv = process.env): boolean {
+  return !!env.CARTESIA_KEY;
+}
+
+export function createSpeaker(env: ProviderEnv = process.env, fetcher: typeof fetch = fetch): Speaker {
+  return async (text, language) => {
+    if (!env.CARTESIA_KEY) throw new Error("CARTESIA_KEY is not set, so the agent can't reply with voice.");
+    const model = env.CARTESIA_MODEL || "sonic-3";
+    const body = JSON.stringify({
+      model_id: model,
+      transcript: text,
+      voice: { mode: "id", id: env.CARTESIA_VOICE_ID || defaultCartesiaVoice },
+      language,
+      output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
+    });
+    let last: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetcher("https://api.cartesia.ai/tts/bytes", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.CARTESIA_KEY}`,
+          "Cartesia-Version": "2025-04-16",
+          "Content-Type": "application/json",
+        },
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.ok) {
+        const audio = new Uint8Array(await res.arrayBuffer());
+        if (audio.byteLength) return { audio, model, characters: text.length };
+        last = new Error("Cartesia returned no audio");
+      } else {
+        last = new Error(
+          `Cartesia failed (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}`,
+        );
+        // Bad key, unknown voice, unsupported language, out of credits: retrying won't help.
+        if (res.status < 500 && res.status !== 429) break;
+      }
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+    }
+    throw last ?? new Error("Cartesia failed");
+  };
 }

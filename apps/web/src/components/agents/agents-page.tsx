@@ -136,7 +136,9 @@ export function AgentsPage() {
               </span>
             </Panel>
           ) : null}
-          {view === "teach" ? <TeachView agent={agent} canManage={q.data.canManage} /> : null}
+          {view === "teach" ? (
+            <TeachView agent={agent} canManage={q.data.canManage} voiceReady={q.data.voiceReady} />
+          ) : null}
           {view === "try" ? <TryView agent={agent} aiReady={q.data.aiReady} /> : null}
           {view === "go-live" ? <GoLiveView agent={agent} overview={q.data} /> : null}
           {view === "improve" ? <ImproveView agent={agent} canManage={q.data.canManage} /> : null}

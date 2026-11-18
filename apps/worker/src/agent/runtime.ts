@@ -14,12 +14,17 @@ import {
   photoLine,
   type RunContext,
   runTurn,
+  type Speaker,
   searchTerms,
+  speechCostMicros,
+  speechLanguage,
+  speechText,
   systemPrompt,
   type TurnOutcome,
   voiceNoteLine,
+  voiceReplyLimits,
 } from "@relay/agent";
-import { newId, type Publisher, previewText, publishInboxEvent } from "@relay/core";
+import { type FileStorage, newId, type Publisher, previewText, publishInboxEvent } from "@relay/core";
 import {
   type AgentRunInput,
   type AgentRunLabels,
@@ -52,10 +57,12 @@ import {
   searchKnowledge,
   sql,
   sqlExecutor,
+  storeFile,
 } from "@relay/db";
 import { isKairosControl, type Kairos, type RunRow, type WorkflowContext } from "@relay/kairos";
 import type { Queue } from "bullmq";
 import type { PhotoReader } from "./photos";
+import { toVoiceNote } from "./speech";
 import type { VoiceListener } from "./voice";
 
 /*
@@ -99,6 +106,13 @@ export type AgentRuntimeDeps = {
   hearVoiceNotes?: VoiceListener | null;
   /** Describes the customer's photos before the agent answers (null: not looked at). */
   seePhotos?: PhotoReader | null;
+  /** Speaks plain replies as WhatsApp voice notes (null: replies are always text). */
+  voiceReplies?: {
+    speak: Speaker;
+    storage: FileStorage;
+    /** MP3 → Ogg/Opus voice note (ffmpeg); replaceable in tests. */
+    encode?: typeof toVoiceNote;
+  } | null;
 };
 
 export function createAgentRuntime(d: AgentRuntimeDeps) {
@@ -303,6 +317,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       model: a.model,
       voiceNotes: a.voiceNotes,
       photos: a.photos,
+      voiceReplies: a.voiceReplies,
       handoff: a.handoff,
       profile: {
         name: a.name,
@@ -315,6 +330,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         catalog: !!catalog,
         hearsVoiceNotes: a.voiceNotes !== "off" && !!d.hearVoiceNotes,
         seesPhotos: a.photos !== "off" && !!d.seePhotos,
+        repliesByVoice: a.voiceReplies !== "off" && !!d.voiceReplies,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
@@ -524,7 +540,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         case "silent":
           break;
         case "reply": {
-          const sent = await sendUnlessStale(() => sendText(input, agent, stepKey, outcome.text));
+          const sent = await sendUnlessStale(() => sendReply(input, agent, stepKey, outcome.text));
           if (!sent.ok) return "send_failed";
           if ("superseded" in sent) {
             superseded = true;
@@ -894,6 +910,118 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
 
   const sendText = (input: AgentRunInput, agent: LoadedAgent, stepKey: string, text: string) =>
     queueSend(input, agent, stepKey, "text", { type: "text", text });
+
+  /**
+   * A plain reply: a voice note when the agent's Voice replies setting asks for one (always, or when
+   * the customer's last message was a voice note), otherwise text. Anything that stops the voice note
+   * (no credits, a language the voice can't speak, the speech service failing) sends text instead.
+   */
+  async function sendReply(input: AgentRunInput, agent: LoadedAgent, stepKey: string, text: string) {
+    const mode = agent.voiceReplies ?? "off";
+    if (
+      d.voiceReplies &&
+      mode !== "off" &&
+      text.length <= voiceReplyLimits.maxCharacters &&
+      (mode === "always" || (await customersLastWasVoice(input.conversationId)))
+    ) {
+      try {
+        const sent = await sendVoiceReply(input, agent, stepKey, text);
+        if (sent) return sent;
+      } catch (err) {
+        console.warn("[agent] voice reply failed, sending text:", (err as Error).message);
+      }
+    }
+    return sendText(input, agent, stepKey, text);
+  }
+
+  async function customersLastWasVoice(conversationId: string) {
+    const m = schema.message;
+    const [last] = await db
+      .select({ type: m.type })
+      .from(m)
+      .where(and(eq(m.conversationId, conversationId), eq(m.direction, "inbound"), ne(m.type, "reaction")))
+      .orderBy(desc(m.createdAt), desc(m.id))
+      .limit(1);
+    return last?.type === "audio";
+  }
+
+  /** Speaks the reply and sends it as a voice note (plus the text when it has links or long numbers). */
+  async function sendVoiceReply(
+    input: AgentRunInput,
+    agent: LoadedAgent,
+    stepKey: string,
+    text: string,
+  ): Promise<Sent | null> {
+    const v = d.voiceReplies;
+    if (!v) return null;
+    const language = speechLanguage(text);
+    const { say, alsoAsText } = speechText(text);
+    if (!language || !say) return null;
+    if ((await aiCredits(db, input.organizationId, defaultMonthlyCredits)).left < voiceReplyLimits.credits)
+      return null;
+    const started = Date.now();
+    const spoken = await v.speak(say, language);
+    const note = await (v.encode ?? toVoiceNote)(spoken.audio);
+    const { file } = await storeFile(db, v.storage, {
+      organizationId: input.organizationId,
+      bytes: note.bytes,
+      mimeType: "audio/ogg",
+      newId: () => newId("storedFile"),
+      quota: "count",
+    });
+    const attachmentId = newId("attachment");
+    await db.insert(schema.attachment).values({
+      id: attachmentId,
+      organizationId: input.organizationId,
+      kind: "audio",
+      mimeType: "audio/ogg",
+      fileName: "voice-note.ogg",
+      sizeBytes: file.sizeBytes,
+      sha256: file.sha256,
+      fileId: file.id,
+      storageKey: file.storageKey,
+      status: "stored",
+    });
+    const sent = await queueSend(
+      input,
+      agent,
+      stepKey,
+      "audio",
+      {
+        type: "audio",
+        voice: true,
+        caption: null,
+        // What was said, for the agent's own history and under the player in the inbox.
+        transcript: text,
+        ...(note.seconds ? { transcriptSeconds: Math.round(note.seconds) } : {}),
+        media: {
+          providerMediaId: null,
+          mimeType: "audio/ogg",
+          fileName: "voice-note.ogg",
+          sha256: file.sha256,
+          caption: null,
+        },
+      },
+      attachmentId,
+    );
+    if (!sent.ok) return sent;
+    await recordAiUsage(db, {
+      id: newId("aiUsage"),
+      organizationId: input.organizationId,
+      branchId: input.branchId,
+      agentId: agent.id,
+      conversationId: input.conversationId,
+      runId: stepKey.split(":")[0] ?? null,
+      stepKey: `${stepKey}:speak`,
+      kind: "speech",
+      model: spoken.model,
+      costMicros: speechCostMicros(spoken.characters),
+      credits: voiceReplyLimits.credits,
+      latencyMs: Date.now() - started,
+    });
+    if (alsoAsText) await sendText(input, agent, `${stepKey}:text`, text);
+    return sent;
+  }
 
   function sendOptions(
     input: AgentRunInput,

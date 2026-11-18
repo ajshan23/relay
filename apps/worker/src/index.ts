@@ -4,7 +4,9 @@ import {
   createEmbedder,
   createModelCaller,
   createPhotoDescriber,
+  createSpeaker,
   createTranscriber,
+  speechConfigured,
 } from "@relay/agent";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
 import { and, createDb, eq, schema } from "@relay/db";
@@ -76,8 +78,18 @@ const automations = createAutomations({
           storage: fileStorage(),
           describe: createPhotoDescriber(config),
         }),
+        voiceReplies: speechConfigured(config)
+          ? { speak: createSpeaker(config), storage: fileStorage() }
+          : null,
       }
-    : { callModel: null, embed: null, embedCatalog: null, hearVoiceNotes: null, seePhotos: null },
+    : {
+        callModel: null,
+        embed: null,
+        embedCatalog: null,
+        hearVoiceNotes: null,
+        seePhotos: null,
+        voiceReplies: null,
+      },
 });
 const automationWorker = automations.worker();
 console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_API_KEY)");

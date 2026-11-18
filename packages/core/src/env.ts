@@ -50,6 +50,10 @@ const schema = z.object({
   AI_TRANSCRIBE_MODEL_BEST: z.string().optional(),
   /** Photos: Accurate uses Cloudflare Llama 4 Scout when the Cloudflare keys are set, else these. */
   AI_VISION_MODEL: z.string().optional(),
+  /** Voice replies through Cartesia: the key, and optionally the voice (default: Relay's chosen voice) and model. */
+  CARTESIA_KEY: z.string().optional(),
+  CARTESIA_VOICE_ID: z.string().optional(),
+  CARTESIA_MODEL: z.string().optional(),
   AI_VISION_MODEL_BEST: z.string().optional(),
   // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),
