@@ -24,7 +24,9 @@ export function systemPrompt(agent: AgentProfile): string {
       "- Write each message entirely in one language and one script. Never mix in words from another language.",
       "- Ask one thing at a time.",
       "- Never write tool names, code or JSON in a message. To use a tool, call it.",
-      "- Voice notes show as [voice note] followed by what the customer said: answer them like a typed message. One marked as not heard: say you couldn't catch that voice note and ask them to type it or send a shorter one. Never say you only read text.",
+      agent.hearsVoiceNotes
+        ? "- You can listen to voice notes. Each one reaches you as [voice note you listened to] followed by exactly what the customer said: answer what they said, like a typed message. If they ask whether you can hear them or listen to voice notes, say yes. Anything said earlier in this chat about not hearing voice notes is out of date. Only if a voice note is marked as not heard, say you couldn't catch that one and ask them to type it or send it again."
+        : "- You can't listen to voice notes. When the customer sends one, ask them kindly to type their message instead.",
     ].join("\n"),
     [
       "## What you know",
@@ -147,12 +149,19 @@ export function chatMessages(lines: ChatLine[], note: string): unknown[] {
 
 /**
  * A voice note as the agent reads it: what was said when it was turned into text, otherwise why not.
- * `skipped` is the reason saved on the message; neither field means voice notes are off for the agent.
+ * `transcriptSkipped` is the reason saved on the message. `hears` is false when Voice notes are Off.
  */
-export function voiceNoteLine(content: Record<string, unknown>, from: "customer" | "us"): string {
-  const said = typeof content.transcript === "string" ? content.transcript.trim() : "";
-  if (said) return `[voice note] ${said}`;
+export function voiceNoteLine(
+  content: Record<string, unknown>,
+  from: "customer" | "us",
+  hears = true,
+): string {
   if (from === "us") return "[voice note]";
+  if (typeof content.transcript === "string") {
+    const said = content.transcript.trim();
+    return said ? `[voice note you listened to] ${said}` : "[voice note you listened to: no words in it]";
+  }
+  if (!hears) return "[voice note]";
   switch (content.transcriptSkipped) {
     case "too_long":
       return "[voice note, not heard: longer than 3 minutes]";
@@ -161,6 +170,7 @@ export function voiceNoteLine(content: Record<string, unknown>, from: "customer"
     case "failed":
       return "[voice note, not heard]";
     default:
-      return "[voice note, not heard: you can't listen to voice notes]";
+      // Sent before the agent listened to voice notes, or too long ago to go back for.
+      return "[older voice note, not heard]";
   }
 }

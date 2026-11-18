@@ -29,6 +29,8 @@ export type AgentProfile = {
   handoffWhen: string;
   /** The branch has a catalogue the agent can search and show. */
   catalog?: boolean;
+  /** Voice notes are turned into text for the agent (its Voice notes setting isn't Off). */
+  hearsVoiceNotes?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */

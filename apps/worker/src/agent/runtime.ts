@@ -303,6 +303,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         languages: a.languages,
         handoffWhen: a.handoff.when,
         catalog: !!catalog,
+        hearsVoiceNotes: a.voiceNotes !== "off" && !!d.hearVoiceNotes,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
@@ -535,7 +536,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const callModel = d.callModel;
 
     const [lines, contact] = await Promise.all([
-      chatLines(input.conversationId),
+      chatLines(input.conversationId, agent.profile.hearsVoiceNotes ?? false),
       contactFacts(input.contactId, agent),
     ]);
     const runCtx: RunContext = {
@@ -669,7 +670,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   // ------------------------------------------------------------------ reading the chat
 
   /** The last 40 readable messages, oldest first, as the model sees them. */
-  async function chatLines(conversationId: string): Promise<ChatLine[]> {
+  async function chatLines(conversationId: string, hears: boolean): Promise<ChatLine[]> {
     const m = schema.message;
     const rows = await db
       .select({
@@ -691,7 +692,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       const content = r.content as Record<string, unknown>;
       let text = previewText(content);
       if (!text) text = r.type === "text" ? "" : `[${r.type}]`;
-      if (r.type === "audio") text = voiceNoteLine(content, r.direction === "inbound" ? "customer" : "us");
+      if (r.type === "audio")
+        text = voiceNoteLine(content, r.direction === "inbound" ? "customer" : "us", hears);
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
       // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
       // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.

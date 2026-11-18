@@ -556,7 +556,7 @@ describe("AI agent in chats", () => {
       const m = await agentMessages(chat.conversationId);
       return m.length ? m : null;
     });
-    assert.equal(textOf(reply as never), "You said: [voice note] hello from a voice note");
+    assert.equal(textOf(reply as never), "You said: [voice note you listened to] hello from a voice note");
     assert.equal(heardWith.at(-1), "gpt-4o-mini-transcribe", "Accurate by default");
     const [note] = await db.select().from(schema.message).where(eq(schema.message.id, noteId));
     assert.equal(

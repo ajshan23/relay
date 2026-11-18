@@ -32,14 +32,19 @@ describe("voice notes", () => {
   it("reads a voice note as what was said, or why it wasn't heard", () => {
     assert.equal(
       voiceNoteLine({ transcript: " price of the S25? " }, "customer"),
-      "[voice note] price of the S25?",
+      "[voice note you listened to] price of the S25?",
     );
     assert.equal(
       voiceNoteLine({ transcriptSkipped: "too_long" }, "customer"),
       "[voice note, not heard: longer than 3 minutes]",
     );
     assert.equal(voiceNoteLine({ transcriptSkipped: "failed" }, "customer"), "[voice note, not heard]");
-    assert.match(voiceNoteLine({}, "customer"), /can't listen/);
+    assert.equal(
+      voiceNoteLine({ transcript: "" }, "customer"),
+      "[voice note you listened to: no words in it]",
+    );
+    assert.equal(voiceNoteLine({}, "customer"), "[older voice note, not heard]");
+    assert.equal(voiceNoteLine({}, "customer", false), "[voice note]");
     assert.equal(voiceNoteLine({}, "us"), "[voice note]");
   });
 
@@ -53,6 +58,18 @@ describe("voice notes", () => {
       languages: [],
       handoffWhen: "",
     });
-    assert.match(p, /Never say you only read text/);
+    assert.match(p, /You can't listen to voice notes/);
+    const hears = systemPrompt({
+      name: "Mira",
+      role: "",
+      businessName: "Lumen",
+      instructions: "",
+      tone: "friendly",
+      languages: [],
+      handoffWhen: "",
+      hearsVoiceNotes: true,
+    });
+    assert.match(hears, /You can listen to voice notes/);
+    assert.match(hears, /say yes/);
   });
 });
