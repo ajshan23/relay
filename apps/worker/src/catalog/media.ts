@@ -57,7 +57,7 @@ type Probe = {
   height?: number;
 };
 
-async function probe(path: string): Promise<Probe> {
+export async function probe(path: string): Promise<Probe> {
   const json = JSON.parse(
     await run(ffprobe(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path]),
   ) as {

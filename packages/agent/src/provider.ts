@@ -1,5 +1,13 @@
 import { createOpenAI } from "@ai-sdk/openai";
-import { embedMany, generateText, type LanguageModel, type ModelMessage, type ToolSet, tool } from "ai";
+import {
+  embedMany,
+  experimental_transcribe,
+  generateText,
+  type LanguageModel,
+  type ModelMessage,
+  type ToolSet,
+  tool,
+} from "ai";
 import { embeddingModel } from "./models";
 import type { AgentTool, ModelCaller, ModelResponse } from "./types";
 
@@ -85,5 +93,27 @@ export function createEmbedder(env: ProviderEnv = process.env, opts: { dimension
       ...(opts.dimensions ? { dimensions: opts.dimensions } : {}),
     });
     return { embeddings: result.embeddings, tokens: result.usage.tokens, model: embeddingModel };
+  };
+}
+
+/** Turns a voice note into text. The language is detected (Arabic, Hindi, Malayalam, mixed…). */
+export type Transcriber = (
+  audio: Uint8Array,
+  model: string,
+) => Promise<{ text: string; language: string | null; seconds: number | null }>;
+
+export function createTranscriber(env: ProviderEnv = process.env): Transcriber {
+  return async (audio, model) => {
+    const openai = openaiProvider(env);
+    const result = await experimental_transcribe({
+      model: openai.transcription(model),
+      audio,
+      maxRetries: 2,
+    });
+    return {
+      text: result.text.trim(),
+      language: result.language ?? null,
+      seconds: result.durationInSeconds ?? null,
+    };
   };
 }

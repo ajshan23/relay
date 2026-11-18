@@ -337,17 +337,35 @@ function Body({
             </span>
           </ChatBubble>
         );
-      return (
-        <span className="flex flex-col items-end gap-0.5">
-          <VoiceMessageBubble {...common} audioSrc={ready} duration="0:00" quote={quote} />
-          {m.direction === "outbound" && m.status === "played" ? (
-            <span className="flex items-center gap-1 px-1 text-[11px] text-sky-600 dark:text-sky-400">
-              <Icon name="mic" size="xs" />
-              Played
-            </span>
-          ) : null}
-        </span>
-      );
+      {
+        // Turned into text for the AI agent: shown under the player so the team can read it too.
+        const said = str(c.transcript);
+        const secs = typeof c.transcriptSeconds === "number" ? c.transcriptSeconds : null;
+        return (
+          <span className="flex flex-col items-end gap-0.5">
+            <VoiceMessageBubble
+              {...common}
+              audioSrc={ready}
+              duration={
+                secs === null ? "0:00" : `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`
+              }
+              quote={quote}
+            />
+            {said ? (
+              <span className="flex max-w-72 items-start gap-1.5 self-stretch rounded-md bg-muted/60 px-2 py-1.5 text-[13px] text-muted-foreground">
+                <Icon name="mic" size="xs" className="mt-0.5 shrink-0" />
+                <span className="whitespace-pre-wrap">{said}</span>
+              </span>
+            ) : null}
+            {m.direction === "outbound" && m.status === "played" ? (
+              <span className="flex items-center gap-1 px-1 text-[11px] text-sky-600 dark:text-sky-400">
+                <Icon name="mic" size="xs" />
+                Played
+              </span>
+            ) : null}
+          </span>
+        );
+      }
     case "document": {
       const name = str(media?.fileName) ?? file?.fileName ?? "Document";
       return (

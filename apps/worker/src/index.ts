@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { aiConfigured, createEmbedder, createModelCaller } from "@relay/agent";
+import { aiConfigured, createEmbedder, createModelCaller, createTranscriber } from "@relay/agent";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
 import { and, createDb, eq, schema } from "@relay/db";
 import { catalogEmbeddingDimensions } from "@relay/db/schema";
@@ -7,6 +7,7 @@ import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email"
 import { type Job, Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
+import { createVoiceListener } from "./agent/voice";
 import { createAutomations } from "./automations/runtime";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { type EmbedJob as CatalogEmbedJob, createCatalogEmbedder } from "./catalog/embed";
@@ -56,8 +57,14 @@ const automations = createAutomations({
         callModel: createModelCaller(config),
         embed: createEmbedder(config),
         embedCatalog: createEmbedder(config, { dimensions: catalogEmbeddingDimensions }),
+        hearVoiceNotes: createVoiceListener({
+          db,
+          redis: connection,
+          storage: fileStorage(),
+          transcribe: createTranscriber(config),
+        }),
       }
-    : { callModel: null, embed: null, embedCatalog: null },
+    : { callModel: null, embed: null, embedCatalog: null, hearVoiceNotes: null },
 });
 const automationWorker = automations.worker();
 console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_API_KEY)");

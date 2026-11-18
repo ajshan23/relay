@@ -11,6 +11,7 @@ import { newId } from "@relay/core";
 import { agentWorkflow } from "@relay/core/agents";
 import { emptyDefinition, type InboundEventPayload } from "@relay/core/automations";
 import { createCatalogType, createDb, eq, saveCatalogItem, schema, sql } from "@relay/db";
+import { createVoiceListener } from "../src/agent/voice";
 import { createAutomations } from "../src/automations/runtime";
 
 /*
@@ -36,6 +37,11 @@ const ids = {
 
 /** The seeded catalogue's item ids, for the pretend model. */
 const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}` };
+
+/** Stored voice notes by key, what each one "says" (by size), and the models used to hear them. */
+const voiceFiles = new Map<string, Uint8Array>();
+const spoken = new Map<number, string>();
+const heardWith: string[] = [];
 
 /** What each model call was sent, for checks. */
 const calls: ModelRequest[] = [];
@@ -134,7 +140,20 @@ const automations = createAutomations({
   databaseUrl: URL,
   listenUrl: URL,
   canType: () => false,
-  ai: { callModel: brain, embed: null },
+  ai: {
+    callModel: brain,
+    embed: null,
+    // Voice notes: files from memory and a pretend speech-to-text (nothing is called).
+    hearVoiceNotes: createVoiceListener({
+      db,
+      redis: { publish: async () => 0 },
+      storage: { get: async (key: string) => voiceFiles.get(key) ?? new Uint8Array() } as never,
+      transcribe: async (audio, model) => {
+        heardWith.push(model);
+        return { text: spoken.get(audio.byteLength) ?? "", language: "en", seconds: null };
+      },
+    }),
+  },
 });
 const worker = automations.worker();
 
@@ -217,6 +236,65 @@ async function customerSays(
     };
     await automations.onInbound(tx as never, ev);
   });
+}
+
+/** A WhatsApp voice note, already downloaded. `bytes` sets its length (no ffprobe on junk: ~2,000 bytes a second). */
+async function customerSendsVoiceNote(
+  chat: { contactId: string; conversationId: string },
+  bytes: number,
+  says: string,
+) {
+  const messageId = `msg_${T}_${++msgSeq}`;
+  const fileId = `sf_${T}_${msgSeq}`;
+  const key = `test/${fileId}`;
+  voiceFiles.set(key, new Uint8Array(bytes));
+  spoken.set(bytes, says);
+  await db.insert(schema.storedFile).values({
+    id: fileId,
+    organizationId: ids.org,
+    sha256: fileId,
+    sizeBytes: bytes,
+    mimeType: "audio/ogg",
+    storageKey: key,
+  });
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.message).values({
+      id: messageId,
+      organizationId: ids.org,
+      conversationId: chat.conversationId,
+      channelAccountId: ids.channel,
+      direction: "inbound",
+      senderType: "contact",
+      type: "audio",
+      content: { type: "audio", voice: true, media: { mimeType: "audio/ogg" } },
+      status: "received",
+      sentAt: new Date(),
+    });
+    await tx.insert(schema.attachment).values({
+      id: `att_${T}_${msgSeq}`,
+      organizationId: ids.org,
+      messageId,
+      kind: "audio",
+      mimeType: "audio/ogg",
+      fileId,
+      status: "stored",
+    });
+    const ev: InboundEventPayload = {
+      messageId,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      channelAccountId: ids.channel,
+      conversationId: chat.conversationId,
+      contactId: chat.contactId,
+      type: "audio",
+      text: "",
+      reply: null,
+      adId: null,
+      optOut: null,
+    };
+    await automations.onInbound(tx as never, ev);
+  });
+  return messageId;
 }
 
 const agentMessages = (conversationId: string) =>
@@ -469,6 +547,61 @@ describe("AI agent in chats", () => {
     });
     assert.deepEqual(usage.map((u) => u.credits).sort(), [0, 1], "one credit for the turn, not per call");
     assert.ok(usage.every((u) => u.costMicros > 0));
+  });
+
+  it("hears a voice note, answers what was said and charges for the minutes", async () => {
+    const chat = await newChat();
+    const noteId = await customerSendsVoiceNote(chat, 20_000, "hello from a voice note");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.equal(textOf(reply as never), "You said: [voice note] hello from a voice note");
+    assert.equal(heardWith.at(-1), "gpt-4o-mini-transcribe", "Accurate by default");
+    const [note] = await db.select().from(schema.message).where(eq(schema.message.id, noteId));
+    assert.equal(
+      (note?.content as { transcript?: string } | undefined)?.transcript,
+      "hello from a voice note",
+    );
+    const [heard] = await db
+      .select()
+      .from(schema.aiUsage)
+      .where(
+        sql`${schema.aiUsage.conversationId} = ${chat.conversationId} and ${schema.aiUsage.kind} = 'transcribe'`,
+      );
+    assert.equal(heard?.credits, 1, "10 seconds: one credit");
+    assert.ok((heard?.costMicros ?? 0) > 0);
+
+    // More accurate: the other model and twice the credits; over 3 minutes isn't heard at all.
+    await db.update(schema.aiAgent).set({ voiceNotes: "best" }).where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      await until(
+        "waiting for the next message",
+        async () => (await agentRun(chat.conversationId))?.status === "waiting",
+      );
+      await customerSendsVoiceNote(chat, 150_000, "a longer one");
+      await until("the second answer", async () => (await agentMessages(chat.conversationId)).length === 2);
+      assert.equal(heardWith.at(-1), "gpt-4o-transcribe");
+      const credits = await db
+        .select({ credits: schema.aiUsage.credits })
+        .from(schema.aiUsage)
+        .where(
+          sql`${schema.aiUsage.conversationId} = ${chat.conversationId} and ${schema.aiUsage.kind} = 'transcribe'`,
+        );
+      assert.deepEqual(credits.map((c) => c.credits).sort(), [1, 4], "75 seconds, more accurate: 2 × 2");
+
+      await until("waiting again", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+      const before = heardWith.length;
+      await customerSendsVoiceNote(chat, 400_000, "far too long");
+      const replies = await until("the third answer", async () => {
+        const m = await agentMessages(chat.conversationId);
+        return m.length === 3 ? m : null;
+      });
+      assert.equal(heardWith.length, before, "not sent to speech-to-text");
+      assert.equal(textOf(replies[2] as never), "You said: [voice note, not heard: longer than 3 minutes]");
+    } finally {
+      await db.update(schema.aiAgent).set({ voiceNotes: "accurate" }).where(eq(schema.aiAgent.id, ids.agent));
+    }
   });
 
   it("makes one answer from several quick messages and keeps going", async () => {

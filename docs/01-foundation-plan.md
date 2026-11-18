@@ -272,3 +272,11 @@ One catalogue per branch for anything a business sells. Design and research: `re
   - 500 MB per business for now (`storage_usage`, migration 0025). The business's own uploads are refused at the limit; files customers send are always kept.
   - The nightly file sweep recounts usage and keeps any file that knowledge, an agent or a gallery still uses.
 - **Migrations.** 0025 (storage_usage) and 0026 (catalogue). They need ffmpeg/ffprobe on the server, plus a 1-day lifecycle rule on `uploads/`.
+
+## 14. Voice notes for the AI agent (2026-11-18)
+
+- Each agent has **Voice notes** on its Teach page: Off, Accurate (`gpt-4o-mini-transcribe`, 1 credit per started minute) or More accurate (`gpt-4o-transcribe`, 2 credits per started minute). New and existing agents default to Accurate (migration 0027).
+- Before each answer, the agent's runtime hears the customer's voice notes from the last 30 minutes that have no text yet. This happens inside the per-turn `t<n>:live` step, so chats already running replay unchanged. Notes still downloading are waited for up to 20 s.
+- The length comes from ffprobe. Notes over 3 minutes, failed downloads and failed calls are marked `transcriptSkipped` and never charged. The agent then asks the customer to type or send a shorter one.
+- The text is saved on the message (`content.transcript`). The agent reads `[voice note] …`, and the inbox shows the text under the player.
+- Usage rows have kind `transcribe`, are unique per message, and appear in `/api/agents/usage`. Models can be changed with `AI_TRANSCRIBE_MODEL` / `AI_TRANSCRIBE_MODEL_BEST`.

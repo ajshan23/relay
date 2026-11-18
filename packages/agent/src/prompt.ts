@@ -24,6 +24,7 @@ export function systemPrompt(agent: AgentProfile): string {
       "- Write each message entirely in one language and one script. Never mix in words from another language.",
       "- Ask one thing at a time.",
       "- Never write tool names, code or JSON in a message. To use a tool, call it.",
+      "- Voice notes show as [voice note] followed by what the customer said: answer them like a typed message. One marked as not heard: say you couldn't catch that voice note and ask them to type it or send a shorter one. Never say you only read text.",
     ].join("\n"),
     [
       "## What you know",
@@ -142,4 +143,24 @@ export function chatMessages(lines: ChatLine[], note: string): unknown[] {
   }
   messages.push({ role: "system", content: note });
   return messages;
+}
+
+/**
+ * A voice note as the agent reads it: what was said when it was turned into text, otherwise why not.
+ * `skipped` is the reason saved on the message; neither field means voice notes are off for the agent.
+ */
+export function voiceNoteLine(content: Record<string, unknown>, from: "customer" | "us"): string {
+  const said = typeof content.transcript === "string" ? content.transcript.trim() : "";
+  if (said) return `[voice note] ${said}`;
+  if (from === "us") return "[voice note]";
+  switch (content.transcriptSkipped) {
+    case "too_long":
+      return "[voice note, not heard: longer than 3 minutes]";
+    case "no_credits":
+    case "not_downloaded":
+    case "failed":
+      return "[voice note, not heard]";
+    default:
+      return "[voice note, not heard: you can't listen to voice notes]";
+  }
 }

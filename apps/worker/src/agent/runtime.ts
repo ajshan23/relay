@@ -16,6 +16,7 @@ import {
   searchTerms,
   systemPrompt,
   type TurnOutcome,
+  voiceNoteLine,
 } from "@relay/agent";
 import { newId, type Publisher, previewText, publishInboxEvent } from "@relay/core";
 import {
@@ -52,6 +53,7 @@ import {
 } from "@relay/db";
 import { isKairosControl, type Kairos, type RunRow, type WorkflowContext } from "@relay/kairos";
 import type { Queue } from "bullmq";
+import type { VoiceListener } from "./voice";
 
 /*
  * The AI agent in a chat, as a Kairos run (workflow relay.mira) that holds the chat the way an
@@ -86,6 +88,8 @@ export type AgentRuntimeDeps = {
   embed: Embedder | null;
   /** 512-dim embeddings for catalogue searches (null without an AI key: words only). */
   embedCatalog?: Embedder | null;
+  /** Turns the customer's voice notes into text before the agent answers (null: not heard). */
+  hearVoiceNotes?: VoiceListener | null;
 };
 
 export function createAgentRuntime(d: AgentRuntimeDeps) {
@@ -288,6 +292,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       status: a.status,
       name: a.name,
       model: a.model,
+      voiceNotes: a.voiceNotes,
       handoff: a.handoff,
       profile: {
         name: a.name,
@@ -389,9 +394,27 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       }
       // Paused (or set back to draft) since the chat started: step back. Otherwise answer with the
       // agent's current settings. Turns recorded before this re-read hold a plain true/false.
+      // Voice notes are heard here too (turned into text on the message), so the answer below reads
+      // them like typed messages; folded into this step so chats already running replay unchanged.
       const now = await ctx.step(`t${turn}:live`, async (): Promise<LoadedAgent | false> => {
         const fresh = await loadAgent(agent.id, input.organizationId);
-        return fresh?.status === "live" ? fresh : false;
+        if (fresh?.status !== "live") return false;
+        if (d.hearVoiceNotes && fresh.voiceNotes !== "off") {
+          try {
+            await d.hearVoiceNotes({
+              organizationId: input.organizationId,
+              branchId: input.branchId,
+              conversationId: input.conversationId,
+              agentId: fresh.id,
+              runId: ctx.runId,
+              choice: fresh.voiceNotes,
+              stepKey: `${ctx.runId}:t${turn}`,
+            });
+          } catch (err) {
+            console.warn("[agent] voice notes not heard:", (err as Error).message);
+          }
+        }
+        return fresh;
       });
       if (now && typeof now === "object") agent = { ...now, triggerAnswered: agent.triggerAnswered };
       if (!now) {
@@ -668,6 +691,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       const content = r.content as Record<string, unknown>;
       let text = previewText(content);
       if (!text) text = r.type === "text" ? "" : `[${r.type}]`;
+      if (r.type === "audio") text = voiceNoteLine(content, r.direction === "inbound" ? "customer" : "us");
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
       // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
       // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.

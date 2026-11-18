@@ -618,6 +618,8 @@ export function agentRoutes(ctx: AppContext) {
         costMicros: sum(U.costMicros),
         replies: sql<number>`count(*) filter (where ${U.kind} = 'reply' and ${U.credits} > 0)::int`,
         tries: sql<number>`count(*) filter (where ${U.kind} = 'try')::int`,
+        voiceNotes: sql<number>`count(*) filter (where ${U.kind} = 'transcribe')::int`,
+        voiceNoteCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'transcribe'), 0)::int`,
       })
       .from(U)
       .where(and(eq(U.organizationId, orgId), gte(U.createdAt, monthStart())));
@@ -627,6 +629,8 @@ export function agentRoutes(ctx: AppContext) {
         costUsd: Number(totals?.costMicros ?? 0) / 1_000_000,
         replies: totals?.replies ?? 0,
         tries: totals?.tries ?? 0,
+        voiceNotes: totals?.voiceNotes ?? 0,
+        voiceNoteCredits: totals?.voiceNoteCredits ?? 0,
       },
     });
   });

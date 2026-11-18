@@ -68,6 +68,7 @@ import {
 } from "@relay/kairos";
 import type { Queue } from "bullmq";
 import { createAgentRuntime } from "../agent/runtime";
+import type { VoiceListener } from "../agent/voice";
 import type { InboundHook } from "../channels/ingest";
 import { channels } from "../channels/registry";
 import { nextTimeOfDay, readAnswer, readLocation, withinBusinessHours } from "./helpers";
@@ -129,7 +130,13 @@ export function createAutomations({
   /** Where tracked links live: the web app's address (WEB_URL), which forwards /l/<code> to the API. */
   linkBase?: string;
   /** The AI agent's model and embedder; null without an AI key (the agent then hands chats over). */
-  ai?: { callModel: ModelCaller | null; embed: Embedder | null; embedCatalog?: Embedder | null };
+  ai?: {
+    callModel: ModelCaller | null;
+    embed: Embedder | null;
+    embedCatalog?: Embedder | null;
+    /** Turns voice notes into text for the agent (null: the agent can't hear them). */
+    hearVoiceNotes?: VoiceListener | null;
+  };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
 
@@ -157,6 +164,7 @@ export function createAutomations({
     callModel: ai.callModel,
     embed: ai.embed,
     embedCatalog: ai.embedCatalog ?? null,
+    hearVoiceNotes: ai.hearVoiceNotes ?? null,
   });
 
   /** Clears the chat's controller if it is still this run. */

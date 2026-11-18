@@ -38,3 +38,41 @@ export const defaultMonthlyCredits = 1000;
 export function creditsFor(kind: "reply" | "embed" | "try", callIndexInTurn: number): number {
   return kind === "reply" && callIndexInTurn === 0 ? 1 : 0;
 }
+
+// ------------------------------------------------------------------ voice notes
+
+/** Whether the agent listens to voice notes, and how carefully. "best" costs twice as much. */
+export type VoiceNotesChoice = "off" | "accurate" | "best";
+
+export function transcribeModelFor(
+  choice: Exclude<VoiceNotesChoice, "off">,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (choice === "best") return env.AI_TRANSCRIBE_MODEL_BEST || "gpt-4o-transcribe";
+  return env.AI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+}
+
+/** US dollars per minute of audio. */
+const transcribePerMinute: Record<string, number> = {
+  "gpt-4o-mini-transcribe": 0.003,
+  "gpt-4o-transcribe": 0.006,
+  "whisper-1": 0.006,
+};
+
+export function transcribeCostMicros(model: string, seconds: number): number {
+  const p = transcribePerMinute[model] ?? transcribePerMinute[model.replace(/-\d{4}-\d{2}-\d{2}$/, "")];
+  return p ? Math.round((Math.max(0, seconds) / 60) * p * 1_000_000) : 0;
+}
+
+/** Credits for one voice note: 1 per started minute when accurate, 2 when more accurate. */
+export function transcribeCredits(choice: Exclude<VoiceNotesChoice, "off">, seconds: number): number {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return minutes * (choice === "best" ? 2 : 1);
+}
+
+export const voiceNoteLimits = {
+  /** Longer notes aren't listened to (the agent asks for a short one or to type it). */
+  maxSeconds: 180,
+  /** How long a turn waits for a voice note that is still being downloaded. */
+  waitMs: 20_000,
+};

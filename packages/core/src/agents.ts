@@ -69,6 +69,8 @@ const agentFields = {
   tone: z.string().trim().max(60),
   languages: z.array(z.string().trim().min(1).max(30)).max(8),
   model: z.enum(["fast", "smart"]),
+  /** Voice notes: not heard, turned into text, or with the more accurate model (2× credits). */
+  voiceNotes: z.enum(["off", "accurate", "best"]),
   handoff: agentHandoffSchema,
   answerUnclaimed: z.boolean(),
   hours: agentHoursSchema,
@@ -84,6 +86,7 @@ export const agentSettingsSchema = z.object({
   tone: agentFields.tone.default("friendly"),
   languages: agentFields.languages.default([]),
   model: agentFields.model.default("fast"),
+  voiceNotes: agentFields.voiceNotes.default("accurate"),
   answerUnclaimed: agentFields.answerUnclaimed.default(false),
   hours: agentFields.hours.default(null),
   editableFields: agentFields.editableFields.default([]),

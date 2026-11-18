@@ -21,7 +21,15 @@ import { type Agent, useAgentActions, useAgents } from "./queries";
 
 type Draft = Pick<
   AgentSettings,
-  "name" | "role" | "instructions" | "tone" | "languages" | "model" | "handoff" | "editableFields"
+  | "name"
+  | "role"
+  | "instructions"
+  | "tone"
+  | "languages"
+  | "model"
+  | "voiceNotes"
+  | "handoff"
+  | "editableFields"
 >;
 
 const tones = [
@@ -39,6 +47,7 @@ const draftOf = (a: Agent): Draft => ({
   tone: a.tone,
   languages: a.languages,
   model: a.model,
+  voiceNotes: a.voiceNotes ?? "accurate",
   handoff: a.handoff,
   editableFields: a.editableFields,
 });
@@ -273,6 +282,31 @@ export function TeachView({ agent, canManage }: { agent: Agent; canManage: boole
           ]}
           className="self-start"
         />
+      </Section>
+
+      <Section
+        title="Voice notes"
+        description="Turn customers' voice notes into text so your agent can answer them. Your team sees the text under each voice note too."
+      >
+        <Segmented
+          aria-label="Voice notes"
+          value={draft.voiceNotes}
+          disabled={!canManage}
+          onChange={(v) => set("voiceNotes", v)}
+          options={[
+            { value: "off", label: "Off" },
+            { value: "accurate", label: "Accurate" },
+            { value: "best", label: "More accurate" },
+          ]}
+          className="self-start"
+        />
+        <p className="text-[13px] text-muted-foreground">
+          {draft.voiceNotes === "off"
+            ? "Your agent asks customers to type instead."
+            : draft.voiceNotes === "best"
+              ? "Better with accents, noise and mixed languages. 2 credits per minute of audio. Notes over 3 minutes aren't heard."
+              : "Good for most voice notes. 1 credit per minute of audio. Notes over 3 minutes aren't heard."}
+        </p>
       </Section>
 
       {canManage ? (
