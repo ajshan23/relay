@@ -49,11 +49,17 @@ export function transcribeModelFor(
   env: Record<string, string | undefined> = process.env,
 ): string {
   if (choice === "best") return env.AI_TRANSCRIBE_MODEL_BEST || "gpt-4o-transcribe";
-  return env.AI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+  if (env.AI_TRANSCRIBE_MODEL) return env.AI_TRANSCRIBE_MODEL;
+  // Cloudflare's Whisper when it's set up (free daily allowance, then far cheaper); otherwise OpenAI.
+  return env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_AI_TOKEN ? cloudflareWhisper : "gpt-4o-mini-transcribe";
 }
 
-/** US dollars per minute of audio. */
+/** Whisper Large V3 Turbo on Cloudflare Workers AI. Models starting "@cf/" go to Cloudflare. */
+export const cloudflareWhisper = "@cf/openai/whisper-large-v3-turbo";
+
+/** US dollars per minute of audio (Cloudflare's after its free daily allowance). */
 const transcribePerMinute: Record<string, number> = {
+  [cloudflareWhisper]: 0.0005,
   "gpt-4o-mini-transcribe": 0.003,
   "gpt-4o-transcribe": 0.006,
   "whisper-1": 0.006,

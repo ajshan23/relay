@@ -16,7 +16,12 @@ import type { AgentTool, ModelCaller, ModelResponse } from "./types";
  * so adding a provider (Claude, Gemini) is a branch here and nothing else.
  */
 
-export type ProviderEnv = { OPENAI_API_KEY?: string; OPENAI_BASE_URL?: string };
+export type ProviderEnv = {
+  OPENAI_API_KEY?: string;
+  OPENAI_BASE_URL?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_AI_TOKEN?: string;
+};
 
 /** True when replies can be made (a key is set). */
 export function aiConfigured(env: ProviderEnv = process.env): boolean {
@@ -102,8 +107,12 @@ export type Transcriber = (
   model: string,
 ) => Promise<{ text: string; language: string | null; seconds: number | null }>;
 
-export function createTranscriber(env: ProviderEnv = process.env): Transcriber {
+export function createTranscriber(
+  env: ProviderEnv = process.env,
+  fetcher: typeof fetch = fetch,
+): Transcriber {
   return async (audio, model) => {
+    if (model.startsWith("@cf/")) return cloudflareTranscribe(env, fetcher, audio, model);
     const openai = openaiProvider(env);
     const result = await experimental_transcribe({
       model: openai.transcription(model),
@@ -116,4 +125,49 @@ export function createTranscriber(env: ProviderEnv = process.env): Transcriber {
       seconds: result.durationInSeconds ?? null,
     };
   };
+}
+
+/** Workers AI REST: the audio as base64 JSON; the answer is { result: { text, transcription_info } }. */
+async function cloudflareTranscribe(
+  env: ProviderEnv,
+  fetcher: typeof fetch,
+  audio: Uint8Array,
+  model: string,
+): Promise<{ text: string; language: string | null; seconds: number | null }> {
+  if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_AI_TOKEN)
+    throw new Error("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AI_TOKEN are needed for Cloudflare voice notes.");
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/ai/run/${model}`;
+  const body = JSON.stringify({ audio: Buffer.from(audio).toString("base64"), vad_filter: true });
+  let last: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetcher(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CLOUDFLARE_AI_TOKEN}`, "Content-Type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(60_000),
+    });
+    const json = (await res.json().catch(() => null)) as {
+      success?: boolean;
+      errors?: { message?: string }[];
+      result?: {
+        text?: string;
+        transcription_info?: { text?: string; language?: string; duration?: number };
+      };
+    } | null;
+    if (res.ok && json?.success !== false && json?.result) {
+      const r = json.result;
+      return {
+        text: (r.text ?? r.transcription_info?.text ?? "").trim(),
+        language: r.transcription_info?.language ?? null,
+        seconds: r.transcription_info?.duration ?? null,
+      };
+    }
+    last = new Error(
+      `Cloudflare transcription failed (${res.status}): ${json?.errors?.[0]?.message ?? "no details"}`,
+    );
+    // Bad token or account, bad audio: retrying won't help.
+    if (res.status < 500 && res.status !== 429) break;
+    await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+  }
+  throw last ?? new Error("Cloudflare transcription failed");
 }

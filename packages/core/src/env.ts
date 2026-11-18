@@ -40,6 +40,14 @@ const schema = z.object({
   /** Model names for the agent's "Fast" and "Smart" choices (default gpt-5.4-mini). */
   AI_MODEL_FAST: z.string().optional(),
   AI_MODEL_SMART: z.string().optional(),
+  /**
+   * Cloudflare Workers AI, for voice notes on "Accurate" (Whisper Large V3 Turbo; ~200 free minutes a
+   * day). Without both, Accurate uses OpenAI. Token: My Profile → API Tokens → "Workers AI" template.
+   */
+  CLOUDFLARE_ACCOUNT_ID: z.string().optional(),
+  CLOUDFLARE_AI_TOKEN: z.string().optional(),
+  AI_TRANSCRIBE_MODEL: z.string().optional(),
+  AI_TRANSCRIBE_MODEL_BEST: z.string().optional(),
   // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),
   /** Files go to S3 when a bucket is set (see storage.ts); "local" forces the disk. */

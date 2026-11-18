@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cloudflareWhisper,
+  createTranscriber,
   systemPrompt,
   transcribeCostMicros,
   transcribeCredits,
@@ -21,6 +23,9 @@ describe("voice notes", () => {
     assert.equal(transcribeModelFor("accurate", {}), "gpt-4o-mini-transcribe");
     assert.equal(transcribeModelFor("best", {}), "gpt-4o-transcribe");
     assert.equal(transcribeModelFor("best", { AI_TRANSCRIBE_MODEL_BEST: "x" }), "x");
+    const cf = { CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_AI_TOKEN: "tok" };
+    assert.equal(transcribeModelFor("accurate", cf), cloudflareWhisper, "Cloudflare when set up");
+    assert.equal(transcribeModelFor("best", cf), "gpt-4o-transcribe", "More accurate stays on OpenAI");
   });
 
   it("prices by the minute", () => {
@@ -71,5 +76,44 @@ describe("voice notes", () => {
     });
     assert.match(hears, /You can listen to voice notes/);
     assert.match(hears, /say yes/);
+  });
+
+  it("sends Accurate to Cloudflare as base64 and reads the text back", async () => {
+    const sent: { url: string; init: RequestInit }[] = [];
+    const fakeFetch = (async (url: string, init: RequestInit) => {
+      sent.push({ url, init });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: {
+            text: " مرحبا، هل الهاتف متوفر؟ ",
+            transcription_info: { language: "ar", duration: 3.2 },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+    const t = createTranscriber({ CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_AI_TOKEN: "tok" }, fakeFetch);
+    const out = await t(new Uint8Array([1, 2, 3]), cloudflareWhisper);
+    assert.deepEqual(out, { text: "مرحبا، هل الهاتف متوفر؟", language: "ar", seconds: 3.2 });
+    assert.equal(
+      sent[0]?.url,
+      `https://api.cloudflare.com/client/v4/accounts/acc/ai/run/${cloudflareWhisper}`,
+    );
+    assert.equal((sent[0]?.init.headers as Record<string, string> | undefined)?.Authorization, "Bearer tok");
+    assert.equal(JSON.parse(String(sent[0]?.init.body)).audio, "AQID");
+  });
+
+  it("gives up at once on a bad Cloudflare token", async () => {
+    let calls = 0;
+    const fakeFetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ success: false, errors: [{ message: "Authentication error" }] }), {
+        status: 401,
+      });
+    }) as unknown as typeof fetch;
+    const t = createTranscriber({ CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_AI_TOKEN: "bad" }, fakeFetch);
+    await assert.rejects(t(new Uint8Array([1]), cloudflareWhisper), /401.*Authentication error/);
+    assert.equal(calls, 1);
   });
 });

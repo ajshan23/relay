@@ -280,3 +280,4 @@ One catalogue per branch for anything a business sells. Design and research: `re
 - The length comes from ffprobe. Notes over 3 minutes, failed downloads and failed calls are marked `transcriptSkipped` and never charged. The agent then asks the customer to type or send a shorter one.
 - The text is saved on the message (`content.transcript`). The agent reads `[voice note] …`, and the inbox shows the text under the player.
 - Usage rows have kind `transcribe`, are unique per message, and appear in `/api/agents/usage`. Models can be changed with `AI_TRANSCRIBE_MODEL` / `AI_TRANSCRIBE_MODEL_BEST`.
+- **Cloudflare (2026-11-18):** when `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_TOKEN` are set, Accurate uses Cloudflare Workers AI `@cf/openai/whisper-large-v3-turbo`, sending the audio as base64 to `/accounts/{id}/ai/run/{model}`. That gives about 200 free minutes a day, then $0.0005 per minute. More accurate stays on OpenAI. Credits are unchanged (1 or 2 per minute).
