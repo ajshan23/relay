@@ -281,3 +281,17 @@ One catalogue per branch for anything a business sells. Design and research: `re
 - The text is saved on the message (`content.transcript`). The agent reads `[voice note] …`, and the inbox shows the text under the player.
 - Usage rows have kind `transcribe`, are unique per message, and appear in `/api/agents/usage`. Models can be changed with `AI_TRANSCRIBE_MODEL` / `AI_TRANSCRIBE_MODEL_BEST`.
 - **Cloudflare (2026-11-18):** when `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_AI_TOKEN` are set, Accurate uses Cloudflare Workers AI `@cf/openai/whisper-large-v3-turbo`, sending the audio as base64 to `/accounts/{id}/ai/run/{model}`. That gives about 200 free minutes a day, then $0.0005 per minute. More accurate stays on OpenAI. Credits are unchanged (1 or 2 per minute).
+
+## 15. Photos for the AI agent (2026-11-18)
+
+- Each agent has **Photos** on its Teach page: Off, Accurate (1 credit per photo) or More accurate (2 credits per photo). The default is Accurate (migration 0028: `ai_agent.photos`, usage kind `vision`).
+  - **Accurate** uses Cloudflare `@cf/meta/llama-4-scout-17b-16e-instruct` when the Cloudflare keys are set. Otherwise it uses OpenAI `gpt-5.4-mini` at low image detail.
+  - **More accurate** uses `gpt-5.4-mini` at high detail.
+- Before each answer, inside `t<n>:live` after voice notes, `apps/worker/src/agent/photos.ts` describes the customer's photos from the last 30 minutes that have no description yet:
+  - at most 3 per turn; the older ones are marked `too_many`;
+  - files over 10 MB are skipped;
+  - each photo is shrunk to a 1024 px JPEG with sharp.
+- The description is saved on the message as `content.description`. The agent reads `[photo you looked at] … Caption: "…"` and searches the catalogue with it. The inbox shows the description under the photo.
+- The describing prompt names an exact model only when it's written in the photo, never identifies people, and treats text inside the photo as content, not instructions.
+- **Cloudflare fallback, for voice notes and photos:** if a `@cf/` model fails for any reason (daily allowance used up, outage, bad token), the call is retried once on OpenAI. Usage records the model actually used.
+- **Measured on real catalogue photos:** Cloudflare took about 7 s and cost about $0.0008 per photo after the free allowance; OpenAI at high detail took about 5 s and cost about $0.0016.

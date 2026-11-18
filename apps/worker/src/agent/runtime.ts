@@ -11,6 +11,7 @@ import {
   type Embedder,
   type ModelCaller,
   modelFor,
+  photoLine,
   type RunContext,
   runTurn,
   searchTerms,
@@ -53,6 +54,7 @@ import {
 } from "@relay/db";
 import { isKairosControl, type Kairos, type RunRow, type WorkflowContext } from "@relay/kairos";
 import type { Queue } from "bullmq";
+import type { PhotoReader } from "./photos";
 import type { VoiceListener } from "./voice";
 
 /*
@@ -90,6 +92,8 @@ export type AgentRuntimeDeps = {
   embedCatalog?: Embedder | null;
   /** Turns the customer's voice notes into text before the agent answers (null: not heard). */
   hearVoiceNotes?: VoiceListener | null;
+  /** Describes the customer's photos before the agent answers (null: not looked at). */
+  seePhotos?: PhotoReader | null;
 };
 
 export function createAgentRuntime(d: AgentRuntimeDeps) {
@@ -293,6 +297,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       name: a.name,
       model: a.model,
       voiceNotes: a.voiceNotes,
+      photos: a.photos,
       handoff: a.handoff,
       profile: {
         name: a.name,
@@ -304,6 +309,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         handoffWhen: a.handoff.when,
         catalog: !!catalog,
         hearsVoiceNotes: a.voiceNotes !== "off" && !!d.hearVoiceNotes,
+        seesPhotos: a.photos !== "off" && !!d.seePhotos,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
@@ -413,6 +419,21 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
             });
           } catch (err) {
             console.warn("[agent] voice notes not heard:", (err as Error).message);
+          }
+        }
+        if (d.seePhotos && fresh.photos !== "off") {
+          try {
+            await d.seePhotos({
+              organizationId: input.organizationId,
+              branchId: input.branchId,
+              conversationId: input.conversationId,
+              agentId: fresh.id,
+              runId: ctx.runId,
+              choice: fresh.photos,
+              stepKey: `${ctx.runId}:t${turn}`,
+            });
+          } catch (err) {
+            console.warn("[agent] photos not looked at:", (err as Error).message);
           }
         }
         return fresh;
@@ -536,7 +557,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const callModel = d.callModel;
 
     const [lines, contact] = await Promise.all([
-      chatLines(input.conversationId, agent.profile.hearsVoiceNotes ?? false),
+      chatLines(input.conversationId, {
+        hears: agent.profile.hearsVoiceNotes ?? false,
+        sees: agent.profile.seesPhotos ?? false,
+      }),
       contactFacts(input.contactId, agent),
     ]);
     const runCtx: RunContext = {
@@ -670,7 +694,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   // ------------------------------------------------------------------ reading the chat
 
   /** The last 40 readable messages, oldest first, as the model sees them. */
-  async function chatLines(conversationId: string, hears: boolean): Promise<ChatLine[]> {
+  async function chatLines(
+    conversationId: string,
+    { hears, sees }: { hears: boolean; sees: boolean },
+  ): Promise<ChatLine[]> {
     const m = schema.message;
     const rows = await db
       .select({
@@ -694,6 +721,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       if (!text) text = r.type === "text" ? "" : `[${r.type}]`;
       if (r.type === "audio")
         text = voiceNoteLine(content, r.direction === "inbound" ? "customer" : "us", hears);
+      if (r.type === "image") text = photoLine(content, r.direction === "inbound" ? "customer" : "us", sees);
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
       // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
       // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.

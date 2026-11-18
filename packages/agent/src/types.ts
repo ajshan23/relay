@@ -31,6 +31,8 @@ export type AgentProfile = {
   catalog?: boolean;
   /** Voice notes are turned into text for the agent (its Voice notes setting isn't Off). */
   hearsVoiceNotes?: boolean;
+  /** Photos are described in words for the agent (its Photos setting isn't Off). */
+  seesPhotos?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */

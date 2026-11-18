@@ -28,6 +28,7 @@ type Draft = Pick<
   | "languages"
   | "model"
   | "voiceNotes"
+  | "photos"
   | "handoff"
   | "editableFields"
 >;
@@ -48,6 +49,7 @@ const draftOf = (a: Agent): Draft => ({
   languages: a.languages,
   model: a.model,
   voiceNotes: a.voiceNotes ?? "accurate",
+  photos: a.photos ?? "accurate",
   handoff: a.handoff,
   editableFields: a.editableFields,
 });
@@ -306,6 +308,31 @@ export function TeachView({ agent, canManage }: { agent: Agent; canManage: boole
             : draft.voiceNotes === "best"
               ? "Better with accents, noise and mixed languages. 2 credits per minute of audio. Notes over 3 minutes aren't heard."
               : "Good for most voice notes. 1 credit per minute of audio. Notes over 3 minutes aren't heard."}
+        </p>
+      </Section>
+
+      <Section
+        title="Photos"
+        description="Let your agent look at photos customers send, like a product they want or a screenshot, and find it in your catalogue. Your team sees what it saw under each photo too."
+      >
+        <Segmented
+          aria-label="Photos"
+          value={draft.photos}
+          disabled={!canManage}
+          onChange={(v) => set("photos", v)}
+          options={[
+            { value: "off", label: "Off" },
+            { value: "accurate", label: "Accurate" },
+            { value: "best", label: "More accurate" },
+          ]}
+          className="self-start"
+        />
+        <p className="text-[13px] text-muted-foreground">
+          {draft.photos === "off"
+            ? "Your agent asks customers to describe what they need."
+            : draft.photos === "best"
+              ? "Better at small text, model numbers and prices. 2 credits per photo."
+              : "Good for most photos. 1 credit per photo."}
         </p>
       </Section>
 

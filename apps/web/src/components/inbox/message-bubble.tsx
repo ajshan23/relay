@@ -290,8 +290,11 @@ function Body({
           {edited}
         </ChatBubble>
       );
-    case "image":
-      return ready ? (
+    case "image": {
+      if (!ready) return pendingMedia("Photo");
+      // What the AI agent saw in it: shown under the photo so the team knows what it answered.
+      const saw = str(c.description);
+      const bubble = (
         <ImageBubble
           {...common}
           // The chat shows a small preview; clicking opens the full photo.
@@ -301,9 +304,18 @@ function Body({
           quote={quote}
           onMediaClick={() => window.open(ready, "_blank", "noopener")}
         />
-      ) : (
-        pendingMedia("Photo")
       );
+      if (!saw) return bubble;
+      return (
+        <span className="flex flex-col items-end gap-0.5">
+          {bubble}
+          <span className="flex max-w-72 items-start gap-1.5 self-stretch rounded-md bg-muted/60 px-2 py-1.5 text-[13px] text-muted-foreground">
+            <Icon name="image" size="xs" className="mt-0.5 shrink-0" />
+            <span className="whitespace-pre-wrap">{saw}</span>
+          </span>
+        </span>
+      );
+    }
     case "sticker":
       return ready ? <StickerBubble {...common} src={ready} alt="Sticker" /> : pendingMedia("Sticker");
     case "video":

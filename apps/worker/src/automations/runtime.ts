@@ -67,6 +67,7 @@ import {
   type WorkflowContext,
 } from "@relay/kairos";
 import type { Queue } from "bullmq";
+import type { PhotoReader } from "../agent/photos";
 import { createAgentRuntime } from "../agent/runtime";
 import type { VoiceListener } from "../agent/voice";
 import type { InboundHook } from "../channels/ingest";
@@ -136,6 +137,8 @@ export function createAutomations({
     embedCatalog?: Embedder | null;
     /** Turns voice notes into text for the agent (null: the agent can't hear them). */
     hearVoiceNotes?: VoiceListener | null;
+    /** Describes photos for the agent (null: the agent can't see them). */
+    seePhotos?: PhotoReader | null;
   };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
@@ -165,6 +168,7 @@ export function createAutomations({
     embed: ai.embed,
     embedCatalog: ai.embedCatalog ?? null,
     hearVoiceNotes: ai.hearVoiceNotes ?? null,
+    seePhotos: ai.seePhotos ?? null,
   });
 
   /** Clears the chat's controller if it is still this run. */

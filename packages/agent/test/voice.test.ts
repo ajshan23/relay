@@ -95,7 +95,12 @@ describe("voice notes", () => {
     }) as typeof fetch;
     const t = createTranscriber({ CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_AI_TOKEN: "tok" }, fakeFetch);
     const out = await t(new Uint8Array([1, 2, 3]), cloudflareWhisper);
-    assert.deepEqual(out, { text: "مرحبا، هل الهاتف متوفر؟", language: "ar", seconds: 3.2 });
+    assert.deepEqual(out, {
+      text: "مرحبا، هل الهاتف متوفر؟",
+      language: "ar",
+      seconds: 3.2,
+      model: cloudflareWhisper,
+    });
     assert.equal(
       sent[0]?.url,
       `https://api.cloudflare.com/client/v4/accounts/acc/ai/run/${cloudflareWhisper}`,

@@ -11,6 +11,8 @@ import { newId } from "@relay/core";
 import { agentWorkflow } from "@relay/core/agents";
 import { emptyDefinition, type InboundEventPayload } from "@relay/core/automations";
 import { createCatalogType, createDb, eq, saveCatalogItem, schema, sql } from "@relay/db";
+import sharp from "sharp";
+import { createPhotoReader } from "../src/agent/photos";
 import { createVoiceListener } from "../src/agent/voice";
 import { createAutomations } from "../src/automations/runtime";
 
@@ -42,6 +44,8 @@ const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}` };
 const voiceFiles = new Map<string, Uint8Array>();
 const spoken = new Map<number, string>();
 const heardWith: string[] = [];
+/** Each photo the pretend vision model was shown: which model and how closely. */
+const looks: { model: string; detail: string }[] = [];
 
 /** What each model call was sent, for checks. */
 const calls: ModelRequest[] = [];
@@ -150,7 +154,22 @@ const automations = createAutomations({
       storage: { get: async (key: string) => voiceFiles.get(key) ?? new Uint8Array() } as never,
       transcribe: async (audio, model) => {
         heardWith.push(model);
-        return { text: spoken.get(audio.byteLength) ?? "", language: "en", seconds: null };
+        return { text: spoken.get(audio.byteLength) ?? "", language: "en", seconds: null, model };
+      },
+    }),
+    // Photos: a pretend vision model that numbers what it was shown.
+    seePhotos: createPhotoReader({
+      db,
+      redis: { publish: async () => 0 },
+      storage: { get: async (key: string) => voiceFiles.get(key) ?? new Uint8Array() } as never,
+      describe: async (_jpeg, model, detail) => {
+        looks.push({ model, detail });
+        return {
+          text: `Photo #${looks.length}`,
+          model,
+          usage: { inputTokens: 300, cachedTokens: 0, outputTokens: 10 },
+          costMicros: 250,
+        };
       },
     }),
   },
@@ -288,6 +307,63 @@ async function customerSendsVoiceNote(
       contactId: chat.contactId,
       type: "audio",
       text: "",
+      reply: null,
+      adId: null,
+      optOut: null,
+    };
+    await automations.onInbound(tx as never, ev);
+  });
+  return messageId;
+}
+
+/** A WhatsApp photo, already downloaded (a real small PNG, so it can be shrunk). */
+async function customerSendsPhoto(chat: { contactId: string; conversationId: string }, caption?: string) {
+  const messageId = `msg_${T}_${++msgSeq}`;
+  const fileId = `sf_${T}_${msgSeq}`;
+  const key = `test/${fileId}`;
+  const png = await sharp({ create: { width: 40, height: 30, channels: 3, background: "#123456" } })
+    .png()
+    .toBuffer();
+  voiceFiles.set(key, new Uint8Array(png));
+  await db.insert(schema.storedFile).values({
+    id: fileId,
+    organizationId: ids.org,
+    sha256: fileId,
+    sizeBytes: png.byteLength,
+    mimeType: "image/png",
+    storageKey: key,
+  });
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.message).values({
+      id: messageId,
+      organizationId: ids.org,
+      conversationId: chat.conversationId,
+      channelAccountId: ids.channel,
+      direction: "inbound",
+      senderType: "contact",
+      type: "image",
+      content: { type: "image", media: { mimeType: "image/png", ...(caption ? { caption } : {}) } },
+      status: "received",
+      sentAt: new Date(),
+    });
+    await tx.insert(schema.attachment).values({
+      id: `att_${T}_${msgSeq}`,
+      organizationId: ids.org,
+      messageId,
+      kind: "image",
+      mimeType: "image/png",
+      fileId,
+      status: "stored",
+    });
+    const ev: InboundEventPayload = {
+      messageId,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      channelAccountId: ids.channel,
+      conversationId: chat.conversationId,
+      contactId: chat.contactId,
+      type: "image",
+      text: caption ?? "",
       reply: null,
       adId: null,
       optOut: null,
@@ -601,6 +677,55 @@ describe("AI agent in chats", () => {
       assert.equal(textOf(replies[2] as never), "You said: [voice note, not heard: longer than 3 minutes]");
     } finally {
       await db.update(schema.aiAgent).set({ voiceNotes: "accurate" }).where(eq(schema.aiAgent.id, ids.agent));
+    }
+  });
+
+  it("looks at a photo, answers what's in it, and charges per photo", async () => {
+    const chat = await newChat();
+    const before = looks.length;
+    const photoId = await customerSendsPhoto(chat, "do you have this?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const n = before + 1;
+    assert.equal(
+      textOf(reply as never),
+      `You said: [photo you looked at] Photo #${n} Caption: "do you have this?"`,
+    );
+    assert.deepEqual(looks.at(-1), { model: "gpt-5.4-mini", detail: "low" }, "Accurate by default");
+    const [photo] = await db.select().from(schema.message).where(eq(schema.message.id, photoId));
+    assert.equal((photo?.content as { description?: string } | undefined)?.description, `Photo #${n}`);
+    const usage = () =>
+      db
+        .select({ credits: schema.aiUsage.credits })
+        .from(schema.aiUsage)
+        .where(
+          sql`${schema.aiUsage.conversationId} = ${chat.conversationId} and ${schema.aiUsage.kind} = 'vision'`,
+        );
+    assert.deepEqual(
+      (await usage()).map((u) => u.credits),
+      [1],
+    );
+
+    // More accurate: high detail, 2 credits each; four at once means the oldest isn't looked at.
+    await db.update(schema.aiAgent).set({ photos: "best" }).where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      await until(
+        "waiting for the next message",
+        async () => (await agentRun(chat.conversationId))?.status === "waiting",
+      );
+      for (let i = 0; i < 4; i++) await customerSendsPhoto(chat);
+      const replies = await until("the second answer", async () => {
+        const m = await agentMessages(chat.conversationId);
+        return m.length === 2 ? m : null;
+      });
+      assert.deepEqual(looks.at(-1), { model: "gpt-5.4-mini", detail: "high" });
+      assert.deepEqual((await usage()).map((u) => u.credits).sort(), [1, 2, 2, 2]);
+      assert.match(textOf(replies[1] as never), /\[photo, not looked at: too many photos at once\]/);
+      assert.match(textOf(replies[1] as never), new RegExp(`Photo #${n + 3}`));
+    } finally {
+      await db.update(schema.aiAgent).set({ photos: "accurate" }).where(eq(schema.aiAgent.id, ids.agent));
     }
   });
 

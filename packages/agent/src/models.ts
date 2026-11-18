@@ -82,3 +82,42 @@ export const voiceNoteLimits = {
   /** How long a turn waits for a voice note that is still being downloaded. */
   waitMs: 20_000,
 };
+
+/** Cloudflare Workers AI bills neurons: $0.011 per 1,000 after the free daily allowance (11 micro-dollars each). */
+export function cloudflareCostMicros(neurons: number): number {
+  return Math.round(Math.max(0, neurons) * 11);
+}
+
+// ------------------------------------------------------------------ photos
+
+/** Whether the agent looks at customers' photos, and how carefully. "best" costs twice as much. */
+export type PhotosChoice = "off" | "accurate" | "best";
+
+/** Llama 4 Scout on Cloudflare Workers AI: reads product photos and screenshots, ~40 neurons a photo. */
+export const cloudflareVision = "@cf/meta/llama-4-scout-17b-16e-instruct";
+
+/** The model for a photo and how closely it looks (OpenAI's image detail). */
+export function visionModelFor(
+  choice: Exclude<PhotosChoice, "off">,
+  env: Record<string, string | undefined> = process.env,
+): { model: string; detail: "low" | "high" } {
+  if (choice === "best") return { model: env.AI_VISION_MODEL_BEST || "gpt-5.4-mini", detail: "high" };
+  if (env.AI_VISION_MODEL) return { model: env.AI_VISION_MODEL, detail: "low" };
+  return env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_AI_TOKEN
+    ? { model: cloudflareVision, detail: "low" }
+    : { model: "gpt-5.4-mini", detail: "low" };
+}
+
+/** Credits for one photo: 1 when accurate, 2 when more accurate. */
+export function photoCredits(choice: Exclude<PhotosChoice, "off">): number {
+  return choice === "best" ? 2 : 1;
+}
+
+export const photoLimits = {
+  /** Photos looked at per answer; more in one go are left (the agent says it saw the first ones). */
+  perTurn: 3,
+  /** Bigger files aren't looked at. */
+  maxBytes: 10 * 1024 * 1024,
+  /** How long a turn waits for a photo that is still being downloaded. */
+  waitMs: 20_000,
+};

@@ -48,6 +48,9 @@ const schema = z.object({
   CLOUDFLARE_AI_TOKEN: z.string().optional(),
   AI_TRANSCRIBE_MODEL: z.string().optional(),
   AI_TRANSCRIBE_MODEL_BEST: z.string().optional(),
+  /** Photos: Accurate uses Cloudflare Llama 4 Scout when the Cloudflare keys are set, else these. */
+  AI_VISION_MODEL: z.string().optional(),
+  AI_VISION_MODEL_BEST: z.string().optional(),
   // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),
   /** Files go to S3 when a bucket is set (see storage.ts); "local" forces the disk. */

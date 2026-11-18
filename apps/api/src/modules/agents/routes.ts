@@ -620,6 +620,8 @@ export function agentRoutes(ctx: AppContext) {
         tries: sql<number>`count(*) filter (where ${U.kind} = 'try')::int`,
         voiceNotes: sql<number>`count(*) filter (where ${U.kind} = 'transcribe')::int`,
         voiceNoteCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'transcribe'), 0)::int`,
+        photos: sql<number>`count(*) filter (where ${U.kind} = 'vision')::int`,
+        photoCredits: sql<number>`coalesce(sum(${U.credits}) filter (where ${U.kind} = 'vision'), 0)::int`,
       })
       .from(U)
       .where(and(eq(U.organizationId, orgId), gte(U.createdAt, monthStart())));
@@ -631,6 +633,8 @@ export function agentRoutes(ctx: AppContext) {
         tries: totals?.tries ?? 0,
         voiceNotes: totals?.voiceNotes ?? 0,
         voiceNoteCredits: totals?.voiceNoteCredits ?? 0,
+        photos: totals?.photos ?? 0,
+        photoCredits: totals?.photoCredits ?? 0,
       },
     });
   });
