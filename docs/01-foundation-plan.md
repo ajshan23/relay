@@ -311,3 +311,23 @@ One catalogue per branch for anything a business sells. Design and research: `re
 - Replies over 600 characters, no credits left, an unsupported script or any Cartesia/ffmpeg failure fall back to plain text. Voice never blocks an answer.
 - **Cost:** 1 extra credit per voice reply. On Cartesia, about $0.05 per 1,000 characters (about $0.0075 a reply).
 - **Measured:** Cartesia about 1.8 s plus ffmpeg about 0.2 s for a 9.5-second reply.
+
+## 17. The agent's own tools (2026-11-19)
+
+- A new **Tools** view under the agent. A business connects its own system in one of two ways (migration 0030: `ai_tool`, `ai_tool_call`):
+  - **An API call:** a method and an address, the details the agent asks the customer for (`{{input.<key>}}`), and an optional key sent as a header. Values from the chat (`{{contact.phone}}`, `{{contact.name}}`, `{{contact.fields.<key>}}`, `{{chat.id}}`) are filled in by Relay, so the agent can't change them and nobody can look up someone else's order.
+  - **An MCP server:** a Streamable HTTP address and a key. Relay reads the server's tools, and the business ticks which ones the agent may use.
+- **Look-ups** run inside the turn like `search_knowledge`. Each call is a recorded Kairos step, so a replay never calls the business's system twice.
+- **Changes** (the "Ask the customer to tap Yes first" switch; on by default for MCP tools that aren't marked read-only) end the turn with the agent's question and Yes / No buttons. The pending call is saved on that message (`content.pendingAction`).
+  - On **Yes**, the `t<n>:act` step claims the question (it runs once, even with a double tap), calls the tool and passes the result to the model.
+  - **No**, or a Yes more than 30 minutes later, does nothing.
+- **Test** in the form really calls the API with sample values (test customer `+971500000000`). It shows the answer with ticks for **what the agent may see**: unticked fields are removed before the model sees the answer (`config.pick`).
+- **Try:** look-ups really run. A change shows its question and what tapping Yes would have sent, and is logged as "not sent".
+- **Recent calls** keeps the last 50 calls: worked, failed, customer said No, or not sent (Try).
+- **Safety:**
+  - Addresses must be public: the URL is checked, and every connection is checked again, so DNS rebinding can't get around it (`@relay/core/net`).
+  - 10 s time limit and 1 MB answer limit.
+  - Keys are encrypted with `CHANNEL_SECRET_KEY`, never returned by the API, and read only when a call is made (never stored in Kairos steps).
+  - At most 20 tools per agent and 30 allowed tools per MCP server.
+  - `AGENT_TOOLS_ALLOW_PRIVATE=1` lets local fake servers through. It is for development and tests only.
+- Calls cost no extra credits.

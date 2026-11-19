@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   catalogToolNames,
   type ModelCaller,
@@ -7,11 +12,13 @@ import {
   type ModelResponse,
   toolNames,
 } from "@relay/agent";
-import { newId } from "@relay/core";
+import { encryptSecret, newId } from "@relay/core";
+import { httpToolConfigSchema } from "@relay/core/agent-tools";
 import { agentWorkflow } from "@relay/core/agents";
 import { emptyDefinition, type InboundEventPayload } from "@relay/core/automations";
 import { createCatalogType, createDb, eq, saveCatalogItem, schema, sql } from "@relay/db";
 import sharp from "sharp";
+import { z } from "zod";
 import { createPhotoReader } from "../src/agent/photos";
 import { createVoiceListener } from "../src/agent/voice";
 import { createAutomations } from "../src/automations/runtime";
@@ -48,6 +55,15 @@ const heardWith: string[] = [];
 const spokenBy: { text: string; language: string }[] = [];
 /** Each photo the pretend vision model was shown: which model and how closely. */
 const looks: { model: string; detail: string }[] = [];
+
+/** The business's own system: a shop with orders, table bookings and (over MCP) stock. */
+const toolKey = randomBytes(32).toString("base64");
+const shop = {
+  url: "",
+  requests: [] as { method: string; path: string; key: string | undefined; body: unknown }[],
+  bookings: 0,
+};
+let shopServer: Server;
 
 /** What each model call was sent, for checks. */
 const calls: ModelRequest[] = [];
@@ -90,9 +106,25 @@ const brain: ModelCaller = async (req) => {
       ? (msgs.at(-1) as { content: { output: { value: { data?: { results?: { text: string }[] } } } }[] })
       : null;
   if (toolMsg) {
-    const hit = toolMsg.content[0]?.output.value.data?.results?.[0]?.text;
+    const value = toolMsg.content[0]?.output.value as {
+      data?: { results?: { text: string }[] };
+      error?: string;
+    };
+    if (value.error) return r({ text: `Sorry, that didn't work: ${value.error}` });
+    if (value.data && !("results" in value.data)) return r({ text: `Result: ${JSON.stringify(value.data)}` });
+    const hit = value.data?.results?.[0]?.text;
     return r({ text: hit ? `From what I know: ${hit}` : "I'm not sure." });
   }
+  // What a Yes / No tap led to arrives as a note after the chat.
+  const act = msgs.at(-1)?.role === "system" ? String(msgs.at(-1)?.content) : "";
+  if (act.startsWith("The customer tapped"))
+    return r({
+      text: act.includes("carried out")
+        ? `All booked! ${act.match(/"ref":"(\w+)"/)?.[1] ?? ""}`.trim()
+        : act.includes("tapped No")
+          ? "No problem, I haven't booked it."
+          : `Hmm: ${act}`,
+    });
   const said = lastCustomerTexts(msgs);
   const text = said.join(" ").toLowerCase();
   if (text.includes("timing"))
@@ -137,6 +169,18 @@ const brain: ModelCaller = async (req) => {
         },
       ],
     });
+  if (text.includes("where is order"))
+    return r({
+      toolCalls: [{ id: "t1", name: "order_status", input: { order: text.match(/order (\w+)/)?.[1] ?? "" } }],
+    });
+  if (text.includes("book a table"))
+    return r({
+      toolCalls: [
+        { id: "t2", name: "book_table", input: { people: 2, confirmText: "Book a table for 2 at 8 pm?" } },
+      ],
+    });
+  if (text.includes("stock count"))
+    return r({ toolCalls: [{ id: "t3", name: "shop__stock", input: { item: "S26" } }] });
   if (text.includes("bye"))
     return r({
       toolCalls: [{ id: "c1", name: toolNames.close, input: { reason: "done", text: "Take care!" } }],
@@ -199,6 +243,8 @@ const automations = createAutomations({
         };
       },
     }),
+    // The business's own tools: real HTTP to a local fake shop (allowed here only).
+    ownTools: { secretKey: toolKey, allowPrivate: true },
   },
 });
 const worker = automations.worker();
@@ -614,10 +660,124 @@ before(async () => {
       position: n,
     });
   }
+  // The shop: GET /orders/:id (by the customer's phone), POST /bookings, and an MCP server with stock.
+  shopServer = createServer(async (req, res) => {
+    const path = req.url ?? "";
+    if (path.startsWith("/mcp")) {
+      const mcp = new McpServer({ name: "shop", version: "1.0.0" });
+      mcp.registerTool(
+        "stock",
+        {
+          description: "Stock of an item",
+          inputSchema: { item: z.string() },
+          annotations: { readOnlyHint: true },
+        },
+        async ({ item }) => ({ content: [{ type: "text", text: JSON.stringify({ item, left: 3 }) }] }),
+      );
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on("close", () => void transport.close());
+      await mcp.connect(transport);
+      await transport.handleRequest(req, res);
+      return;
+    }
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    shop.requests.push({
+      method: req.method ?? "",
+      path,
+      key: req.headers["x-shop-key"] as string | undefined,
+      body: raw ? JSON.parse(raw) : null,
+    });
+    const json = (status: number, body: unknown) =>
+      res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (path.startsWith("/orders/boom")) return json(500, { error: "database down" });
+    if (path.startsWith("/orders/")) {
+      const phone = new globalThis.URL(path, "http://x").searchParams.get("phone");
+      return json(200, {
+        order: path.split("/")[2]?.split("?")[0],
+        status: "out for delivery",
+        phone,
+        cost: 12,
+      });
+    }
+    if (path === "/bookings" && req.method === "POST") {
+      shop.bookings++;
+      return json(201, { ref: `B${shop.bookings}` });
+    }
+    return json(404, { error: "not found" });
+  });
+  await new Promise<void>((done) => shopServer.listen(0, "127.0.0.1", done));
+  shop.url = `http://127.0.0.1:${(shopServer.address() as AddressInfo).port}`;
+  const tool = (id: string, values: Partial<typeof schema.aiTool.$inferInsert>) => ({
+    id: `${id}${T}`,
+    organizationId: ids.org,
+    branchId: ids.branch,
+    agentId: ids.agent,
+    kind: "http" as const,
+    name: id,
+    title: id,
+    description: "",
+    config: httpToolConfigSchema.parse({ method: "GET", url: shop.url }),
+    ...values,
+  });
+  await db.insert(schema.aiTool).values([
+    tool("order_status", {
+      title: "Order status",
+      description: "When they ask where their order is",
+      config: httpToolConfigSchema.parse({
+        method: "GET",
+        url: `${shop.url}/orders/{{input.order}}`,
+        query: [{ key: "phone", value: "{{contact.phone}}" }],
+        inputs: [{ key: "order", description: "The order number", type: "text", required: true }],
+        pick: ["order", "status", "phone"],
+      }),
+      secret: encryptSecret({ header: "x-shop-key", value: "s3cret" }, toolKey),
+      secretHint: "cret",
+    }),
+    tool("book_table", {
+      title: "Book a table",
+      description: "When they want a table",
+      confirm: true,
+      config: httpToolConfigSchema.parse({
+        method: "POST",
+        url: `${shop.url}/bookings`,
+        body: '{"people":{{input.people}},"phone":"{{contact.phone}}","name":"{{contact.name}}"}',
+        inputs: [{ key: "people", description: "How many", type: "number", required: true }],
+      }),
+    }),
+    tool("switched_off", { title: "Switched off", enabled: false }),
+    {
+      ...tool("shop", { title: "Shop" }),
+      kind: "mcp" as const,
+      config: {
+        url: `${shop.url}/mcp`,
+        listedAt: null,
+        tools: [
+          {
+            name: "stock",
+            description: "Stock of an item",
+            inputSchema: { type: "object", properties: { item: { type: "string" } }, required: ["item"] },
+            readOnly: true,
+            allowed: true,
+            confirm: false,
+          },
+          {
+            name: "delete_everything",
+            description: "Not allowed",
+            inputSchema: { type: "object" },
+            readOnly: false,
+            allowed: false,
+            confirm: true,
+          },
+        ],
+      },
+    },
+  ]);
   await automations.startWorker(worker);
 });
 
 after(async () => {
+  shopServer?.close();
   await automations.kairos.close();
   await db.delete(schema.organization).where(eq(schema.organization.id, ids.org));
   await pg.end();
@@ -1111,5 +1271,150 @@ describe("AI agent in chats", () => {
     const note = (await agentMessages(chat.conversationId)).find((m) => m.type === "note");
     assert.match(textOf(note as never), /credits are used up/);
     await db.delete(schema.aiCreditAllowance).where(eq(schema.aiCreditAllowance.organizationId, ids.org));
+  });
+});
+
+describe("the business's own tools", () => {
+  const toolCalls = (conversationId: string) =>
+    db.select().from(schema.aiToolCall).where(eq(schema.aiToolCall.conversationId, conversationId));
+
+  it("looks an order up in the business's system with the customer's phone, and logs the call", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "where is order 1001?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const phone = `97150${seq}`;
+    assert.equal(
+      textOf(reply as never),
+      `Result: {"order":"1001","status":"out for delivery","phone":"${phone}"}`,
+      "only the ticked fields reach the agent (not cost)",
+    );
+    const sent = shop.requests.find((q) => q.path.startsWith("/orders/1001"));
+    assert.equal(sent?.key, "s3cret", "the saved key is sent");
+    const offered = calls.at(-2)?.tools.map((t) => t.name) ?? [];
+    assert.ok(
+      offered.includes("order_status") && offered.includes("book_table") && offered.includes("shop__stock"),
+    );
+    assert.ok(!offered.includes("switched_off") && !offered.includes("shop__delete_everything"));
+    assert.match(calls.at(-2)?.system ?? "", /business's own tools/);
+    const logged = await until("the call log", async () => {
+      const rows = await toolCalls(chat.conversationId);
+      return rows.length ? rows : null;
+    });
+    assert.deepEqual(
+      logged.map((l) => [l.name, l.status, l.httpStatus, l.mode]),
+      [["order_status", "ok", 200, "live"]],
+    );
+  });
+
+  it("says plainly when the business's system fails", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "where is order boom?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.match(
+      textOf(reply as never),
+      /Sorry, that didn't work: Their system answered 500: \{"error":"database down"\}/,
+    );
+  });
+
+  it("uses an allowed MCP tool", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "stock count for the S26?");
+    const [reply] = await until("the answer", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    assert.equal(textOf(reply as never), 'Result: {"item":"S26","left":3}');
+  });
+
+  it("asks before a change, does it once on Yes (even tapped twice), and not on No or late", async () => {
+    const chat = await newChat();
+    const before = shop.bookings;
+    const ask = async (n: number) => {
+      await customerSays(chat, "book a table for 2 please");
+      const msgs = await until("the question", async () => {
+        const m = await agentMessages(chat.conversationId);
+        return m.length === n ? m : null;
+      });
+      await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+      const q = msgs.at(-1) as (typeof msgs)[number];
+      const content = q.content as {
+        body: string;
+        options: { id: string; title: string }[];
+        pendingAction: object;
+      };
+      return { q, content };
+    };
+    const tap = (q: { id: string }, content: { options: { id: string; title: string }[] }, i: number) =>
+      customerSays(chat, content.options[i]?.title ?? "", content.options[i] ?? null, q.id);
+
+    // Yes: booked once, with the customer's details filled in; a second tap does nothing more.
+    const first = await ask(1);
+    assert.equal(first.content.body, "Book a table for 2 at 8 pm?");
+    assert.deepEqual(
+      first.content.options.map((o) => o.title),
+      ["Yes", "No"],
+    );
+    assert.equal(shop.bookings, before, "nothing booked before Yes");
+    await tap(first.q, first.content, 0);
+    await until("the confirmation", async () => (await agentMessages(chat.conversationId)).length === 2);
+    assert.equal(
+      textOf((await agentMessages(chat.conversationId))[1] as never),
+      `All booked! B${before + 1}`,
+    );
+    assert.deepEqual(shop.requests.at(-1)?.body, { people: 2, phone: `97150${seq}`, name: "Asha" });
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await tap(first.q, first.content, 0);
+    await until(
+      "the answer to the second tap",
+      async () => (await agentMessages(chat.conversationId)).length === 3,
+    );
+    assert.match(textOf((await agentMessages(chat.conversationId))[2] as never), /already answered/);
+    assert.equal(shop.bookings, before + 1, "booked once");
+
+    // No: nothing booked.
+    const second = await ask(4);
+    await tap(second.q, second.content, 1);
+    await until("the answer to No", async () => (await agentMessages(chat.conversationId)).length === 5);
+    assert.equal(
+      textOf((await agentMessages(chat.conversationId))[4] as never),
+      "No problem, I haven't booked it.",
+    );
+
+    // Too late: a Yes after the question expired does nothing.
+    const third = await ask(6);
+    await db
+      .update(schema.message)
+      .set({
+        content: {
+          ...third.content,
+          pendingAction: { ...third.content.pendingAction, expiresAt: "2020-01-01T00:00:00Z" },
+        },
+      })
+      .where(eq(schema.message.id, third.q.id));
+    await tap(third.q, third.content, 0);
+    await until(
+      "the answer to a late Yes",
+      async () => (await agentMessages(chat.conversationId)).length === 7,
+    );
+    assert.match(
+      textOf((await agentMessages(chat.conversationId))[6] as never),
+      /minutes after it was asked/,
+    );
+    assert.equal(shop.bookings, before + 1);
+
+    const logged = (await toolCalls(chat.conversationId)).map((l) => [l.name, l.status]);
+    assert.deepEqual(logged.sort(), [
+      ["book_table", "declined"],
+      ["book_table", "ok"],
+    ]);
+    // The agent's own history says what it asked and what was tapped.
+    const history = (calls.at(-1)?.messages ?? []) as Msg[];
+    assert.ok(history.some((m) => String(m.content).includes("they tapped Yes")));
   });
 });

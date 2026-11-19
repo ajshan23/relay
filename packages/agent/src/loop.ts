@@ -1,5 +1,6 @@
 import { toolNames } from "./builtins";
 import { catalogToolNames, numbersIn, unknownAmounts } from "./catalog";
+import { confirmField, toolArguments } from "./custom";
 import { whatsappText } from "./prompt";
 import { envelope, runTool } from "./tools";
 import type {
@@ -146,7 +147,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
     // A turn-ending tool wins over anything else asked for in the same response.
     const ending = response.toolCalls.find((c) => {
       const kind = byName.get(c.name)?.kind;
-      return kind === "reply" || kind === "handoff" || kind === "end";
+      return kind === "reply" || kind === "handoff" || kind === "end" || kind === "confirm";
     });
     if (ending) {
       const outcome = endingOutcome(ending, text, byName.get(ending.name) as AgentTool<unknown>);
@@ -253,6 +254,17 @@ function endingOutcome(call: ToolCall, text: string, tool: AgentTool<unknown>): 
   const parsed = tool.input.safeParse(call.input);
   if (!parsed.success) return text ? { kind: "reply", text } : null;
   const data = parsed.data as Record<string, unknown>;
+  if (tool.kind === "confirm" && tool.ref) {
+    const question = whatsappText(String(data[confirmField] ?? "")) || text || `${tool.ref.title}?`;
+    return {
+      kind: "confirm",
+      toolName: call.name,
+      toolId: tool.ref.toolId,
+      ...(tool.ref.mcpTool ? { mcpTool: tool.ref.mcpTool } : {}),
+      input: toolArguments(data),
+      text: question,
+    };
+  }
   if (call.name === toolNames.cantAnswer)
     return { kind: "reply", text: whatsappText(String(data.text)), gap: String(data.question) };
   if (call.name === toolNames.options) {

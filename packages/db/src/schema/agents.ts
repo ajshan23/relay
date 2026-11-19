@@ -1,3 +1,4 @@
+import type { HttpToolConfig, McpToolConfig } from "@relay/core/agent-tools";
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -245,5 +246,83 @@ export const aiGap = pgTable(
   (t) => [
     uniqueIndex("ai_gap_step_uidx").on(t.stepKey),
     index("ai_gap_branch_idx").on(t.organizationId, t.branchId, t.resolvedAt, t.createdAt),
+  ],
+);
+
+// ------------------------------------------------------------------ the agent's own tools
+
+export const aiToolKind = pgEnum("ai_tool_kind", ["http", "mcp"]);
+
+/**
+ * A tool the business connected: one API call into its system, or an MCP server whose tools it
+ * allowed. Settings in `config` (see @relay/core/agent-tools); the key in `secret`, encrypted.
+ */
+export const aiTool = pgTable(
+  "ai_tool",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => aiAgent.id, { onDelete: "cascade" }),
+    kind: aiToolKind("kind").notNull(),
+    /** What the model calls it (lowercase, unique per agent). */
+    name: text("name").notNull(),
+    title: text("title").notNull(),
+    /** When to use it, in the business's words. */
+    description: text("description").notNull().default(""),
+    enabled: boolean("enabled").notNull().default(true),
+    /** API calls: ask the customer to tap Yes before calling. MCP tools say this per tool. */
+    confirm: boolean("confirm").notNull().default(false),
+    config: jsonb("config").$type<HttpToolConfig | McpToolConfig>().notNull(),
+    /** encryptSecret({header, value}), or null for no key. */
+    secret: text("secret"),
+    /** Last four characters of the key, to show which one is saved. */
+    secretHint: text("secret_hint"),
+    lastTestOk: boolean("last_test_ok"),
+    lastTestedAt: timestamp("last_tested_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("ai_tool_agent_idx").on(t.agentId),
+    uniqueIndex("ai_tool_agent_name_uidx").on(t.agentId, t.name),
+  ],
+);
+
+export const aiToolCallStatus = pgEnum("ai_tool_call_status", ["ok", "error", "declined", "not_sent"]);
+
+/** One call of a tool (or a change not sent: declined by the customer, or a test in Try). */
+export const aiToolCall = pgTable(
+  "ai_tool_call",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => aiAgent.id, { onDelete: "cascade" }),
+    toolId: text("tool_id").references(() => aiTool.id, { onDelete: "set null" }),
+    conversationId: text("conversation_id").references(() => conversation.id, { onDelete: "set null" }),
+    /** Unique per step, so a replayed step is logged once. Null for tests. */
+    stepKey: text("step_key"),
+    /** The tool's name as the model called it (MCP: server__tool). */
+    name: text("name").notNull(),
+    mode: text("mode").$type<"live" | "test">().notNull(),
+    status: aiToolCallStatus("status").notNull(),
+    httpStatus: integer("http_status"),
+    ms: integer("ms"),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("ai_tool_call_agent_idx").on(t.agentId, t.createdAt),
+    uniqueIndex("ai_tool_call_step_uidx").on(t.stepKey),
   ],
 );

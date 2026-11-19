@@ -1,5 +1,7 @@
 export * from "./builtins";
 export * from "./catalog";
+export * from "./connect";
+export * from "./custom";
 export * from "./knowledge";
 export * from "./loop";
 export * from "./models";

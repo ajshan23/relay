@@ -2,17 +2,23 @@ import {
   type AgentProfile,
   builtinTools,
   type ChatLine,
+  type ConnectOptions,
   type ContactFacts,
+  type CustomToolDef,
   chatMessages,
   contextNote,
   costMicros,
+  createToolRunner,
   creditsFor,
+  customTools,
   defaultMonthlyCredits,
   type Embedder,
+  envelope,
   type ModelCaller,
   modelFor,
   photoLine,
   type RunContext,
+  runTool,
   runTurn,
   type Speaker,
   searchTerms,
@@ -24,7 +30,15 @@ import {
   voiceNoteLine,
   voiceReplyLimits,
 } from "@relay/agent";
-import { type FileStorage, newId, type Publisher, previewText, publishInboxEvent } from "@relay/core";
+import {
+  decryptSecretJson,
+  type FileStorage,
+  newId,
+  type Publisher,
+  previewText,
+  publishInboxEvent,
+} from "@relay/core";
+import { agentToolLimits, type McpToolConfig, type ToolSecret } from "@relay/core/agent-tools";
 import {
   type AgentRunInput,
   type AgentRunLabels,
@@ -113,6 +127,22 @@ export type AgentRuntimeDeps = {
     /** MP3 → Ogg/Opus voice note (ffmpeg); replaceable in tests. */
     encode?: typeof toVoiceNote;
   } | null;
+  /** Calls the business's own tools (API calls, MCP servers); null: they aren't offered. */
+  ownTools?: (ConnectOptions & { secretKey: string }) | null;
+};
+
+/** A business tool's Yes / No question, kept on the message that asks it. */
+type PendingAction = {
+  toolId: string;
+  toolName: string;
+  mcpTool?: string;
+  title: string;
+  input: unknown;
+  question: string;
+  expiresAt: string;
+  /** Set once answered (Yes or No), so a second tap does nothing. */
+  doneAt?: string;
+  answer?: "yes" | "no";
 };
 
 export function createAgentRuntime(d: AgentRuntimeDeps) {
@@ -310,6 +340,30 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           )
       : [];
     const catalog = await catalogShape(db, orgId, a.branchId);
+    // The business's own tools (keys stay in the database; they're read when a tool is called).
+    const tools = d.ownTools
+      ? (
+          await db
+            .select({
+              id: schema.aiTool.id,
+              kind: schema.aiTool.kind,
+              name: schema.aiTool.name,
+              title: schema.aiTool.title,
+              description: schema.aiTool.description,
+              confirm: schema.aiTool.confirm,
+              config: schema.aiTool.config,
+            })
+            .from(schema.aiTool)
+            .where(and(eq(schema.aiTool.agentId, a.id), eq(schema.aiTool.enabled, true)))
+            .orderBy(schema.aiTool.createdAt)
+            .limit(agentToolLimits.perAgent)
+        ).flatMap((t) => {
+          if (t.kind === "http") return [t];
+          const config = t.config as McpToolConfig;
+          const allowed = config.tools.filter((x) => x.allowed);
+          return allowed.length ? [{ ...t, config: { ...config, tools: allowed } }] : [];
+        })
+      : [];
     return {
       id: a.id,
       status: a.status,
@@ -331,10 +385,13 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         hearsVoiceNotes: a.voiceNotes !== "off" && !!d.hearVoiceNotes,
         seesPhotos: a.photos !== "off" && !!d.seePhotos,
         repliesByVoice: a.voiceReplies !== "off" && !!d.voiceReplies,
+        ownTools: tools.length > 0,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
       catalog,
+      /** The business's own tools, without their keys. */
+      tools: tools as Omit<CustomToolDef, "secret">[],
     };
   }
   type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>> & {
@@ -391,6 +448,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     // Drafts dropped in a row because the customer wrote again while they were being written.
     let rethinks = 0;
     let rethinking = false;
+    // What a Yes / No tap led to, kept until an answer about it actually goes out.
+    let heldActNote: string | null = null;
     if (input.greeting) {
       const sent = await ctx.step("greeting", () =>
         sendText(input, agent, `${ctx.runId}:greeting`, input.greeting as string),
@@ -517,10 +576,16 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         lookbackFrom = tapStep;
         continue;
       }
+      // A tap on Yes or No under one of the agent's "shall I go ahead?" questions: carry it out (once,
+      // inside its own step) and let the model tell the customer how it went.
+      const confirmTap = latest?.reply ? await confirmTapOf(latest.messageId, latest.reply.id) : null;
+      const actNote: string | null = confirmTap
+        ? await ctx.step(`t${turn}:act`, () => carryOut(input, agent, confirmTap))
+        : heldActNote;
       const typingStep = `t${turn}:typing`;
       await ctx.step(typingStep, () => d.showTyping(input.conversationId, `${ctx.runId}_t${turn}`));
       const read: { at?: Date } = {};
-      const outcome = await oneTurn(ctx, input, agent, turn, read);
+      const outcome = await oneTurn(ctx, input, agent, turn, read, actNote);
       lookbackFrom = typingStep;
       const stepKey = `${ctx.runId}:t${turn}`;
       // Just before the answer goes out: if the customer wrote again since the chat was read, drop
@@ -598,6 +663,15 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           }
           break;
         }
+        case "confirm": {
+          const sent = await sendUnlessStale(() => sendConfirm(input, agent, stepKey, outcome));
+          if (!sent.ok) return "send_failed";
+          if ("superseded" in sent) {
+            superseded = true;
+            break;
+          }
+          break;
+        }
         case "handoff":
           await ctx.step(`t${turn}:handoff`, () => handOver(input, agent, stepKey, outcome));
           return "handoff";
@@ -605,6 +679,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           await ctx.step(`t${turn}:close`, () => closeChat(input, agent, stepKey, outcome));
           return "close";
       }
+      heldActNote = superseded ? actNote : null;
       if (superseded) {
         // Answer again straight away with the new messages (and any that follow in the next seconds).
         rethinks++;
@@ -625,6 +700,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     turn: number,
     /** Filled with when the chat was read, so a newer customer message can drop this draft. */
     read: { at?: Date } = {},
+    /** What happened to a Yes / No question the customer just answered, for the model to pass on. */
+    actNote: string | null = null,
   ): Promise<TurnOutcome> {
     const prefix = `t${turn}`;
     const left = await ctx.step(
@@ -653,22 +730,15 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       }),
       contactFacts(input.contactId, agent),
     ]);
-    const runCtx: RunContext = {
-      orgId: input.organizationId,
-      branchId: input.branchId,
-      agentId: agent.id,
-      conversationId: input.conversationId,
-      contactId: input.contactId,
-      mode: "live",
-      timezone: await branchTimezone(input.branchId),
-      now: new Date(),
-    };
+    const runCtx = await liveContext(input, agent);
     const tools = agentTools(agent, runCtx);
+    const messages = chatMessages(lines, contextNote(runCtx, contact, agent.profile.languages));
+    if (actNote) messages.push({ role: "system", content: actNote });
     try {
       const result = await runTurn({
         model: modelFor(agent.model),
         system: systemPrompt(agent.profile),
-        messages: chatMessages(lines, contextNote(runCtx, contact, agent.profile.languages)),
+        messages,
         tools,
         ctx: runCtx,
         callModel,
@@ -706,8 +776,86 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     }
   }
 
+  /** Who and where a live turn is for (the contact's details too, for the business's own tools). */
+  async function liveContext(input: AgentRunInput, agent: LoadedAgent): Promise<RunContext> {
+    const runCtx: RunContext = {
+      orgId: input.organizationId,
+      branchId: input.branchId,
+      agentId: agent.id,
+      conversationId: input.conversationId,
+      contactId: input.contactId,
+      mode: "live",
+      timezone: await branchTimezone(input.branchId),
+      now: new Date(),
+    };
+    if (agent.tools?.length) {
+      const [c] = await db
+        .select({
+          name: schema.contact.name,
+          phone: schema.contact.phone,
+          attributes: schema.contact.attributes,
+        })
+        .from(schema.contact)
+        .where(eq(schema.contact.id, input.contactId))
+        .limit(1);
+      const fields: Record<string, string> = {};
+      for (const [k, v] of Object.entries((c?.attributes ?? {}) as Record<string, unknown>))
+        if (v != null && typeof v !== "object") fields[k] = String(v);
+      runCtx.contact = { phone: c?.phone ?? null, name: c?.name ?? null, fields };
+    }
+    return runCtx;
+  }
+
+  /** The business's own tools, calling out with the key read only at call time, and each call logged. */
+  function ownTools(agent: LoadedAgent) {
+    const net = d.ownTools;
+    if (!net || !agent.tools?.length) return [];
+    const defs = agent.tools.map((t) => ({ ...t, secret: null }) as CustomToolDef);
+    return customTools(defs, async (def, mcpTool, args, rc) => {
+      const run = createToolRunner({
+        ...net,
+        onCall: (l) =>
+          logToolCall({
+            organizationId: rc.orgId,
+            agentId: agent.id,
+            toolId: def.id,
+            conversationId: rc.conversationId,
+            name: mcpTool ? `${def.name}__${mcpTool}` : def.name,
+            mode: rc.mode,
+            status: l.ok ? "ok" : "error",
+            httpStatus: l.httpStatus,
+            ms: l.ms,
+            error: l.error,
+          }),
+      });
+      return run({ ...def, secret: await toolSecret(def.id) } as CustomToolDef, mcpTool, args, rc);
+    });
+  }
+
+  async function toolSecret(toolId: string): Promise<ToolSecret | null> {
+    const [t] = await db
+      .select({ secret: schema.aiTool.secret })
+      .from(schema.aiTool)
+      .where(eq(schema.aiTool.id, toolId))
+      .limit(1);
+    if (!t?.secret || !d.ownTools) return null;
+    return decryptSecretJson<ToolSecret>(t.secret, d.ownTools.secretKey);
+  }
+
+  async function logToolCall(row: Omit<typeof schema.aiToolCall.$inferInsert, "id">) {
+    await db
+      .insert(schema.aiToolCall)
+      .values({ id: newId("aiToolCall"), ...row, error: row.error?.slice(0, 500) ?? null })
+      .onConflictDoNothing()
+      .catch((err) => console.warn("[agent] tool call not logged:", (err as Error).message));
+  }
+
   /** The tools for one turn, bound to this business and chat. */
   function agentTools(agent: LoadedAgent, runCtx: RunContext) {
+    return [...builtinAgentTools(agent, runCtx), ...ownTools(agent)];
+  }
+
+  function builtinAgentTools(agent: LoadedAgent, runCtx: RunContext) {
     const embedCatalog = d.embedCatalog;
     return builtinTools({
       editableFields: agent.editableFields,
@@ -813,6 +961,9 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         text = voiceNoteLine(content, r.direction === "inbound" ? "customer" : "us", hears);
       if (r.type === "image") text = photoLine(content, r.direction === "inbound" ? "customer" : "us", sees);
       if (r.type === "location" && content.latitude) text = `[shared a location: ${text ?? ""}]`.trim();
+      const asked = content.pendingAction as PendingAction | undefined;
+      if (r.direction === "outbound" && asked)
+        text = `[asked the customer to tap Yes or No: "${asked.question}"${asked.answer ? `; they tapped ${asked.answer === "yes" ? "Yes" : "No"}` : "; waiting for a tap on Yes"}]`;
       // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
       // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.
       const tapId =
@@ -1039,6 +1190,95 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         title: opt.title.slice(0, 24),
       })),
     });
+  }
+
+  /** The agent's "shall I go ahead?" question for a change in the business's system, with Yes / No. */
+  function sendConfirm(
+    input: AgentRunInput,
+    agent: LoadedAgent,
+    stepKey: string,
+    o: Extract<TurnOutcome, { kind: "confirm" }>,
+  ) {
+    const pendingAction: PendingAction = {
+      toolId: o.toolId,
+      toolName: o.toolName,
+      ...(o.mcpTool ? { mcpTool: o.mcpTool } : {}),
+      title: agent.tools?.find((t) => t.id === o.toolId)?.title ?? o.toolName,
+      input: o.input,
+      question: o.text,
+      expiresAt: new Date(Date.now() + agentToolLimits.confirmMinutes * 60_000).toISOString(),
+    };
+    return queueSend(input, agent, stepKey, "interactive", {
+      type: "interactive",
+      kind: "buttons",
+      body: o.text,
+      buttonText: "Choose",
+      options: [
+        { id: optionReplyId(stepKey, "yes"), title: "Yes" },
+        { id: optionReplyId(stepKey, "no"), title: "No" },
+      ],
+      pendingAction,
+    });
+  }
+
+  /** A Yes / No tap on one of those questions (null for any other tap). */
+  async function confirmTapOf(messageId: string, replyId: string) {
+    const answer = optionOfReply(replyId);
+    if (answer !== "yes" && answer !== "no") return null;
+    const rows = (await db.execute(sql`
+      select b.id, b.content from message t join message b on b.id = t.reply_to_message_id
+      where t.id = ${messageId} limit 1`)) as unknown as {
+      id: string;
+      content: { pendingAction?: PendingAction };
+    }[];
+    const pending = rows[0]?.content.pendingAction;
+    return pending && rows[0] ? { answer, questionId: rows[0].id, pending } : null;
+  }
+
+  /**
+   * Carries out a tapped Yes (or records a No), at most once per question, and says what happened in
+   * a note for the model. Runs inside the turn's `act` step.
+   */
+  async function carryOut(
+    input: AgentRunInput,
+    agent: LoadedAgent,
+    tap: NonNullable<Awaited<ReturnType<typeof confirmTapOf>>>,
+  ): Promise<string> {
+    const { pending, answer } = tap;
+    const q = `"${pending.question}"`;
+    const claimed = (await db.execute(sql`
+      update message
+      set content = jsonb_set(content, '{pendingAction}',
+        (content->'pendingAction') || ${JSON.stringify({ doneAt: new Date().toISOString(), answer })}::jsonb)
+      where id = ${tap.questionId} and content->'pendingAction'->>'doneAt' is null
+      returning id`)) as unknown as { id: string }[];
+    if (!claimed.length)
+      return `The customer tapped ${answer === "yes" ? "Yes" : "No"} again on ${q}, which was already answered. Nothing more was done.`;
+    if (answer === "no") {
+      await logToolCall({
+        organizationId: input.organizationId,
+        agentId: agent.id,
+        toolId: pending.toolId,
+        conversationId: input.conversationId,
+        name: pending.toolName,
+        mode: "live",
+        status: "declined",
+      });
+      return `The customer tapped No to ${q}, so it was not done. Ask what they'd like instead.`;
+    }
+    if (new Date(pending.expiresAt) < new Date())
+      return `The customer tapped Yes to ${q}, but more than ${agentToolLimits.confirmMinutes} minutes after it was asked, so nothing was done. If they still want it, ask again.`;
+    const tool = ownTools(agent).find(
+      (t) => t.ref?.toolId === pending.toolId && (t.ref.mcpTool ?? null) === (pending.mcpTool ?? null),
+    );
+    if (!tool)
+      return `The customer tapped Yes to ${q}, but ${pending.title} isn't available any more, so nothing was done. Offer a person from the team.`;
+    const runCtx = await liveContext(input, agent);
+    const args = { ...(pending.input as Record<string, unknown>), confirmText: pending.question };
+    const result = await runTool(tool, args, runCtx);
+    if (!result.ok)
+      return `The customer tapped Yes to ${q}. It was tried but didn't go through: ${result.error.slice(0, 400)} Tell them plainly and offer a person from the team.`;
+    return `The customer tapped Yes to ${q}, and it was carried out just now. Its result: ${JSON.stringify(envelope(result)).slice(0, 6000)} Tell the customer how it went, using only this result.`;
   }
 
   async function addNote(input: AgentRunInput, agent: LoadedAgent, stepKey: string, text: string) {

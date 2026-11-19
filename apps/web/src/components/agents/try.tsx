@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { mediaUrl } from "@/components/catalog/items-view";
 import { useBranch } from "@/components/shell/branch-context";
 import { errorText } from "./agents-page";
-import { type Agent, type TryCard, type TryResult, useTryAgent } from "./queries";
+import { type Agent, type TryCard, type TryResult, useTools, useTryAgent } from "./queries";
 
 /*
  * Try: a pretend WhatsApp chat with the agent. Each message runs one real turn (same prompt, tools and
@@ -43,6 +43,13 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
   const [last, setLast] = useState<TryResult | null>(null);
   const [ended, setEnded] = useState(false);
   const tryAgent = useTryAgent(agent.id);
+  // The business's own tools by the name the agent calls them (MCP ones are "server__tool").
+  const ownTools = useTools(agent.id).data?.tools ?? [];
+  const stepWords = (name: string) => {
+    const [server, mcpTool] = name.split("__");
+    const own = ownTools.find((t) => t.name === (mcpTool ? server : name));
+    return toolWords[name] ?? (own ? `Used ${own.title}${mcpTool ? ` (${mcpTool})` : ""}` : name);
+  };
   const end = useRef<HTMLDivElement>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll down whenever a line or "typing…" appears
@@ -77,6 +84,31 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
               );
           }
           if (o.kind === "options") add.push(line({ from: "agent", text: o.text, options: o.options }));
+          if (o.kind === "confirm") {
+            add.push(
+              line({
+                from: "agent",
+                text: o.text,
+                options: [
+                  { id: "yes", title: "Yes" },
+                  { id: "no", title: "No" },
+                ],
+              }),
+            );
+            const w = r.wouldSend;
+            const what =
+              w?.kind === "http" && "url" in w
+                ? `${w.method} ${w.url}${w.body !== undefined ? ` with ${JSON.stringify(w.body)}` : ""}`
+                : w?.kind === "mcp"
+                  ? `the ${w.tool ?? ""} tool with ${JSON.stringify(w.input)}`
+                  : "your system";
+            add.push(
+              line({
+                from: "event",
+                text: `In a real chat, tapping Yes would call ${what}. Try doesn't send changes.`,
+              }),
+            );
+          }
           if (o.kind === "handoff") {
             if (o.text) add.push(line({ from: "agent", text: o.text }));
             if (agent.handoff.message) add.push(line({ from: "agent", text: agent.handoff.message }));
@@ -302,7 +334,7 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
                     // biome-ignore lint/suspicious/noArrayIndexKey: steps of one answer, in order, never reordered
                     <li key={i} className="flex items-center gap-1.5">
                       <Icon name={t.ok ? "check" : "warning"} size="sm" />
-                      {toolWords[t.name] ?? t.name}
+                      {stepWords(t.name)}
                     </li>
                   ))}
                 </ul>

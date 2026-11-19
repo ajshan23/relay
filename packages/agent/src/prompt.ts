@@ -70,6 +70,15 @@ export function systemPrompt(agent: AgentProfile): string {
           `- When they want to buy (they tap Order or Book, or say so), take the order before handing over: make sure you know the option and how many (ask with ${toolNames.options} if there's a choice), and delivery (their area) or pickup. Then use ${catalogToolNames.price} and send a short summary with the exact total it gives, asking them to confirm with ${toolNames.options} ("Confirm order", "Change something"). Only after they confirm, use ${toolNames.handoff} with the whole order in the summary (items, options, quantities, total, delivery or pickup and area) so the team can take payment and arrange it.`,
         ].join("\n")
       : "",
+    agent.ownTools
+      ? [
+          "## The business's own tools",
+          "- Some of your tools reach the business's own system (orders, bookings, stock, accounts). Use them when the customer's question needs it, rather than guessing or handing over.",
+          "- Ask for what a tool needs (an order number, a date) before calling it, one thing at a time.",
+          "- Say only what a tool's result says. If it fails or finds nothing, tell the customer plainly and offer a person.",
+          "- A tool that changes something asks the customer to tap Yes first. Until you see its result, never say it's done.",
+        ].join("\n")
+      : "",
     [
       "## Choices",
       `When the customer should pick between a few clear options, use ${toolNames.options} instead of typing the options out.`,

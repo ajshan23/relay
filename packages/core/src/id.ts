@@ -46,6 +46,8 @@ export const idPrefixes = {
   knowledgeChunk: "kc",
   aiUsage: "aiu",
   aiGap: "gap",
+  aiTool: "atl",
+  aiToolCall: "atc",
   catalogType: "ctt",
   catalogField: "ctf",
   catalogCategory: "ctc",

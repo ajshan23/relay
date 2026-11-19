@@ -54,6 +54,8 @@ const schema = z.object({
   CARTESIA_KEY: z.string().optional(),
   CARTESIA_VOICE_ID: z.string().optional(),
   CARTESIA_MODEL: z.string().optional(),
+  // Development and tests only: lets an agent's tools call servers on this machine (127.0.0.1).
+  AGENT_TOOLS_ALLOW_PRIVATE: z.enum(["0", "1"]).default("0"),
   AI_VISION_MODEL_BEST: z.string().optional(),
   // Files on local disk, when S3 isn't set up (tests, offline work). See storage.ts.
   MEDIA_DIR: z.string().default(".data/media"),

@@ -48,6 +48,7 @@ import { requireSession } from "../auth/session";
 import { branchAccess, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { registerToolRoutes, testContact, tryTools } from "./tools";
 
 /*
  * The AI agent ("Mira") of the selected branch (?branch=):
@@ -66,6 +67,7 @@ import { type BranchEnv, requireBranch } from "../contacts/shared";
  *   GET    /api/agents/gaps               questions the agent couldn't answer
  *   POST   /api/agents/gaps/:id/answer    { answer } → a Q&A source; POST /api/agents/gaps/:id/dismiss
  *   GET    /api/agents/usage              this month's credits and cost
+ *   …/api/agents/:id/tools                 the agent's own tools (see tools.ts)
  * Owners, admins and the branch's managers may change things; anyone in the branch may look.
  */
 
@@ -287,7 +289,9 @@ export function agentRoutes(ctx: AppContext) {
             ),
           )
       : [];
+    const own = await tryTools(ctx, agent.id);
     const profile: AgentProfile = {
+      ownTools: own.tools.length > 0,
       name: agent.name,
       role: agent.role,
       businessName: org?.name ?? "the business",
@@ -307,42 +311,46 @@ export function agentRoutes(ctx: AppContext) {
       mode: "test",
       timezone: branch?.timezone || "UTC",
       now: new Date(),
+      contact: { ...testContact, name: parsed.data.contactName ?? testContact.name },
     };
     const embed = createEmbedder(ctx.config);
     const embedCatalog = createEmbedder(ctx.config, { dimensions: catalogEmbeddingDimensions });
     const found: { source: string; text: string }[] = [];
-    const tools = builtinTools({
-      editableFields: fields,
-      ...(shape
-        ? {
-            catalog: catalogAgentDeps(ctx.db, {
-              organizationId: orgId,
-              branchId: c.var.branchId,
-              shape,
-              embed: async (text) => (await embedCatalog([text])).embeddings[0] ?? null,
-              terms: searchTerms,
-            }),
-          }
-        : {}),
-      searchKnowledge: async (query) => {
-        const embedding = (await embed([query]).catch(() => null))?.embeddings[0] ?? null;
-        const hits = await searchKnowledge(ctx.db, {
-          orgId,
-          branchId: c.var.branchId,
-          terms: searchTerms(query),
-          embedding,
-        });
-        const out = hits.map((h) => ({ source: h.title, text: h.content }));
-        found.push(...out);
-        return out;
-      },
-      // A test never changes a real contact: say what would be saved.
-      updateContact: async (change) =>
-        ({
-          saved: [...Object.keys(change.fields), ...change.addTags.map((t) => `tag:${t}`)],
-          test: true,
-        }) as never,
-    });
+    const tools = [
+      ...builtinTools({
+        editableFields: fields,
+        ...(shape
+          ? {
+              catalog: catalogAgentDeps(ctx.db, {
+                organizationId: orgId,
+                branchId: c.var.branchId,
+                shape,
+                embed: async (text) => (await embedCatalog([text])).embeddings[0] ?? null,
+                terms: searchTerms,
+              }),
+            }
+          : {}),
+        searchKnowledge: async (query) => {
+          const embedding = (await embed([query]).catch(() => null))?.embeddings[0] ?? null;
+          const hits = await searchKnowledge(ctx.db, {
+            orgId,
+            branchId: c.var.branchId,
+            terms: searchTerms(query),
+            embedding,
+          });
+          const out = hits.map((h) => ({ source: h.title, text: h.content }));
+          found.push(...out);
+          return out;
+        },
+        // A test never changes a real contact: say what would be saved.
+        updateContact: async (change) =>
+          ({
+            saved: [...Object.keys(change.fields), ...change.addTags.map((t) => `tag:${t}`)],
+            test: true,
+          }) as never,
+      }),
+      ...own.tools,
+    ];
     const lines: ChatLine[] = parsed.data.messages.map((m) => ({ from: m.from, text: m.text }));
     const tryId = randomUUID();
     try {
@@ -386,6 +394,7 @@ export function agentRoutes(ctx: AppContext) {
         : [];
       return c.json({
         outcome: result.outcome,
+        wouldSend: await own.wouldSend(result.outcome, runCtx),
         cards,
         tools: result.trace.tools.map((t) => ({ name: t.name, input: t.input, ok: t.result.ok })),
         knowledge: found,
@@ -401,6 +410,8 @@ export function agentRoutes(ctx: AppContext) {
       return fail(c, 502, "ai_failed", `The AI didn't answer: ${(err as Error).message.slice(0, 200)}`);
     }
   });
+
+  registerToolRoutes(app, ctx, { canManage, agentIn });
 
   // ------------------------------------------------------------------ knowledge
 

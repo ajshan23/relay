@@ -141,6 +141,8 @@ export function createAutomations({
     seePhotos?: PhotoReader | null;
     /** Speaks plain replies as voice notes (null: the agent always writes). */
     voiceReplies?: AgentRuntimeDeps["voiceReplies"];
+    /** Calls the business's own tools (null: the agent isn't offered them). */
+    ownTools?: AgentRuntimeDeps["ownTools"];
   };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
@@ -172,6 +174,7 @@ export function createAutomations({
     hearVoiceNotes: ai.hearVoiceNotes ?? null,
     seePhotos: ai.seePhotos ?? null,
     voiceReplies: ai.voiceReplies ?? null,
+    ownTools: ai.ownTools ?? null,
   });
 
   /** Clears the chat's controller if it is still this run. */

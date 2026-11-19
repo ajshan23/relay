@@ -81,6 +81,12 @@ const automations = createAutomations({
         voiceReplies: speechConfigured(config)
           ? { speak: createSpeaker(config), storage: fileStorage() }
           : null,
+        ownTools: config.CHANNEL_SECRET_KEY
+          ? {
+              secretKey: config.CHANNEL_SECRET_KEY,
+              allowPrivate: config.AGENT_TOOLS_ALLOW_PRIVATE === "1",
+            }
+          : null,
       }
     : {
         callModel: null,

@@ -19,6 +19,7 @@ import { ImproveView } from "./improve";
 import { KnowledgeView } from "./knowledge";
 import { type Agent, useAgentActions, useAgents } from "./queries";
 import { TeachView } from "./teach";
+import { ToolsView } from "./tools";
 import { TryView } from "./try";
 
 /*
@@ -30,6 +31,10 @@ const titles: Record<string, { title: string; description: string }> = {
   teach: {
     title: "Teach",
     description: "Who your agent is, what its job is, and when it hands a chat to your team.",
+  },
+  tools: {
+    title: "Tools",
+    description: "Let your agent look things up and do things in your own system: orders, bookings, stock.",
   },
   try: {
     title: "Try",
@@ -139,6 +144,7 @@ export function AgentsPage() {
           {view === "teach" ? (
             <TeachView agent={agent} canManage={q.data.canManage} voiceReady={q.data.voiceReady} />
           ) : null}
+          {view === "tools" ? <ToolsView agent={agent} /> : null}
           {view === "try" ? <TryView agent={agent} aiReady={q.data.aiReady} /> : null}
           {view === "go-live" ? <GoLiveView agent={agent} overview={q.data} /> : null}
           {view === "improve" ? <ImproveView agent={agent} canManage={q.data.canManage} /> : null}

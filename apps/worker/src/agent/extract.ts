@@ -1,5 +1,4 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { assertPublicUrl, isPrivateAddress } from "@relay/core/net";
 
 /*
  * Turning a knowledge source into plain text: PDF and Word files, text files, and one web page.
@@ -32,38 +31,7 @@ export async function fileText(
   throw new Error("This file type can't be read yet. Use PDF, Word (.docx), or a text file.");
 }
 
-/** True for loopback, private, link-local and other non-public addresses. */
-export function isPrivateAddress(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const [a = 0, b = 0] = ip.split(".").map(Number);
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      a >= 224
-    );
-  }
-  const v6 = ip.toLowerCase();
-  if (v6.startsWith("::ffff:")) return isPrivateAddress(v6.slice(7));
-  return v6 === "::" || v6 === "::1" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80");
-}
-
-export async function assertPublicUrl(raw: string): Promise<URL> {
-  const url = new URL(raw);
-  if (url.protocol !== "https:" && url.protocol !== "http:")
-    throw new Error("Only web addresses (http or https) can be read.");
-  if (url.username || url.password) throw new Error("Addresses with a username or password can't be read.");
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  const addresses = isIP(host) ? [{ address: host }] : await lookup(host, { all: true });
-  if (!addresses.length || addresses.some((a) => isPrivateAddress(a.address)))
-    throw new Error("That address isn't on the public internet.");
-  return url;
-}
+export { assertPublicUrl, isPrivateAddress };
 
 /** Fetches one public page and returns its title and readable text. */
 export async function pageText(raw: string): Promise<{ title: string; text: string }> {

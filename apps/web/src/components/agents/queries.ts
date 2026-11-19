@@ -1,5 +1,6 @@
 "use client";
 
+import type { AgentToolSave, HttpToolConfig, McpServerTool, McpToolConfig } from "@relay/core/agent-tools";
 import type { AgentSettings } from "@relay/core/agents";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { inBranch } from "@/components/contacts/queries";
@@ -56,7 +57,14 @@ export type TryOutcome =
   | { kind: "close"; reason: string; text?: string }
   | { kind: "items"; itemIds: string[]; text?: string; action: "order" | "book" | "none" }
   | { kind: "media"; itemId: string; text?: string }
+  | { kind: "confirm"; toolName: string; toolId: string; mcpTool?: string; input: unknown; text: string }
   | { kind: "silent" };
+
+/** What a change in Try would have called (nothing is sent from Try). */
+export type WouldSend =
+  | { kind: "http"; method: string; url: string; headers: Record<string, string>; body: unknown }
+  | { kind: "http"; error: string }
+  | { kind: "mcp"; tool?: string; input: unknown };
 
 /** An item as Mira shows it (from the catalogue). */
 export type TryCard = {
@@ -72,6 +80,7 @@ export type TryCard = {
 
 export type TryResult = {
   outcome: TryOutcome;
+  wouldSend: WouldSend | null;
   cards: TryCard[];
   tools: { name: string; input: unknown; ok: boolean }[];
   knowledge: { source: string; text: string }[];
@@ -90,6 +99,7 @@ export const agentKeys = {
   knowledge: (branch: string) => ["agents", branch, "knowledge"] as const,
   gaps: (branch: string) => ["agents", branch, "gaps"] as const,
   usage: (branch: string) => ["agents", branch, "usage"] as const,
+  tools: (branch: string, agentId: string) => ["agents", branch, "tools", agentId] as const,
 };
 
 const useBranchId = () => useBranch().branch.id;
@@ -233,4 +243,116 @@ export function useAgentUsage() {
       ),
     enabled: !!branch,
   });
+}
+
+// ------------------------------------------------------------------ the agent's own tools
+
+export type AgentToolRow = {
+  id: string;
+  kind: "http" | "mcp";
+  name: string;
+  title: string;
+  description: string;
+  enabled: boolean;
+  confirm: boolean;
+  config: HttpToolConfig | McpToolConfig;
+  hasSecret: boolean;
+  secretHint: string | null;
+  lastTestOk: boolean | null;
+  lastTestedAt: string | null;
+  updatedAt: string;
+};
+
+export type ToolCallRow = {
+  id: string;
+  toolId: string | null;
+  title: string | null;
+  name: string;
+  mode: "live" | "test";
+  status: "ok" | "error" | "declined" | "not_sent";
+  httpStatus: number | null;
+  ms: number | null;
+  error: string | null;
+  conversationId: string | null;
+  createdAt: string;
+};
+
+export type ToolsOverview = {
+  tools: AgentToolRow[];
+  calls: ToolCallRow[];
+  limits: { perAgent: number; mcpAllowed: number };
+  /** The server can keep keys safe (CHANNEL_SECRET_KEY is set). */
+  ready: boolean;
+  canManage: boolean;
+};
+
+export type ToolTestResult =
+  | {
+      ok: true;
+      status: number;
+      ms: number;
+      answer: unknown;
+      paths: string[];
+      agentSees: unknown;
+      request: { method: string; url: string; headers: Record<string, string>; body: unknown };
+    }
+  | {
+      ok: false;
+      error: string;
+      status?: number | null;
+      ms?: number | null;
+      request?: { method: string; url: string; headers: Record<string, string>; body: unknown };
+    };
+
+export type SecretInput = { header: string; value: string } | null | undefined;
+
+export function useTools(agentId: string) {
+  const branch = useBranchId();
+  return useQuery({
+    queryKey: agentKeys.tools(branch, agentId),
+    queryFn: () => api<ToolsOverview>(inBranch(`/agents/${agentId}/tools`, branch)),
+    enabled: !!branch,
+  });
+}
+
+export function useToolActions(agentId: string) {
+  const branch = useBranchId();
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: agentKeys.tools(branch, agentId) });
+  const base = `/agents/${agentId}/tools`;
+  return {
+    save: useMutation({
+      mutationFn: ({ id, ...body }: AgentToolSave & { id?: string }) =>
+        api<{ tool: AgentToolRow }>(inBranch(id ? `${base}/${id}` : base, branch), {
+          method: id ? "PUT" : "POST",
+          json: body,
+        }),
+      onSuccess: refresh,
+    }),
+    setEnabled: useMutation({
+      mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+        api(inBranch(`${base}/${id}/enabled`, branch), { method: "POST", json: { enabled } }),
+      onSuccess: refresh,
+    }),
+    remove: useMutation({
+      mutationFn: (id: string) => api(inBranch(`${base}/${id}`, branch), { method: "DELETE" }),
+      onSuccess: refresh,
+    }),
+    test: useMutation({
+      mutationFn: (body: {
+        config: HttpToolConfig;
+        values: Record<string, string | number | boolean>;
+        secret?: SecretInput;
+        toolId?: string;
+      }) => api<ToolTestResult>(inBranch(`${base}/test`, branch), { method: "POST", json: body }),
+      onSuccess: refresh,
+    }),
+    listMcp: useMutation({
+      mutationFn: (body: { url: string; secret?: SecretInput; toolId?: string }) =>
+        api<{ ok: true; tools: McpServerTool[]; listedAt: string } | { ok: false; error: string }>(
+          inBranch(`${base}/mcp`, branch),
+          { method: "POST", json: body },
+        ),
+    }),
+  };
 }

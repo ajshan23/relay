@@ -14,6 +14,8 @@ export type RunContext = {
   mode: "live" | "test";
   timezone: string;
   now: Date;
+  /** The customer, for values a business's own tools fill in from the chat ({{contact.phone}}). */
+  contact?: { phone: string | null; name: string | null; fields: Record<string, string> };
 };
 
 /** What the business taught the agent (the stable part of the prompt). */
@@ -35,6 +37,8 @@ export type AgentProfile = {
   seesPhotos?: boolean;
   /** Plain replies may go out as voice notes (its Voice replies setting isn't Off). */
   repliesByVoice?: boolean;
+  /** The business connected its own tools (API calls or MCP servers). */
+  ownTools?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */
@@ -54,9 +58,11 @@ export type ChatLine = {
 
 /**
  * What a tool is allowed to do. Read tools run and feed the model; the others end the turn and the
- * runtime carries them out as their own recorded steps (send, hand over, close).
+ * runtime carries them out as their own recorded steps (send, hand over, close). A confirm tool is a
+ * change in the business's own system: calling it ends the turn with a Yes / No question to the
+ * customer, and the runtime runs it only after Yes.
  */
-export type ToolKind = "read" | "write" | "reply" | "handoff" | "end";
+export type ToolKind = "read" | "write" | "reply" | "handoff" | "end" | "confirm";
 
 export type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
 
@@ -67,6 +73,8 @@ export type AgentTool<I = unknown> = {
   kind: ToolKind;
   /** Read and write tools run inside the turn. Reply, handoff and end tools have no run: they end it. */
   run?: (input: I, ctx: RunContext) => Promise<unknown>;
+  /** A business's own tool: which one (and which MCP tool), for the Yes / No question and the log. */
+  ref?: { toolId: string; mcpTool?: string; title: string };
 };
 
 /** Tokens of one model call. */
@@ -112,6 +120,8 @@ export type TurnOutcome =
   | { kind: "items"; itemIds: string[]; text?: string; action: "order" | "book" | "none" }
   /** Send one item's whole gallery. */
   | { kind: "media"; itemId: string; text?: string }
+  /** Ask the customer to tap Yes before a business tool changes something; `input` is what it'll send. */
+  | { kind: "confirm"; toolName: string; toolId: string; mcpTool?: string; input: unknown; text: string }
   | { kind: "silent" };
 
 export type TurnTrace = {
