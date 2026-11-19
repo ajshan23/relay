@@ -35,6 +35,32 @@ const plain = (body: string, extra: Partial<TemplateContent> = {}): TemplateCont
 
 const utility: LibraryTemplate[] = [
   {
+    key: "booking_reminder",
+    name: "Booking reminder",
+    topic: "Bookings",
+    summary: "Relay's booking reminders: the service, day, time and reference, with Confirm and Change.",
+    purpose: "updates",
+    channels: wa,
+    content: plain(
+      "Hi {{customer_name}}, this is a reminder of your {{service}} on {{date}} at {{time}}. Your booking reference is {{reference}}. Tap below to confirm, or to change it.",
+      {
+        header: { kind: "text", text: "Booking reminder" },
+        footer: "Reply STOP to stop reminders",
+        buttons: [
+          { kind: "reply", text: "Confirm" },
+          { kind: "reply", text: "Change" },
+        ],
+      },
+    ),
+    variables: [
+      v("customer_name", "Sara"),
+      v("service", "Haircut"),
+      v("date", "Saturday 16 November"),
+      v("time", "10:30 am"),
+      v("reference", "K7P2QD"),
+    ],
+  },
+  {
     key: "appointment_reminder",
     name: "Appointment reminder",
     topic: "Bookings",

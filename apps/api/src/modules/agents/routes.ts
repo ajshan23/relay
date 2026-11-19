@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentProfile,
   aiConfigured,
+  type BookingDeps,
+  bookingToolRef,
   builtinTools,
   type ChatLine,
   chatMessages,
@@ -15,14 +17,19 @@ import {
   type RunContext,
   runTurn,
   searchTerms,
+  serviceOf,
   speechConfigured,
   systemPrompt,
 } from "@relay/agent";
 import { fileStorage, newId } from "@relay/core";
 import { agentPatchSchema, agentSettingsSchema, agentStarters } from "@relay/core/agents";
+import { bookingTimeLabel, zonedTime } from "@relay/core/bookings";
 import {
+  agentFreeTimes,
   aiCredits,
   and,
+  bookableServices,
+  bookingSettingsOf,
   catalogAgentDeps,
   catalogCards,
   catalogShape,
@@ -49,6 +56,30 @@ import { branchAccess, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
 import { registerToolRoutes, testContact, tryTools } from "./tools";
+
+/** What a booking question in Try would do on Yes, in words. */
+function bookingWouldDo(
+  outcome: { toolName: string; input: unknown },
+  services: { variantId: string; itemId: string; title: string }[],
+  timezone: string,
+) {
+  const i = (outcome.input ?? {}) as { service?: string; date?: string; time?: string; reference?: string };
+  const service = i.service ? serviceOf(services as never, i.service)?.title : undefined;
+  const when =
+    i.date && i.time
+      ? bookingTimeLabel(
+          zonedTime(i.date, Number(i.time.slice(0, 2)) * 60 + Number(i.time.slice(3, 5)), timezone),
+          timezone,
+        )
+      : "";
+  const text =
+    outcome.toolName === "cancel_booking"
+      ? `cancel booking ${i.reference ?? ""}`
+      : outcome.toolName === "move_booking"
+        ? `move booking ${i.reference ?? ""} to ${when}`
+        : `book ${service ?? "the service"} for ${when}`;
+  return { kind: "booking" as const, text: text.trim() };
+}
 
 /*
  * The AI agent ("Mira") of the selected branch (?branch=):
@@ -290,8 +321,37 @@ export function agentRoutes(ctx: AppContext) {
           )
       : [];
     const own = await tryTools(ctx, agent.id);
+    // Booking in Try: free times are real; booking, moving and cancelling are never carried out.
+    const bookingSetup = await bookingSettingsOf(ctx.db, orgId, c.var.branchId);
+    const services = bookingSetup.enabled
+      ? await bookableServices(ctx.db, { organizationId: orgId, branchId: c.var.branchId })
+      : [];
+    const notInTry = async (): Promise<never> => {
+      throw new Error("Changes aren't made in Try.");
+    };
+    const booking: BookingDeps | undefined = services.length
+      ? {
+          timezone: bookingSetup.timezone,
+          services,
+          findTimes: ({ variantId, date, partOfDay }) =>
+            agentFreeTimes(ctx.db, {
+              organizationId: orgId,
+              branchId: c.var.branchId,
+              variantId,
+              timezone: bookingSetup.timezone,
+              ...(date ? { date } : {}),
+              ...(partOfDay ? { partOfDay } : {}),
+              now: new Date(),
+            }),
+          book: notInTry,
+          move: notInTry,
+          cancel: notInTry,
+          myBookings: async () => ({ bookings: [] }),
+        }
+      : undefined;
     const profile: AgentProfile = {
       ownTools: own.tools.length > 0,
+      booking: !!booking,
       name: agent.name,
       role: agent.role,
       businessName: org?.name ?? "the business",
@@ -318,6 +378,7 @@ export function agentRoutes(ctx: AppContext) {
     const found: { source: string; text: string }[] = [];
     const tools = [
       ...builtinTools({
+        ...(booking ? { booking } : {}),
         editableFields: fields,
         ...(shape
           ? {
@@ -394,7 +455,10 @@ export function agentRoutes(ctx: AppContext) {
         : [];
       return c.json({
         outcome: result.outcome,
-        wouldSend: await own.wouldSend(result.outcome, runCtx),
+        wouldSend:
+          result.outcome.kind === "confirm" && result.outcome.toolId === bookingToolRef.toolId
+            ? bookingWouldDo(result.outcome, services, bookingSetup.timezone)
+            : await own.wouldSend(result.outcome, runCtx),
         cards,
         tools: result.trace.tools.map((t) => ({ name: t.name, input: t.input, ok: t.result.ok })),
         knowledge: found,

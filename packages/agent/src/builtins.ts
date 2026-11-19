@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { type BookingDeps, bookingTools } from "./booking";
 import { type CatalogDeps, catalogTools } from "./catalog";
 import { defineTool } from "./tools";
 import type { AgentTool, RunContext } from "./types";
@@ -19,6 +20,8 @@ export type BuiltinDeps = {
   editableFields: { key: string; label: string }[];
   /** The branch's catalogue, when it has items. */
   catalog?: CatalogDeps;
+  /** Booking, when the branch takes bookings and has services that can be booked. */
+  booking?: BookingDeps;
 };
 
 export const toolNames = {
@@ -127,5 +130,6 @@ export function builtinTools(deps: BuiltinDeps): AgentTool<unknown>[] {
     );
   }
   if (deps.catalog) tools.push(...catalogTools(deps.catalog));
+  if (deps.booking) tools.push(...bookingTools(deps.booking));
   return tools;
 }

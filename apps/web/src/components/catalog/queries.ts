@@ -72,6 +72,7 @@ export type CatalogVariant = {
   available: boolean;
   durationMinutes: number | null;
   bookable: boolean;
+  bookingCapacity: number;
 };
 
 export type CatalogMedia = {

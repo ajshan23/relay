@@ -248,6 +248,8 @@ export const catalogVariantSchema = z.object({
     .nullable()
     .optional(),
   bookable: z.boolean().default(false),
+  /** Services: how many can be booked at the same time. */
+  bookingCapacity: z.number().int().min(1).max(1000).optional(),
 });
 
 export const catalogItemSchema = z.object({

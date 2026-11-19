@@ -1,6 +1,6 @@
 "use client";
 
-import { Segmented } from "@relay/ui/components/choice";
+import { Segmented, SwitchRow } from "@relay/ui/components/choice";
 import { Field } from "@relay/ui/components/field";
 import { Icon, IconButton } from "@relay/ui/components/icon";
 import { SelectField } from "@relay/ui/components/select-field";
@@ -31,13 +31,17 @@ import {
  * gallery once it is saved.
  */
 
-type DraftVariant = Omit<CatalogVariant, "id" | "price" | "salePrice" | "stock" | "durationMinutes"> & {
+type DraftVariant = Omit<
+  CatalogVariant,
+  "id" | "price" | "salePrice" | "stock" | "durationMinutes" | "bookingCapacity"
+> & {
   id?: string;
   /** Kept as typed until saved. */
   price: string;
   salePrice: string;
   stock: string;
   durationMinutes: string;
+  bookingCapacity: string;
 };
 
 type Draft = Omit<ItemInput, "variants"> & { variants: DraftVariant[] };
@@ -48,6 +52,7 @@ const toDraftVariant = (v: CatalogVariant): DraftVariant => ({
   salePrice: v.salePrice === null ? "" : String(v.salePrice),
   stock: v.stock === null ? "" : String(v.stock),
   durationMinutes: v.durationMinutes === null ? "" : String(v.durationMinutes),
+  bookingCapacity: String(v.bookingCapacity ?? 1),
 });
 
 const blankVariant = (currency: string, service: boolean): DraftVariant => ({
@@ -61,6 +66,7 @@ const blankVariant = (currency: string, service: boolean): DraftVariant => ({
   available: true,
   durationMinutes: "",
   bookable: service,
+  bookingCapacity: "1",
 });
 
 function draftOf(item: CatalogItem | undefined, type: CatalogType | undefined, currency: string): Draft {
@@ -180,6 +186,7 @@ function ItemForm({
         salePrice: numberOrNull(v.salePrice),
         stock: numberOrNull(v.stock),
         durationMinutes: numberOrNull(v.durationMinutes),
+        bookingCapacity: Math.max(1, Math.round(numberOrNull(v.bookingCapacity) ?? 1)),
       })),
     };
     try {
@@ -324,7 +331,7 @@ function ItemForm({
                   />
                 </Field>
                 {service ? (
-                  <Field label="Length (minutes)">
+                  <Field label="Length (minutes)" hint={v.bookable ? "Needed for booking" : undefined}>
                     <TextInput
                       inputMode="numeric"
                       value={v.durationMinutes}
@@ -341,6 +348,25 @@ function ItemForm({
                   </Field>
                 )}
               </div>
+              {service ? (
+                <div className="grid items-end gap-3 sm:grid-cols-[1fr_200px]">
+                  <SwitchRow
+                    label="Can be booked"
+                    description="Customers can book it on WhatsApp, and your team in Bookings."
+                    checked={v.bookable}
+                    onCheckedChange={(bookable) => setVariant(i, { bookable })}
+                  />
+                  {v.bookable ? (
+                    <Field label="How many at the same time" hint="Tables, chairs or rooms">
+                      <TextInput
+                        inputMode="numeric"
+                        value={v.bookingCapacity}
+                        onChange={(e) => setVariant(i, { bookingCapacity: e.target.value })}
+                      />
+                    </Field>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <Field label="SKU" optional className="min-w-48 flex-1">
                   <TextInput value={v.sku ?? ""} onChange={(e) => setVariant(i, { sku: e.target.value })} />

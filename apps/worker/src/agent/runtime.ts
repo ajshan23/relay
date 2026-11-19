@@ -1,5 +1,7 @@
 import {
   type AgentProfile,
+  type BookingDeps,
+  bookingToolRef,
   builtinTools,
   type ChatLine,
   type ConnectOptions,
@@ -53,11 +55,17 @@ import {
   optionOfReply,
   optionReplyId,
 } from "@relay/core/automations";
+import { bookingReplyOf, bookingTimeLabel, zonedTime } from "@relay/core/bookings";
 import {
+  agentFreeTimes,
   aiCredits,
   and,
+  bookableServices,
+  bookingProblem,
+  bookingSettingsOf,
   catalogAgentDeps,
   catalogShape,
+  createBooking,
   createCatalogPresenter,
   type createDb,
   desc,
@@ -65,13 +73,16 @@ import {
   gt,
   inArray,
   insertOutboundMessage,
+  moveBooking,
   ne,
   recordAiUsage,
   schema,
   searchKnowledge,
+  setBookingStatus,
   sql,
   sqlExecutor,
   storeFile,
+  upcomingBookingsFor,
 } from "@relay/db";
 import { isKairosControl, type Kairos, type RunRow, type WorkflowContext } from "@relay/kairos";
 import type { Queue } from "bullmq";
@@ -364,6 +375,22 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           return allowed.length ? [{ ...t, config: { ...config, tools: allowed } }] : [];
         })
       : [];
+    // Booking: the branch takes bookings and has services that can be booked.
+    const bookingSetup = await bookingSettingsOf(db, orgId, a.branchId);
+    const services = bookingSetup.enabled
+      ? await bookableServices(db, { organizationId: orgId, branchId: a.branchId })
+      : [];
+    const booking = services.length
+      ? {
+          timezone: bookingSetup.timezone,
+          services: services.map((s) => ({
+            variantId: s.variantId,
+            itemId: s.itemId,
+            title: s.title,
+            durationMinutes: s.durationMinutes,
+          })),
+        }
+      : null;
     return {
       id: a.id,
       status: a.status,
@@ -386,12 +413,15 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         seesPhotos: a.photos !== "off" && !!d.seePhotos,
         repliesByVoice: a.voiceReplies !== "off" && !!d.voiceReplies,
         ownTools: tools.length > 0,
+        booking: !!booking,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
       catalog,
       /** The business's own tools, without their keys. */
       tools: tools as Omit<CustomToolDef, "secret">[],
+      /** Booking services and the branch's timezone (null: no booking tools). */
+      booking,
     };
   }
   type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>> & {
@@ -855,9 +885,120 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     return [...builtinAgentTools(agent, runCtx), ...ownTools(agent)];
   }
 
+  /** Booking for this chat: free times, booking after a Yes, and the customer's own bookings. */
+  function bookingDeps(agent: LoadedAgent, runCtx: RunContext): BookingDeps | undefined {
+    const setup = agent.booking;
+    if (!setup || !runCtx.conversationId) return undefined;
+    const tz = setup.timezone;
+    const org = { organizationId: runCtx.orgId, branchId: runCtx.branchId };
+    const startOf = (date: string, time: string) =>
+      zonedTime(date, Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5)), tz);
+    const note = (key: string, text: string) =>
+      addNoteIn(runCtx.conversationId as string, agent.id, `booking:${key}`, text);
+    const shown = (b: {
+      reference: string;
+      title: string;
+      startsAt: Date;
+      status: string;
+      partySize: number | null;
+    }) => ({
+      reference: b.reference,
+      service: b.title,
+      when: bookingTimeLabel(b.startsAt, tz),
+      ...(b.partySize ? { people: b.partySize } : {}),
+      status: b.status,
+    });
+    const mine = async (reference: string) => {
+      if (!runCtx.contactId) return null;
+      const all = await upcomingBookingsFor(db, {
+        organizationId: runCtx.orgId,
+        contactId: runCtx.contactId,
+        now: new Date(),
+      });
+      return all.find((b) => b.reference.toUpperCase() === reference.trim().toUpperCase()) ?? null;
+    };
+    return {
+      timezone: tz,
+      services: setup.services,
+      findTimes: ({ variantId, date, partOfDay }) =>
+        agentFreeTimes(db, {
+          ...org,
+          variantId,
+          timezone: tz,
+          ...(date ? { date } : {}),
+          ...(partOfDay ? { partOfDay } : {}),
+          now: new Date(),
+        }),
+      book: async ({ variantId, date, time, partySize, notes }) => {
+        const res = await createBooking(db, {
+          id: newId("booking"),
+          ...org,
+          variantId,
+          startsAt: startOf(date, time),
+          contactId: runCtx.contactId,
+          conversationId: runCtx.conversationId,
+          partySize: partySize ?? null,
+          notes: notes ?? "",
+          bookedBy: "ai",
+          now: new Date(),
+        });
+        if (!res.ok) throw new Error(`${bookingProblem[res.reason]} Offer other times with find_times.`);
+        await note(
+          `${res.booking.id}:booked`,
+          `${agent.name} booked ${res.booking.title} for ${res.label}${res.booking.partySize ? ` (${res.booking.partySize} people)` : ""}. Reference ${res.booking.reference}.`,
+        );
+        return { booked: true, ...shown(res.booking) };
+      },
+      myBookings: async () => {
+        if (!runCtx.contactId) return { bookings: [] };
+        const all = await upcomingBookingsFor(db, {
+          organizationId: runCtx.orgId,
+          contactId: runCtx.contactId,
+          now: new Date(),
+        });
+        return { bookings: all.map(shown) };
+      },
+      move: async ({ reference, date, time }) => {
+        const b = await mine(reference);
+        if (!b) throw new Error("No upcoming booking of this customer has that reference. Use my_bookings.");
+        const res = await moveBooking(db, {
+          organizationId: runCtx.orgId,
+          bookingId: b.id,
+          startsAt: startOf(date, time),
+          now: new Date(),
+          ...(runCtx.contactId ? { contactId: runCtx.contactId } : {}),
+        });
+        if (!res.ok) throw new Error(`${bookingProblem[res.reason]} Offer other times with find_times.`);
+        await note(
+          `${b.id}:moved:${res.booking.startsAt.toISOString()}`,
+          `${agent.name} moved ${res.booking.title} (${res.booking.reference}) from ${bookingTimeLabel(b.startsAt, tz)} to ${res.label}.`,
+        );
+        return { moved: true, ...shown(res.booking) };
+      },
+      cancel: async ({ reference }) => {
+        const b = await mine(reference);
+        if (!b) throw new Error("No upcoming booking of this customer has that reference. Use my_bookings.");
+        const row = await setBookingStatus(db, {
+          organizationId: runCtx.orgId,
+          bookingId: b.id,
+          status: "cancelled",
+          ...(runCtx.contactId ? { contactId: runCtx.contactId } : {}),
+        });
+        if (!row) throw new Error("That booking wasn't found.");
+        await note(
+          `${b.id}:cancelled`,
+          `${agent.name} cancelled ${b.title} on ${bookingTimeLabel(b.startsAt, tz)} (${b.reference}).`,
+        );
+        return { cancelled: true, ...shown(row) };
+      },
+    };
+  }
+
   function builtinAgentTools(agent: LoadedAgent, runCtx: RunContext) {
     const embedCatalog = d.embedCatalog;
+    const booking = bookingDeps(agent, runCtx);
     return builtinTools({
+      ...(booking ? { booking } : {}),
       editableFields: agent.editableFields,
       ...(agent.catalog
         ? {
@@ -979,6 +1120,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         )?.items;
         const item = n !== undefined ? items?.[Number(n)] : undefined;
         if (item) text = `[tapped "${text}" on ${item.title} (${item.id})]`;
+        const remindedOf = (byId.get(r.replyTo)?.content as { booking?: { reference: string } } | undefined)
+          ?.booking;
+        if (bookingReplyOf(tapId) && remindedOf)
+          text = `[tapped "${text}" on the reminder for booking ${remindedOf.reference}]`;
       }
       if (!text) continue;
       const from: ChatLine["from"] =
@@ -1203,7 +1348,10 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       toolId: o.toolId,
       toolName: o.toolName,
       ...(o.mcpTool ? { mcpTool: o.mcpTool } : {}),
-      title: agent.tools?.find((t) => t.id === o.toolId)?.title ?? o.toolName,
+      title:
+        o.toolId === bookingToolRef.toolId
+          ? bookingToolRef.title
+          : (agent.tools?.find((t) => t.id === o.toolId)?.title ?? o.toolName),
       input: o.input,
       question: o.text,
       expiresAt: new Date(Date.now() + agentToolLimits.confirmMinutes * 60_000).toISOString(),
@@ -1255,25 +1403,29 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     if (!claimed.length)
       return `The customer tapped ${answer === "yes" ? "Yes" : "No"} again on ${q}, which was already answered. Nothing more was done.`;
     if (answer === "no") {
-      await logToolCall({
-        organizationId: input.organizationId,
-        agentId: agent.id,
-        toolId: pending.toolId,
-        conversationId: input.conversationId,
-        name: pending.toolName,
-        mode: "live",
-        status: "declined",
-      });
+      if (!pending.toolId.startsWith("builtin:"))
+        await logToolCall({
+          organizationId: input.organizationId,
+          agentId: agent.id,
+          toolId: pending.toolId,
+          conversationId: input.conversationId,
+          name: pending.toolName,
+          mode: "live",
+          status: "declined",
+        });
       return `The customer tapped No to ${q}, so it was not done. Ask what they'd like instead.`;
     }
     if (new Date(pending.expiresAt) < new Date())
       return `The customer tapped Yes to ${q}, but more than ${agentToolLimits.confirmMinutes} minutes after it was asked, so nothing was done. If they still want it, ask again.`;
-    const tool = ownTools(agent).find(
-      (t) => t.ref?.toolId === pending.toolId && (t.ref.mcpTool ?? null) === (pending.mcpTool ?? null),
+    const runCtx = await liveContext(input, agent);
+    // Built-in tools (booking) by name; the business's own by which tool (names follow titles).
+    const tool = agentTools(agent, runCtx).find((t) =>
+      pending.toolId.startsWith("builtin:")
+        ? t.name === pending.toolName
+        : t.ref?.toolId === pending.toolId && (t.ref.mcpTool ?? null) === (pending.mcpTool ?? null),
     );
     if (!tool)
       return `The customer tapped Yes to ${q}, but ${pending.title} isn't available any more, so nothing was done. Offer a person from the team.`;
-    const runCtx = await liveContext(input, agent);
     const args = { ...(pending.input as Record<string, unknown>), confirmText: pending.question };
     const result = await runTool(tool, args, runCtx);
     if (!result.ok)
@@ -1282,7 +1434,12 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   }
 
   async function addNote(input: AgentRunInput, agent: LoadedAgent, stepKey: string, text: string) {
-    const conv = await conversationOf(input.conversationId);
+    await addNoteIn(input.conversationId, agent.id, stepKey, text);
+  }
+
+  /** A note in the chat for the team (once per key). */
+  async function addNoteIn(conversationId: string, agentId: string, stepKey: string, text: string) {
+    const conv = await conversationOf(conversationId);
     if (!conv) return;
     await db
       .insert(schema.message)
@@ -1294,7 +1451,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         direction: "outbound",
         senderType: "ai_agent",
         type: "note",
-        content: { type: "note", text, mentions: [], aiAgentId: agent.id },
+        content: { type: "note", text, mentions: [], aiAgentId: agentId },
         status: "sent",
         automationStepKey: `${stepKey}:note`,
         sentAt: new Date(),

@@ -48,6 +48,8 @@ export const idPrefixes = {
   aiGap: "gap",
   aiTool: "atl",
   aiToolCall: "atc",
+  booking: "bkg",
+  bookingReminder: "bkr",
   catalogType: "ctt",
   catalogField: "ctf",
   catalogCategory: "ctc",

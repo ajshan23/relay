@@ -9,6 +9,8 @@ import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
 import { Skeleton } from "@relay/ui/ui/skeleton";
 import { useSearchParams } from "next/navigation";
+import { BookingsView } from "@/components/bookings/bookings-view";
+import { BookingSettingsView } from "@/components/bookings/settings-view";
 import { Gallery } from "@/components/catalog/gallery";
 import { ImportView } from "@/components/catalog/import-view";
 import { ItemsView } from "@/components/catalog/items-view";
@@ -51,6 +53,14 @@ const titles: Record<string, { title: string; description: string }> = {
     title: "Questions and answers",
     description: "Exact answers to the questions customers ask most, and short notes.",
   },
+  bookings: {
+    title: "Bookings",
+    description: "Bookings Mira makes on WhatsApp and ones your team adds, for the next two weeks.",
+  },
+  "booking-settings": {
+    title: "Booking settings",
+    description: "Opening hours, how bookings work, and the reminders customers get.",
+  },
   items: {
     title: "Catalogue",
     description: "What this branch sells, with prices, photos and videos. Mira shows them to customers.",
@@ -66,7 +76,7 @@ const titles: Record<string, { title: string; description: string }> = {
 };
 
 /** Catalogue views work without an AI agent: the team uses the catalogue too. */
-const catalogViews = new Set(["items", "types-and-fields", "import"]);
+const catalogViews = new Set(["items", "types-and-fields", "import", "bookings", "booking-settings"]);
 
 export const statusWords: Record<Agent["status"], { label: string; tone: "good" | "plain" | "warning" }> = {
   live: { label: "Live", tone: "good" },
@@ -95,6 +105,10 @@ export function AgentsPage() {
           </header>
           {view === "items" ? (
             <ItemsView gallery={(item) => <Gallery item={item} />} />
+          ) : view === "bookings" ? (
+            <BookingsView />
+          ) : view === "booking-settings" ? (
+            <BookingSettingsView />
           ) : view === "import" ? (
             <ImportView />
           ) : (

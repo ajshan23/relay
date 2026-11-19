@@ -105,7 +105,10 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
             add.push(
               line({
                 from: "event",
-                text: `In a real chat, tapping Yes would call ${what}. Try doesn't send changes.`,
+                text:
+                  w?.kind === "booking"
+                    ? `In a real chat, tapping Yes would ${w.text}. Try doesn't make bookings.`
+                    : `In a real chat, tapping Yes would call ${what}. Try doesn't send changes.`,
               }),
             );
           }
@@ -359,6 +362,8 @@ export function TryView({ agent, aiReady }: { agent: Agent; aiReady: boolean }) 
 const toolWords: Record<string, string> = {
   search_knowledge: "Searched its knowledge",
   update_contact: "Would save to the contact card",
+  find_times: "Looked for free times",
+  my_bookings: "Looked up the customer's bookings",
 };
 
 function formatUsd(n: number) {

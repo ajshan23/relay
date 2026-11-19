@@ -209,6 +209,7 @@ export async function saveCatalogItem(
         available: v.available,
         durationMinutes: v.durationMinutes ?? null,
         bookable: v.bookable,
+        bookingCapacity: v.bookingCapacity ?? 1,
         position: i,
       };
     });

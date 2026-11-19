@@ -18,6 +18,7 @@ import { createKnowledgeProcessor, type KnowledgeJob } from "./agent/knowledge";
 import { createPhotoReader } from "./agent/photos";
 import { createVoiceListener } from "./agent/voice";
 import { createAutomations } from "./automations/runtime";
+import { createBookingReminders } from "./bookings/reminders";
 import { createBroadcastEngine, outboxJobOptions } from "./broadcasts/engine";
 import { type EmbedJob as CatalogEmbedJob, createCatalogEmbedder } from "./catalog/embed";
 import { type ImportJob as CatalogImportJob, createCatalogImporter } from "./catalog/import";
@@ -98,6 +99,13 @@ const automations = createAutomations({
       },
 });
 const automationWorker = automations.worker();
+
+/* Booking reminders: a sweep every minute sends each one once. */
+const stopBookingReminders = createBookingReminders({
+  db,
+  outbox: automationOutbox,
+  outboxJobOptions,
+}).start();
 console.log(aiConfigured(config) ? "AI agent ready" : "AI agent off (no OPENAI_API_KEY)");
 
 /* AI agent knowledge: read, cut into pieces and embed each source the business adds. */
@@ -437,6 +445,7 @@ health.listen(port, config.HOST, () => console.log(`worker health on ${config.HO
 
 async function shutdown() {
   health.close();
+  stopBookingReminders();
   // Automations first: running steps finish (up to 25 s) and the rest is handed back.
   await automations.kairos.close();
   await Promise.all([

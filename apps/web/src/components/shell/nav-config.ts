@@ -121,6 +121,7 @@ export const sections: Section[] = [
     { label: "Mira", items: ["Teach", "Tools", "Try", "Go live", "Improve"] },
     { label: "Knowledge", items: ["Website", "Files", "Questions and answers"] },
     { label: "Catalogue", items: ["Items", "Types and fields", "Import"] },
+    { label: "Bookings", items: ["Bookings", "Booking settings"] },
   ]),
   section("automations", "Automations", Workflow, "Replies and follow-ups that run by themselves.", [
     {

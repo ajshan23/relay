@@ -331,3 +331,27 @@ One catalogue per branch for anything a business sells. Design and research: `re
   - At most 20 tools per agent and 30 allowed tools per MCP server.
   - `AGENT_TOOLS_ALLOW_PRIVATE=1` lets local fake servers through. It is for development and tests only.
 - Calls cost no extra credits.
+
+## 18. Booking: Relay's own booking book (2026-11-19)
+
+- **The place only, no staff.** A catalogue service becomes bookable with **Can be booked** and **How many at the same time** (`catalog_variant.booking_capacity`, migration 0031), plus its length.
+- **Booking settings** (AI agent → Bookings → Booking settings, one `booking_setting` row per branch):
+  - Take bookings on/off;
+  - opening hours (any number of ranges a day) and closed dates;
+  - how often a booking can start, the gap after each, how soon and how far ahead people can book;
+  - reminders (1 day and 2 hours before by default, up to 5);
+  - the template for reminders outside the 24-hour window.
+  - Free times come from Relay's booking book for now. Google Calendar (with Meet links) is next, then Calendly and Cal.com.
+- **Free times** are pure maths in `@relay/core/bookings` (`freeTimes`, DST-safe `zonedTime`).
+- **Booking** (`@relay/db` `createBooking` / `moveBooking`) takes a lock on the service (`pg_advisory_xact_lock`), then rechecks capacity and the gap. Two customers can never get the last place at the same moment. The agent may only book offered times; the team may book any time.
+- **Mira's tools:**
+  - `find_times` returns up to 10 local times, offered with buttons or a list.
+  - `book_time`, `move_booking` and `cancel_booking` ask the customer to tap Yes first. They reuse the confirm flow from tools: on Yes, the `t<n>:act` step books, and a note goes in the chat for the team.
+  - `my_bookings`.
+  - Try finds real times, but never books.
+- **Bookings page:** the next two weeks grouped by day, add a booking by hand (customer, service, day, a free time), and arrived / no-show / confirmed / move / cancel.
+- **Reminders:**
+  - A worker sweep every minute sends each one once. A `booking_reminder` row is unique per booking, start time and hours before, so a moved booking gets fresh reminders.
+  - A reminder whose time had already passed when the booking was made is skipped.
+  - Inside the 24-hour window it's a message with Confirm / Change buttons; outside it, the chosen approved template (a "Booking reminder" is in the template library), filling `customer_name`, `service`, `date`, `time`, `branch`, `business_name` and `reference`.
+  - **Confirm** marks the booking confirmed and thanks the customer, unless Mira or an automation is in the chat. **Change** goes to Mira or the team like any message.

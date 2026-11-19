@@ -16,7 +16,16 @@ import { encryptSecret, newId } from "@relay/core";
 import { httpToolConfigSchema } from "@relay/core/agent-tools";
 import { agentWorkflow } from "@relay/core/agents";
 import { emptyDefinition, type InboundEventPayload } from "@relay/core/automations";
-import { createCatalogType, createDb, eq, saveCatalogItem, schema, sql } from "@relay/db";
+import { defaultBookingSettings, localTime } from "@relay/core/bookings";
+import {
+  createCatalogType,
+  createDb,
+  eq,
+  saveBookingSettings,
+  saveCatalogItem,
+  schema,
+  sql,
+} from "@relay/db";
 import sharp from "sharp";
 import { z } from "zod";
 import { createPhotoReader } from "../src/agent/photos";
@@ -45,7 +54,9 @@ const ids = {
 };
 
 /** The seeded catalogue's item ids, for the pretend model. */
-const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}` };
+const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}`, haircut: "" };
+/** Tomorrow in the branch's timezone, for bookings. */
+const tomorrow = localTime(new Date(Date.now() + 86_400_000), "Asia/Dubai").date;
 
 /** Stored voice notes by key, what each one "says" (by size), and the models used to hear them. */
 const voiceFiles = new Map<string, Uint8Array>();
@@ -111,6 +122,17 @@ const brain: ModelCaller = async (req) => {
       error?: string;
     };
     if (value.error) return r({ text: `Sorry, that didn't work: ${value.error}` });
+    const times = (value.data as { times?: { label: string }[] } | undefined)?.times;
+    if (times?.length)
+      return r({
+        toolCalls: [
+          {
+            id: "o2",
+            name: toolNames.options,
+            input: { text: "Which time suits you?", options: times.slice(0, 3).map((t) => t.label) },
+          },
+        ],
+      });
     if (value.data && !("results" in value.data)) return r({ text: `Result: ${JSON.stringify(value.data)}` });
     const hit = value.data?.results?.[0]?.text;
     return r({ text: hit ? `From what I know: ${hit}` : "I'm not sure." });
@@ -120,7 +142,7 @@ const brain: ModelCaller = async (req) => {
   if (act.startsWith("The customer tapped"))
     return r({
       text: act.includes("carried out")
-        ? `All booked! ${act.match(/"ref":"(\w+)"/)?.[1] ?? ""}`.trim()
+        ? `All booked! ${act.match(/"ref(?:erence)?":"(\w+)"/)?.[1] ?? ""}`.trim()
         : act.includes("tapped No")
           ? "No problem, I haven't booked it."
           : `Hmm: ${act}`,
@@ -179,6 +201,29 @@ const brain: ModelCaller = async (req) => {
         { id: "t2", name: "book_table", input: { people: 2, confirmText: "Book a table for 2 at 8 pm?" } },
       ],
     });
+  if (text.includes("book a haircut"))
+    return r({
+      toolCalls: [{ id: "b1", name: "find_times", input: { service: catalog.haircut, date: tomorrow } }],
+    });
+  const picked = text.match(/(\d{1,2}):(\d{2}) (am|pm)/);
+  if (picked) {
+    const h = (Number(picked[1]) % 12) + (picked[3] === "pm" ? 12 : 0);
+    const time = `${String(h).padStart(2, "0")}:${picked[2]}`;
+    return r({
+      toolCalls: [
+        {
+          id: "b2",
+          name: "book_time",
+          input: {
+            service: catalog.haircut,
+            date: tomorrow,
+            time,
+            confirmText: `Book a haircut at ${time}?`,
+          },
+        },
+      ],
+    });
+  }
   if (text.includes("stock count"))
     return r({ toolCalls: [{ id: "t3", name: "shop__stock", input: { item: "S26" } }] });
   if (text.includes("bye"))
@@ -634,6 +679,46 @@ before(async () => {
     });
     catalog[key] = item.id;
   }
+  // A haircut that can be booked, and the branch taking bookings every day 09:00–18:00.
+  const services = await createCatalogType(db, {
+    organizationId: ids.org,
+    name: "Services",
+    kind: "service",
+    template: "service",
+    newId: (k) => newId(k),
+  });
+  const haircut = await saveCatalogItem(db, {
+    organizationId: ids.org,
+    branchId: ids.branch,
+    userId: null,
+    input: {
+      typeId: services.id,
+      title: "Haircut",
+      description: "",
+      attributes: {},
+      status: "active",
+      tags: [],
+      variants: [
+        {
+          title: "",
+          price: 60,
+          currency: "AED",
+          options: {},
+          available: true,
+          bookable: true,
+          durationMinutes: 30,
+        },
+      ],
+    },
+    newId: (k) => newId(k),
+  });
+  catalog.haircut = haircut.id;
+  await saveBookingSettings(db, ids.org, ids.branch, {
+    ...defaultBookingSettings,
+    enabled: true,
+    hours: [1, 2, 3, 4, 5, 6, 7].map((day) => ({ day, from: "09:00", to: "18:00" })),
+    minNoticeMinutes: 0,
+  });
   for (const [itemId, n, primary] of [
     [catalog.sofa, 1, true],
     [catalog.sofa, 2, false],
@@ -1416,5 +1501,115 @@ describe("the business's own tools", () => {
     // The agent's own history says what it asked and what was tapped.
     const history = (calls.at(-1)?.messages ?? []) as Msg[];
     assert.ok(history.some((m) => String(m.content).includes("they tapped Yes")));
+  });
+});
+
+describe("bookings with Mira", () => {
+  it("finds free times, books one after Yes, notes it for the team, and doesn't offer it again", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "Can I book a haircut tomorrow?");
+    const [q] = await until("the times", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const times = q?.content as { options: { id: string; title: string }[] };
+    assert.equal(times.options.length, 3);
+    assert.match(times.options[0]?.title ?? "", /, 9:00 am$/);
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, times.options[0]?.title ?? "", times.options[0] ?? null, q?.id ?? null);
+    const asked = await until("the Yes / No question", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 2 ? m[1] : null;
+    });
+    const content = asked.content as { body: string; options: { id: string; title: string }[] };
+    assert.equal(content.body, "Book a haircut at 09:00?");
+    const before = await db
+      .select()
+      .from(schema.booking)
+      .where(eq(schema.booking.conversationId, chat.conversationId));
+    assert.equal(before.length, 0, "nothing booked before Yes");
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, "Yes", content.options[0] ?? null, asked?.id ?? null);
+    const done = await until("the booking", async () => {
+      const rows = await db
+        .select()
+        .from(schema.booking)
+        .where(eq(schema.booking.conversationId, chat.conversationId));
+      return rows.length ? rows : null;
+    });
+    assert.equal(done[0]?.bookedBy, "ai");
+    assert.equal(done[0]?.contactId, chat.contactId);
+    assert.equal(done[0]?.title, "Haircut");
+    const reply = await until("the confirmation", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 3 ? m[2] : null;
+    });
+    assert.equal(textOf(reply as never), `All booked! ${done[0]?.reference}`);
+    const note = (await agentMessages(chat.conversationId)).find((m) => m.type === "note");
+    assert.match(textOf(note as never), /Mira booked Haircut for .*9:00 am\. Reference/);
+
+    // Another customer asking for the same day isn't offered 9:00 any more.
+    const other = await newChat();
+    await customerSays(other, "book a haircut please");
+    const [q2] = await until("the times", async () => {
+      const m = await agentMessages(other.conversationId);
+      return m.length ? m : null;
+    });
+    const offered = q2?.content as { options?: { title: string }[] } | undefined;
+    assert.match(offered?.options?.[0]?.title ?? "", /, 9:30 am$/);
+  });
+
+  it("marks a booking confirmed when the customer taps Confirm on a reminder, and says thanks", async () => {
+    const chat = await newChat();
+    const bookingId = `bkg_c${T}`;
+    const start = new Date(Date.now() + 2 * 86_400_000);
+    await db.insert(schema.booking).values({
+      id: bookingId,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      variantId: null,
+      contactId: chat.contactId,
+      conversationId: chat.conversationId,
+      title: "Haircut",
+      reference: `R${T.slice(-5).toUpperCase()}`,
+      startsAt: start,
+      endsAt: new Date(start.getTime() + 1_800_000),
+      bookedBy: "team",
+    });
+    const reminderId = `msg_r${T}`;
+    await db.insert(schema.message).values({
+      id: reminderId,
+      organizationId: ids.org,
+      conversationId: chat.conversationId,
+      channelAccountId: ids.channel,
+      direction: "outbound",
+      senderType: "bot",
+      type: "interactive",
+      content: {
+        type: "interactive",
+        kind: "buttons",
+        body: "Reminder",
+        booking: { id: bookingId, reference: "X" },
+      },
+      status: "sent",
+      sentAt: new Date(),
+    });
+    await customerSays(chat, "Confirm", { id: `bk_${bookingId}_confirm`, title: "Confirm" }, reminderId);
+    const row = await until("confirmed", async () => {
+      const [b] = await db.select().from(schema.booking).where(eq(schema.booking.id, bookingId));
+      return b?.status === "confirmed" ? b : null;
+    });
+    assert.ok(row.confirmedAt);
+    const thanks = await until("the thanks", async () => {
+      const m = await db
+        .select()
+        .from(schema.message)
+        .where(
+          sql`${schema.message.conversationId} = ${chat.conversationId} and ${schema.message.senderType} = 'bot' and ${schema.message.type} = 'text'`,
+        );
+      return m.length ? m : null;
+    });
+    assert.match(textOf(thanks[0] as never), /you're confirmed for Haircut/);
+    assert.equal((await agentMessages(chat.conversationId)).length, 0, "Mira doesn't also answer");
   });
 });

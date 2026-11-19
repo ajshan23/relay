@@ -15,6 +15,7 @@
     "./agents": "./src/agents.ts",
     "./catalog": "./src/catalog.ts",
     "./agent-tools": "./src/agent-tools.ts",
+    "./bookings": "./src/bookings.ts",
     "./net": "./src/net.ts"
   },
   "scripts": {

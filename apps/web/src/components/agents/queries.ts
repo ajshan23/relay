@@ -64,7 +64,8 @@ export type TryOutcome =
 export type WouldSend =
   | { kind: "http"; method: string; url: string; headers: Record<string, string>; body: unknown }
   | { kind: "http"; error: string }
-  | { kind: "mcp"; tool?: string; input: unknown };
+  | { kind: "mcp"; tool?: string; input: unknown }
+  | { kind: "booking"; text: string };
 
 /** An item as Mira shows it (from the catalogue). */
 export type TryCard = {

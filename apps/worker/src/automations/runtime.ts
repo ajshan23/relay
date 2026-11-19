@@ -44,10 +44,12 @@ import {
   type WaitConfig,
   zonedDate,
 } from "@relay/core/automations";
+import { bookingReplyOf, bookingTimeLabel } from "@relay/core/bookings";
 import { type TemplateContent, templateMessageContent, templateVariables } from "@relay/core/templates";
 import {
   activeFields,
   and,
+  bookingSettingsOf,
   compileFilter,
   createCatalogPresenter,
   type createDb,
@@ -55,6 +57,7 @@ import {
   inArray,
   insertOutboundMessage,
   schema,
+  setBookingStatus,
   sql,
   sqlExecutor,
 } from "@relay/db";
@@ -273,6 +276,37 @@ export function createAutomations({
         return { action: "stopped", reason: "opt_out", runId: live.run.id };
       }
       return { action: "ignored", reason: "opt_out" };
+    }
+    // Confirm on a booking reminder marks the booking confirmed, whoever is in the chat. With nobody
+    // else to answer, a short thanks goes back. Change carries on like any message (Mira or the team).
+    const bookingTap = ev.reply ? bookingReplyOf(ev.reply.id) : null;
+    if (bookingTap?.answer === "confirm") {
+      const b = await setBookingStatus(db, {
+        organizationId: ev.organizationId,
+        bookingId: bookingTap.bookingId,
+        status: "confirmed",
+        contactId: ev.contactId,
+        from: ["booked", "confirmed"],
+      });
+      if (b && !matched.length && !live) {
+        const { timezone } = await bookingSettingsOf(db, b.organizationId, b.branchId);
+        const { message } = await insertOutboundMessage(db, {
+          id: newId("message"),
+          conversation: conv,
+          type: "text",
+          content: {
+            type: "text",
+            text: `Thank you, you're confirmed for ${b.title} on ${bookingTimeLabel(b.startsAt, timezone)}. See you then!`,
+          },
+          senderType: "bot",
+          senderName: "Booking reminder",
+          automationStepKey: `bkc:${ev.messageId}`,
+        });
+        if (message.status === "queued")
+          await outbox.add("send", { messageId: message.id }, { jobId: message.id, ...outboxJobOptions });
+      }
+      if (!matched.length)
+        return { action: "booking_confirmed", bookingId: bookingTap.bookingId, found: !!b };
     }
     // A reply that a waiting run took is that run's answer, even if the run has finished by now (the
     // router runs after it): it must never also start an automation, e.g. "menu" typed as an answer.

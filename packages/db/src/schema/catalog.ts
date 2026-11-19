@@ -202,8 +202,10 @@ export const catalogVariant = pgTable(
     available: boolean("available").notNull().default(true),
     /** Services: how long one takes. */
     durationMinutes: integer("duration_minutes"),
-    /** Services: can be booked (booking comes later). */
+    /** Services: can be booked. */
     bookable: boolean("bookable").notNull().default(false),
+    /** Services: how many can be booked at the same time (tables, chairs). */
+    bookingCapacity: integer("booking_capacity").notNull().default(1),
     position: integer("position").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

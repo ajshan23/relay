@@ -2,6 +2,7 @@
 export * from "./agents";
 export * from "./auth";
 export * from "./automations";
+export * from "./bookings";
 export * from "./branches";
 export * from "./broadcasts";
 export * from "./catalog";

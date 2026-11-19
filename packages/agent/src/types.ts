@@ -39,6 +39,8 @@ export type AgentProfile = {
   repliesByVoice?: boolean;
   /** The business connected its own tools (API calls or MCP servers). */
   ownTools?: boolean;
+  /** The branch takes bookings (the booking tools are offered). */
+  booking?: boolean;
 };
 
 /** What the agent knows about the customer (volatile; placed after the history). */

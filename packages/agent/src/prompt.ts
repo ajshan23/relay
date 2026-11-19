@@ -1,3 +1,4 @@
+import { bookingToolNames } from "./booking";
 import { toolNames } from "./builtins";
 import { catalogToolNames } from "./catalog";
 import type { AgentProfile, ChatLine, ContactFacts, RunContext } from "./types";
@@ -68,6 +69,16 @@ export function systemPrompt(agent: AgentProfile): string {
           `- When they want more photos or videos of one item, use ${catalogToolNames.media}.`,
           "- If nothing matches, say so and suggest something close or a person; never make up an item.",
           `- When they want to buy (they tap Order or Book, or say so), take the order before handing over: make sure you know the option and how many (ask with ${toolNames.options} if there's a choice), and delivery (their area) or pickup. Then use ${catalogToolNames.price} and send a short summary with the exact total it gives, asking them to confirm with ${toolNames.options} ("Confirm order", "Change something"). Only after they confirm, use ${toolNames.handoff} with the whole order in the summary (items, options, quantities, total, delivery or pickup and area) so the team can take payment and arrange it.`,
+        ].join("\n")
+      : "",
+    agent.booking
+      ? [
+          "## Bookings",
+          `- When someone wants to book (or taps Book on a service), use ${bookingToolNames.find} for the day they want, then offer the times with ${toolNames.options} (use the labels it gives). Never offer a time it didn't return.`,
+          `- Once they pick a time, use ${bookingToolNames.book} with that service, date and time. They're asked to tap Yes; it's booked only when you see the result. Then confirm the day, time and reference.`,
+          "- Ask how many people only when it matters (a table), and their name only if you don't have it.",
+          `- To change or cancel, use ${bookingToolNames.mine} first, then ${bookingToolNames.move} or ${bookingToolNames.cancel}.`,
+          "- If nothing is free that day, offer the nearest other days.",
         ].join("\n")
       : "",
     agent.ownTools
