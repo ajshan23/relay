@@ -30,6 +30,7 @@ import {
   and,
   bookableServices,
   bookingSettingsOf,
+  calendarDepsFrom,
   catalogAgentDeps,
   catalogCards,
   catalogShape,
@@ -335,6 +336,7 @@ export function agentRoutes(ctx: AppContext) {
           services,
           findTimes: ({ variantId, date, partOfDay }) =>
             agentFreeTimes(ctx.db, {
+              calendar: calendarDepsFrom(ctx.config),
               organizationId: orgId,
               branchId: c.var.branchId,
               variantId,

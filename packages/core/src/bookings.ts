@@ -40,6 +40,8 @@ export const bookingSettingsSchema = z.object({
   reminders: z.array(bookingReminderSchema).max(5),
   /** The approved "Booking reminder" template, for reminders outside the 24-hour window. */
   reminderTemplateId: z.string().nullable(),
+  /** The template for online services' reminders (with the Meet link). */
+  onlineReminderTemplateId: z.string().nullable().default(null),
   /** Where free times come from. Google Calendar, Calendly and Cal.com come later. */
   source: z.enum(["relay"]),
 });
@@ -59,6 +61,7 @@ export const defaultBookingSettings: BookingSettings = {
     { hoursBefore: 2, enabled: true },
   ],
   reminderTemplateId: null,
+  onlineReminderTemplateId: null,
   source: "relay",
 };
 
@@ -168,6 +171,8 @@ export type FreeTimesInput = {
   capacity: number;
   /** Bookings that take a place (of this service). */
   busy: Busy[];
+  /** Times closed whatever the capacity (busy in the business's Google Calendar). */
+  blocked?: Busy[];
   /** Only starts in [from, to). */
   from: Date;
   to: Date;
@@ -183,6 +188,11 @@ export function fits(start: Date, end: Date, busy: Busy[], capacity: number, buf
     (b) => b.start.getTime() < end.getTime() + pad && b.end.getTime() + pad > start.getTime(),
   ).length;
   return overlapping < capacity;
+}
+
+/** Whether [start, end) touches any of the intervals. */
+export function overlapsAny(start: Date, end: Date, intervals: Busy[] = []): boolean {
+  return intervals.some((b) => b.start.getTime() < end.getTime() && b.end.getTime() > start.getTime());
 }
 
 /** Free start times, earliest first, inside opening hours and the notice / days-ahead limits. */
@@ -211,6 +221,7 @@ export function freeTimes(input: FreeTimesInput): Date[] {
         const t = start.getTime();
         if (t < earliest || t >= latest) continue;
         const end = new Date(t + durationMinutes * 60_000);
+        if (overlapsAny(start, end, input.blocked)) continue;
         if (!fits(start, end, busy, capacity, s.bufferMinutes)) continue;
         if (!out.some((x) => x.getTime() === t)) out.push(start);
         if (out.length >= limit) return out;

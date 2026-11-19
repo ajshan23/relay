@@ -146,6 +146,8 @@ export function createAutomations({
     voiceReplies?: AgentRuntimeDeps["voiceReplies"];
     /** Calls the business's own tools (null: the agent isn't offered them). */
     ownTools?: AgentRuntimeDeps["ownTools"];
+    /** Google Calendars for bookings (null: Relay's own book only). */
+    calendar?: AgentRuntimeDeps["calendar"];
   };
 }) {
   const kairos: Kairos = createKairos({ databaseUrl, listenUrl, maxConnections: 8 });
@@ -178,6 +180,7 @@ export function createAutomations({
     seePhotos: ai.seePhotos ?? null,
     voiceReplies: ai.voiceReplies ?? null,
     ownTools: ai.ownTools ?? null,
+    calendar: ai.calendar ?? null,
   });
 
   /** Clears the chat's controller if it is still this run. */

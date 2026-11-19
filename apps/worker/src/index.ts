@@ -9,7 +9,7 @@ import {
   speechConfigured,
 } from "@relay/agent";
 import { type ExportJob, env, fileStorage, queues, type SignalJob } from "@relay/core";
-import { and, createDb, eq, schema } from "@relay/db";
+import { and, calendarDepsFrom, createDb, eq, schema } from "@relay/db";
 import { catalogEmbeddingDimensions } from "@relay/db/schema";
 import { createEmailSender, type EmailJob, providerFromEnv } from "@relay/email";
 import { type Job, Queue, Worker } from "bullmq";
@@ -53,6 +53,8 @@ emails.on("ready", () => console.log(`emails worker ready (provider: ${emailProv
 /* Automations run on Kairos (Postgres only): durable steps, waits for replies, delays. */
 const automationOutbox = new Queue(queues.outbox, { connection });
 const automationSignals = new Queue(queues.signals, { connection });
+/* Google Calendars for bookings (null without Google or the encryption key: Relay's own book only). */
+const bookingCalendar = calendarDepsFrom(config);
 const automations = createAutomations({
   db,
   redis: connection,
@@ -82,6 +84,7 @@ const automations = createAutomations({
         voiceReplies: speechConfigured(config)
           ? { speak: createSpeaker(config), storage: fileStorage() }
           : null,
+        calendar: bookingCalendar,
         ownTools: config.CHANNEL_SECRET_KEY
           ? {
               secretKey: config.CHANNEL_SECRET_KEY,
@@ -103,6 +106,7 @@ const automationWorker = automations.worker();
 /* Booking reminders: a sweep every minute sends each one once. */
 const stopBookingReminders = createBookingReminders({
   db,
+  calendar: bookingCalendar,
   outbox: automationOutbox,
   outboxJobOptions,
 }).start();

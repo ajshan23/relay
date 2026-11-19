@@ -216,6 +216,35 @@ function BookingRow({ booking: b, tz, onMove }: { booking: Booking; tz: string; 
           {b.partySize ? ` · ${b.partySize} people` : ""} · Ref {b.reference}
           {b.notes ? ` · ${b.notes}` : ""}
         </span>
+        {b.meetUrl || b.externalEventId || b.calendarSync === "failed" ? (
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+            {b.meetUrl ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(b.meetUrl ?? "");
+                  notify.success("Meet link copied");
+                }}
+              >
+                <Icon name="video" size="sm" /> Copy Meet link
+              </button>
+            ) : null}
+            {b.calendarSync === "synced" && b.externalEventId ? (
+              <span className="inline-flex items-center gap-1">
+                <Icon name="check" size="sm" /> In Google Calendar
+              </span>
+            ) : b.calendarSync === "failed" ? (
+              <span
+                className="inline-flex items-center gap-1 text-warning"
+                title={b.calendarError ?? undefined}
+              >
+                <Icon name="warning" size="sm" /> Not in Google yet
+                {b.calendarError ? `: ${b.calendarError.slice(0, 80)}` : ""}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
       {!done ? (
         <DropdownMenu>

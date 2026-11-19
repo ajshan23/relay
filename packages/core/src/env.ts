@@ -16,6 +16,9 @@ const schema = z.object({
   // Google sign-in is offered only when both are set (empty counts as unset).
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Development and tests only: point the Google Calendar client at a fake server.
+  GOOGLE_OAUTH_BASE_URL: z.string().url().optional(),
+  GOOGLE_API_BASE_URL: z.string().url().optional(),
   // Email goes out through Resend when the key is set; without it, emails are printed to the API log.
   RESEND_API_KEY: z.string().optional(),
   // Must be on a domain verified in Resend. onboarding@resend.dev only delivers to the Resend account's own email.

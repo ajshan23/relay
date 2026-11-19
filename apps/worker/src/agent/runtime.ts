@@ -63,6 +63,7 @@ import {
   bookableServices,
   bookingProblem,
   bookingSettingsOf,
+  type CalendarDeps,
   catalogAgentDeps,
   catalogShape,
   createBooking,
@@ -138,6 +139,8 @@ export type AgentRuntimeDeps = {
     /** MP3 → Ogg/Opus voice note (ffmpeg); replaceable in tests. */
     encode?: typeof toVoiceNote;
   } | null;
+  /** The branches' Google Calendars (busy times, events, Meet links); null: Relay's book only. */
+  calendar?: CalendarDeps | null;
   /** Calls the business's own tools (API calls, MCP servers); null: they aren't offered. */
   ownTools?: (ConnectOptions & { secretKey: string }) | null;
 };
@@ -901,11 +904,13 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       startsAt: Date;
       status: string;
       partySize: number | null;
+      meetUrl?: string | null;
     }) => ({
       reference: b.reference,
       service: b.title,
       when: bookingTimeLabel(b.startsAt, tz),
       ...(b.partySize ? { people: b.partySize } : {}),
+      ...(b.meetUrl ? { meetLink: b.meetUrl } : {}),
       status: b.status,
     });
     const mine = async (reference: string) => {
@@ -922,6 +927,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       services: setup.services,
       findTimes: ({ variantId, date, partOfDay }) =>
         agentFreeTimes(db, {
+          calendar: d.calendar ?? null,
           ...org,
           variantId,
           timezone: tz,
@@ -931,6 +937,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         }),
       book: async ({ variantId, date, time, partySize, notes }) => {
         const res = await createBooking(db, {
+          calendar: d.calendar ?? null,
           id: newId("booking"),
           ...org,
           variantId,
@@ -947,7 +954,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           `${res.booking.id}:booked`,
           `${agent.name} booked ${res.booking.title} for ${res.label}${res.booking.partySize ? ` (${res.booking.partySize} people)` : ""}. Reference ${res.booking.reference}.`,
         );
-        return { booked: true, ...shown(res.booking) };
+        return { booked: true, ...shown({ ...res.booking, meetUrl: res.meetUrl }) };
       },
       myBookings: async () => {
         if (!runCtx.contactId) return { bookings: [] };
@@ -962,6 +969,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         const b = await mine(reference);
         if (!b) throw new Error("No upcoming booking of this customer has that reference. Use my_bookings.");
         const res = await moveBooking(db, {
+          calendar: d.calendar ?? null,
           organizationId: runCtx.orgId,
           bookingId: b.id,
           startsAt: startOf(date, time),
@@ -973,12 +981,13 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           `${b.id}:moved:${res.booking.startsAt.toISOString()}`,
           `${agent.name} moved ${res.booking.title} (${res.booking.reference}) from ${bookingTimeLabel(b.startsAt, tz)} to ${res.label}.`,
         );
-        return { moved: true, ...shown(res.booking) };
+        return { moved: true, ...shown({ ...res.booking, meetUrl: res.meetUrl }) };
       },
       cancel: async ({ reference }) => {
         const b = await mine(reference);
         if (!b) throw new Error("No upcoming booking of this customer has that reference. Use my_bookings.");
         const row = await setBookingStatus(db, {
+          calendar: d.calendar ?? null,
           organizationId: runCtx.orgId,
           bookingId: b.id,
           status: "cancelled",

@@ -79,6 +79,7 @@ export function systemPrompt(agent: AgentProfile): string {
           "- Ask how many people only when it matters (a table), and their name only if you don't have it.",
           `- To change or cancel, use ${bookingToolNames.mine} first, then ${bookingToolNames.move} or ${bookingToolNames.cancel}.`,
           "- If nothing is free that day, offer the nearest other days.",
+          "- When a booking's result has a meetLink (an online service), always give the customer that exact link in your confirmation.",
         ].join("\n")
       : "",
     agent.ownTools

@@ -50,6 +50,7 @@ export const idPrefixes = {
   aiToolCall: "atc",
   booking: "bkg",
   bookingReminder: "bkr",
+  calendarConnection: "cal",
   catalogType: "ctt",
   catalogField: "ctf",
   catalogCategory: "ctc",

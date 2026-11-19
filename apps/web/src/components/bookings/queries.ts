@@ -35,6 +35,10 @@ export type Booking = {
   notes: string;
   status: BookingStatus;
   bookedBy: "ai" | "team";
+  meetUrl: string | null;
+  externalEventId: string | null;
+  calendarSync: "pending" | "synced" | "failed";
+  calendarError: string | null;
   variantId: string | null;
   contactId: string | null;
   conversationId: string | null;
@@ -129,6 +133,58 @@ export function useBookingActions() {
     update: useMutation({
       mutationFn: ({ id, ...body }: { id: string } & ({ status: BookingStatus } | { startsAt: string })) =>
         api(inBranch(`/bookings/${id}`, branch), { method: "PATCH", json: body }),
+      onSuccess: refresh,
+    }),
+  };
+}
+
+// ------------------------------------------------------------------ Google Calendar
+
+export type GoogleConnection = {
+  accountEmail: string | null;
+  calendarId: string | null;
+  calendarName: string | null;
+  calendars: { id: string; name: string; primary: boolean; timeZone: string | null }[];
+  status: "pick_calendar" | "active" | "needs_reconnect";
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export function useGoogleCalendar() {
+  const branch = useBranchId();
+  return useQuery({
+    queryKey: ["bookings", branch, "google"] as const,
+    queryFn: () =>
+      api<{ configured: boolean; connection: GoogleConnection | null; canManage: boolean }>(
+        inBranch("/bookings/google", branch),
+      ),
+    enabled: !!branch,
+  });
+}
+
+export function useGoogleActions() {
+  const branch = useBranchId();
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: keys.all(branch) });
+  return {
+    connect: useMutation({
+      mutationFn: () =>
+        api<{ url: string }>(inBranch("/bookings/google/connect", branch), { method: "POST" }),
+      onSuccess: ({ url }) => {
+        window.location.assign(url);
+      },
+    }),
+    choose: useMutation({
+      mutationFn: (calendarId: string) =>
+        api(inBranch("/bookings/google", branch), { method: "PUT", json: { calendarId } }),
+      onSuccess: refresh,
+    }),
+    reload: useMutation({
+      mutationFn: () => api(inBranch("/bookings/google/calendars", branch), { method: "POST" }),
+      onSuccess: refresh,
+    }),
+    disconnect: useMutation({
+      mutationFn: () => api(inBranch("/bookings/google", branch), { method: "DELETE" }),
       onSuccess: refresh,
     }),
   };

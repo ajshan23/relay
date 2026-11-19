@@ -3,6 +3,7 @@ import { bookingReplyId, bookingTimeLabel } from "@relay/core/bookings";
 import { type TemplateContent, templateMessageContent, templateVariables } from "@relay/core/templates";
 import {
   and,
+  type CalendarDeps,
   type createDb,
   desc,
   eq,
@@ -10,6 +11,7 @@ import {
   inArray,
   insertOutboundMessage,
   lte,
+  retryCalendarSyncs,
   schema,
   sql,
 } from "@relay/db";
@@ -28,6 +30,8 @@ type Db = ReturnType<typeof createDb>["db"];
 
 export type ReminderDeps = {
   db: Db;
+  /** Google Calendars: the sweep also retries bookings Google hasn't got yet. */
+  calendar?: CalendarDeps | null;
   outbox: Pick<Queue, "add">;
   outboxJobOptions: Record<string, unknown>;
 };
@@ -35,7 +39,16 @@ export type ReminderDeps = {
 export type SweepResult = { sent: number; skipped: number };
 
 /** Details a reminder template may use. */
-const knownDetails = ["customer_name", "service", "date", "time", "branch", "business_name", "reference"];
+const knownDetails = [
+  "customer_name",
+  "service",
+  "date",
+  "time",
+  "branch",
+  "business_name",
+  "reference",
+  "meet_link",
+];
 
 export function createBookingReminders(d: ReminderDeps) {
   const { db } = d;
@@ -47,6 +60,7 @@ export function createBookingReminders(d: ReminderDeps) {
         b: B,
         reminders: schema.bookingSetting.reminders,
         templateId: schema.bookingSetting.reminderTemplateId,
+        onlineTemplateId: schema.bookingSetting.onlineReminderTemplateId,
         timezone: schema.branch.timezone,
         branchName: schema.branch.name,
         orgName: schema.organization.name,
@@ -67,6 +81,10 @@ export function createBookingReminders(d: ReminderDeps) {
       )
       .limit(2000);
     const result: SweepResult = { sent: 0, skipped: 0 };
+    // Bookings Google Calendar hasn't got right yet (Google was down, or the calendar was just connected).
+    await retryCalendarSyncs(db, d.calendar, now).catch((err) =>
+      console.warn("[bookings] calendar retry failed:", (err as Error).message),
+    );
     for (const r of rows) {
       for (const rem of r.reminders) {
         if (!rem.enabled) continue;
@@ -87,6 +105,7 @@ export function createBookingReminders(d: ReminderDeps) {
   type Row = {
     b: typeof B.$inferSelect;
     templateId: string | null;
+    onlineTemplateId: string | null;
     timezone: string;
     branchName: string;
     orgName: string;
@@ -128,7 +147,9 @@ export function createBookingReminders(d: ReminderDeps) {
       content = {
         type: "interactive",
         kind: "buttons",
-        body: `Hi ${name}, a reminder of your ${r.b.title} on ${label}. Your reference is ${r.b.reference}.`,
+        body: `Hi ${name}, a reminder of your ${r.b.title} on ${label}. Your reference is ${r.b.reference}.${
+          r.b.meetUrl ? `\n\nJoin online: ${r.b.meetUrl}` : ""
+        }`,
         buttonText: "Choose",
         options: [
           { id: bookingReplyId(r.b.id, "confirm"), title: "Confirm" },
@@ -137,7 +158,9 @@ export function createBookingReminders(d: ReminderDeps) {
         booking,
       };
     } else {
-      if (!r.templateId)
+      // Online bookings use the online template (with the Meet link) when one is chosen.
+      const templateId = (r.b.meetUrl && r.onlineTemplateId) || r.templateId;
+      if (!templateId)
         return skip("Outside the 24-hour window, and no reminder template is chosen in Booking settings.");
       const [t] = await db
         .select({ template: schema.messageTemplate, copy: schema.templateChannel })
@@ -149,7 +172,7 @@ export function createBookingReminders(d: ReminderDeps) {
             eq(schema.templateChannel.channelAccountId, conv.channelAccountId),
           ),
         )
-        .where(eq(schema.messageTemplate.id, r.templateId))
+        .where(eq(schema.messageTemplate.id, templateId))
         .limit(1);
       if (t?.copy.status !== "ready") return skip("The reminder template isn't approved on this number yet.");
       const date = new Intl.DateTimeFormat("en-GB", {
@@ -169,8 +192,11 @@ export function createBookingReminders(d: ReminderDeps) {
         branch: r.branchName,
         business_name: r.orgName,
         reference: r.b.reference,
+        meet_link: r.b.meetUrl ?? "",
       };
       const needed = templateVariables(t.template.content as unknown as TemplateContent);
+      if (needed.includes("meet_link") && !r.b.meetUrl)
+        return skip("The reminder template needs a Meet link, and this booking has none.");
       const unknown = needed.filter((v) => !knownDetails.includes(v));
       if (unknown.length)
         return skip(

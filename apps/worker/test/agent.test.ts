@@ -28,6 +28,7 @@ import {
 } from "@relay/db";
 import sharp from "sharp";
 import { z } from "zod";
+import { createFakeGoogle } from "../../../packages/core/test/fake-google";
 import { createPhotoReader } from "../src/agent/photos";
 import { createVoiceListener } from "../src/agent/voice";
 import { createAutomations } from "../src/automations/runtime";
@@ -55,6 +56,11 @@ const ids = {
 
 /** The seeded catalogue's item ids, for the pretend model. */
 const catalog = { sofa: `cti_s${T}`, table: `cti_t${T}`, haircut: "" };
+/** The service the pretend model books (a haircut, or an online consultation). */
+let bookingService = "";
+/** A pretend Google for the online-booking test (connected to the branch only in that test). */
+const google = createFakeGoogle();
+const calendarKey = randomBytes(32).toString("base64");
 /** Tomorrow in the branch's timezone, for bookings. */
 const tomorrow = localTime(new Date(Date.now() + 86_400_000), "Asia/Dubai").date;
 
@@ -142,7 +148,7 @@ const brain: ModelCaller = async (req) => {
   if (act.startsWith("The customer tapped"))
     return r({
       text: act.includes("carried out")
-        ? `All booked! ${act.match(/"ref(?:erence)?":"(\w+)"/)?.[1] ?? ""}`.trim()
+        ? `All booked! ${act.match(/"ref(?:erence)?":"(\w+)"/)?.[1] ?? ""} ${act.match(/"meetLink":"([^"]+)"/)?.[1] ?? ""}`.trim()
         : act.includes("tapped No")
           ? "No problem, I haven't booked it."
           : `Hmm: ${act}`,
@@ -201,9 +207,9 @@ const brain: ModelCaller = async (req) => {
         { id: "t2", name: "book_table", input: { people: 2, confirmText: "Book a table for 2 at 8 pm?" } },
       ],
     });
-  if (text.includes("book a haircut"))
+  if (text.includes("book a haircut") || text.includes("book a consultation"))
     return r({
-      toolCalls: [{ id: "b1", name: "find_times", input: { service: catalog.haircut, date: tomorrow } }],
+      toolCalls: [{ id: "b1", name: "find_times", input: { service: bookingService, date: tomorrow } }],
     });
   const picked = text.match(/(\d{1,2}):(\d{2}) (am|pm)/);
   if (picked) {
@@ -215,7 +221,7 @@ const brain: ModelCaller = async (req) => {
           id: "b2",
           name: "book_time",
           input: {
-            service: catalog.haircut,
+            service: bookingService,
             date: tomorrow,
             time,
             confirmText: `Book a haircut at ${time}?`,
@@ -288,6 +294,8 @@ const automations = createAutomations({
         };
       },
     }),
+    // Google Calendar: a pretend Google (only one test connects it).
+    calendar: { google: google.config, secretKey: calendarKey, appUrl: "https://app.test" },
     // The business's own tools: real HTTP to a local fake shop (allowed here only).
     ownTools: { secretKey: toolKey, allowPrivate: true },
   },
@@ -1506,6 +1514,7 @@ describe("the business's own tools", () => {
 
 describe("bookings with Mira", () => {
   it("finds free times, books one after Yes, notes it for the team, and doesn't offer it again", async () => {
+    bookingService = catalog.haircut;
     const chat = await newChat();
     await customerSays(chat, "Can I book a haircut tomorrow?");
     const [q] = await until("the times", async () => {
@@ -1611,5 +1620,81 @@ describe("bookings with Mira", () => {
     });
     assert.match(textOf(thanks[0] as never), /you're confirmed for Haircut/);
     assert.equal((await agentMessages(chat.conversationId)).length, 0, "Mira doesn't also answer");
+  });
+
+  it("books an online service in the connected Google Calendar and sends the Meet link", async () => {
+    const services = await db
+      .select()
+      .from(schema.catalogType)
+      .where(
+        sql`${schema.catalogType.organizationId} = ${ids.org} and ${schema.catalogType.kind} = 'service'`,
+      );
+    const consult = await saveCatalogItem(db, {
+      organizationId: ids.org,
+      branchId: ids.branch,
+      userId: null,
+      input: {
+        typeId: services[0]?.id ?? "",
+        title: "Consultation",
+        description: "",
+        attributes: {},
+        status: "active",
+        tags: [],
+        variants: [
+          {
+            title: "",
+            price: 200,
+            currency: "AED",
+            options: {},
+            available: true,
+            bookable: true,
+            durationMinutes: 30,
+            bookingOnline: true,
+          },
+        ],
+      },
+      newId: (k) => newId(k),
+    });
+    bookingService = consult.id;
+    await db.insert(schema.calendarConnection).values({
+      id: `cal_${T}`,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      accountEmail: "owner@lumen.test",
+      refreshToken: encryptSecret("rt-1", calendarKey),
+      calendarId: "owner@lumen.test",
+      calendarName: "Lumen",
+      status: "active",
+    });
+    const chat = await newChat();
+    await customerSays(chat, "I'd like to book a consultation tomorrow");
+    const [q] = await until("the times", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const times = q?.content as { options?: { id: string; title: string }[] } | undefined;
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, times?.options?.[0]?.title ?? "", times?.options?.[0] ?? null, q?.id ?? null);
+    const asked = await until("the question", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 2 ? m[1] : null;
+    });
+    const yes = (asked?.content as { options?: { id: string; title: string }[] } | undefined)?.options?.[0];
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, "Yes", yes ?? null, asked?.id ?? null);
+    const reply = await until("the confirmation", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 3 ? m[2] : null;
+    });
+    assert.match(textOf(reply as never), /^All booked! [A-Z2-9]{6} https:\/\/meet\.google\.com\//);
+    const [b] = await db
+      .select()
+      .from(schema.booking)
+      .where(eq(schema.booking.conversationId, chat.conversationId));
+    assert.equal(b?.calendarSync, "synced");
+    assert.ok(
+      google.state.events.some((e) => e.meetRequestId === b?.id),
+      "the event in Google asked for Meet",
+    );
   });
 });

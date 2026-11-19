@@ -12,6 +12,7 @@ import { Skeleton } from "@relay/ui/ui/skeleton";
 import { Switch } from "@relay/ui/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@relay/ui/ui/tabs";
 import { type ReactNode, useMemo, useState } from "react";
+import { useGoogleCalendar } from "@/components/bookings/queries";
 import { ApiError } from "@/lib/api";
 import { FieldInput } from "./field-input";
 import {
@@ -67,6 +68,7 @@ const blankVariant = (currency: string, service: boolean): DraftVariant => ({
   durationMinutes: "",
   bookable: service,
   bookingCapacity: "1",
+  bookingOnline: false,
 });
 
 function draftOf(item: CatalogItem | undefined, type: CatalogType | undefined, currency: string): Draft {
@@ -160,6 +162,8 @@ function ItemForm({
   const itemFields = (type?.fields ?? []).filter((f) => !f.onVariant);
   const variantFields = (type?.fields ?? []).filter((f) => f.onVariant);
   const service = type?.kind === "service";
+  // Meet links need the branch's Google Calendar.
+  const googleReady = useGoogleCalendar().data?.connection?.status === "active";
   const categories = useMemo(() => categoryLabels(overview.categories), [overview.categories]);
   const several = draft.variants.length > 1 || variantFields.length > 0;
 
@@ -364,6 +368,20 @@ function ItemForm({
                         onChange={(e) => setVariant(i, { bookingCapacity: e.target.value })}
                       />
                     </Field>
+                  ) : null}
+                  {v.bookable ? (
+                    <SwitchRow
+                      className="sm:col-span-2"
+                      label="Online (Google Meet link)"
+                      description={
+                        googleReady
+                          ? "Each booking gets its own Meet link, sent on WhatsApp."
+                          : "Connect Google Calendar in Booking settings to give bookings a Meet link."
+                      }
+                      checked={!!v.bookingOnline}
+                      disabled={!googleReady && !v.bookingOnline}
+                      onCheckedChange={(bookingOnline) => setVariant(i, { bookingOnline })}
+                    />
                   ) : null}
                 </div>
               ) : null}

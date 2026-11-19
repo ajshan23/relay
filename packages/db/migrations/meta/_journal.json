@@ -225,6 +225,13 @@
       "when": 1795090670535,
       "tag": "0031_bookings",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1795093748498,
+      "tag": "0032_google_calendar",
+      "breakpoints": true
     }
   ]
 }

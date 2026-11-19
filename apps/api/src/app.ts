@@ -8,6 +8,7 @@ import { auth } from "./modules/auth/auth";
 import { authOptionsRoutes } from "./modules/auth/routes";
 import { linkRoutes } from "./modules/automations/links";
 import { automationRoutes } from "./modules/automations/routes";
+import { googleCallbackRoutes } from "./modules/bookings/google";
 import { bookingRoutes } from "./modules/bookings/routes";
 import { branchRoutes } from "./modules/branches/routes";
 import { broadcastRoutes } from "./modules/broadcasts/routes";
@@ -54,6 +55,8 @@ export function createApp(ctx: AppContext) {
   app.route("/api/broadcasts", broadcastRoutes(ctx));
   app.route("/api/automations", automationRoutes(ctx));
   app.route("/api/agents", agentRoutes(ctx));
+  // Google sends managers back here without ?branch=, so before the branch-scoped routes.
+  app.route("/api/bookings/google/callback", googleCallbackRoutes(ctx));
   app.route("/api/bookings", bookingRoutes(ctx));
   app.route("/api/catalog", catalogRoutes(ctx));
   app.route("/api/settings", settingsRoutes(ctx));

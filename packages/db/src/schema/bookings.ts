@@ -42,6 +42,10 @@ export const bookingSetting = pgTable("booking_setting", {
   reminderTemplateId: text("reminder_template_id").references(() => messageTemplate.id, {
     onDelete: "set null",
   }),
+  /** For online services (with a Meet link), when outside the 24-hour window. */
+  onlineReminderTemplateId: text("online_reminder_template_id").references(() => messageTemplate.id, {
+    onDelete: "set null",
+  }),
   source: text("source").$type<"relay">().notNull().default("relay"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -82,6 +86,14 @@ export const booking = pgTable(
     bookedByUserId: text("booked_by_user_id").references(() => user.id, { onDelete: "set null" }),
     /** When the customer tapped Confirm on a reminder. */
     confirmedAt: timestamp("confirmed_at"),
+    /** The event in the branch's Google Calendar, and its Meet link for online services. */
+    externalEventId: text("external_event_id"),
+    meetUrl: text("meet_url"),
+    /** pending: Google has to be told (again); synced; failed (retried a few times). */
+    calendarSync: text("calendar_sync").$type<"pending" | "synced" | "failed">().notNull().default("pending"),
+    calendarError: text("calendar_error"),
+    calendarAttempts: integer("calendar_attempts").notNull().default(0),
+    calendarTriedAt: timestamp("calendar_tried_at"),
     cancelledAt: timestamp("cancelled_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -113,3 +125,38 @@ export const bookingReminder = pgTable(
   },
   (t) => [uniqueIndex("booking_reminder_uidx").on(t.bookingId, t.startsAt, t.hoursBefore)],
 );
+
+/**
+ * A branch's Google Calendar: the account, the chosen calendar (one it owns), and its tokens
+ * (encrypted with CHANNEL_SECRET_KEY). Bookings go in as events; its busy times block bookings.
+ */
+export const calendarConnection = pgTable("calendar_connection", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  branchId: text("branch_id")
+    .notNull()
+    .unique()
+    .references(() => branch.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<"google">().notNull().default("google"),
+  accountEmail: text("account_email"),
+  refreshToken: text("refresh_token").notNull(),
+  accessToken: text("access_token"),
+  accessExpiresAt: timestamp("access_expires_at", { withTimezone: true }),
+  calendarId: text("calendar_id"),
+  calendarName: text("calendar_name"),
+  /** The account's calendars it owns, as last read (to pick from). */
+  calendars: jsonb("calendars")
+    .$type<{ id: string; name: string; primary: boolean; timeZone: string | null }[]>()
+    .notNull()
+    .default([]),
+  status: text("status")
+    .$type<"pick_calendar" | "active" | "needs_reconnect">()
+    .notNull()
+    .default("pick_calendar"),
+  lastError: text("last_error"),
+  connectedByUserId: text("connected_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});

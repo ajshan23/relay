@@ -355,3 +355,17 @@ One catalogue per branch for anything a business sells. Design and research: `re
   - A reminder whose time had already passed when the booking was made is skipped.
   - Inside the 24-hour window it's a message with Confirm / Change buttons; outside it, the chosen approved template (a "Booking reminder" is in the template library), filling `customer_name`, `service`, `date`, `time`, `branch`, `business_name` and `reference`.
   - **Confirm** marks the booking confirmed and thanks the customer, unless Mira or an automation is in the chat. **Change** goes to Mira or the team like any message.
+
+## 19. Google Calendar and Meet for bookings (2026-11-19)
+
+- **One Google calendar per branch.** A manager connects it in Booking settings (OAuth on the sign-in client, offline access, encrypted single-use state) and picks one of their own calendars. Migration 0032 adds `calendar_connection`.
+- **Scopes:** `calendar.calendarlist.readonly`, `calendar.freebusy` and `calendar.events.owned`. Setup and verification steps are in `docs/google-calendar-setup.md`.
+- **Both ways:**
+  - Google busy times (free/busy, cached for a minute) close those times for free times and for agent bookings. The team may still book over them.
+  - Each booking becomes an event marked free, so Relay's own capacity isn't double-counted. It has no guests and sends no emails. Its id comes from the booking, so a retry never adds it twice.
+  - Moving moves the event, and cancelling deletes it.
+- **Meet:** services marked **Online** (`catalog_variant.booking_online`) ask Google for a Meet link (the request id is the booking id). Relay reads the event again while the link is `pending`. The link goes into Mira's confirmation (`meetLink` in the tool result), the Bookings page, reminders ("Join online", and `{{meet_link}}` in the **Online booking reminder** template) and the event.
+- **Relay stays the source of truth:**
+  - If Google fails, the booking is still made and marked `failed`. The minute sweep retries it (1, 2, 4, 8 minutes apart, 5 tries), and also adds upcoming bookings after a connect or a calendar change.
+  - A revoked or expired grant marks the connection **Needs connecting again**, and bookings carry on in Relay.
+- All Google calls go through `@relay/core/google-calendar`, with fetch injectable and retries on 429/5xx. A fake Google in `packages/core/test/fake-google.ts` drives the tests.

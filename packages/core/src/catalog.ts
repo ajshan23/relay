@@ -250,6 +250,8 @@ export const catalogVariantSchema = z.object({
   bookable: z.boolean().default(false),
   /** Services: how many can be booked at the same time. */
   bookingCapacity: z.number().int().min(1).max(1000).optional(),
+  /** Services: online, with a Google Meet link per booking. */
+  bookingOnline: z.boolean().optional(),
 });
 
 export const catalogItemSchema = z.object({

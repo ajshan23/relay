@@ -35,6 +35,33 @@ const plain = (body: string, extra: Partial<TemplateContent> = {}): TemplateCont
 
 const utility: LibraryTemplate[] = [
   {
+    key: "online_booking_reminder",
+    name: "Online booking reminder",
+    topic: "Bookings",
+    summary: "For online services: the day, time and the Google Meet link, with Confirm and Change.",
+    purpose: "updates",
+    channels: wa,
+    content: plain(
+      "Hi {{customer_name}}, this is a reminder of your online {{service}} on {{date}} at {{time}}. Join here: {{meet_link}} Your booking reference is {{reference}}. Tap below to confirm, or to change it.",
+      {
+        header: { kind: "text", text: "Online booking reminder" },
+        footer: "Reply STOP to stop reminders",
+        buttons: [
+          { kind: "reply", text: "Confirm" },
+          { kind: "reply", text: "Change" },
+        ],
+      },
+    ),
+    variables: [
+      v("customer_name", "Sara"),
+      v("service", "Consultation"),
+      v("date", "Saturday 16 November"),
+      v("time", "10:30 am"),
+      v("meet_link", "https://meet.google.com/abc-defg-hij"),
+      v("reference", "K7P2QD"),
+    ],
+  },
+  {
     key: "booking_reminder",
     name: "Booking reminder",
     topic: "Bookings",

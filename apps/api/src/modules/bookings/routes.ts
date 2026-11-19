@@ -13,6 +13,7 @@ import {
   bookableServices,
   bookingProblem,
   bookingSettingsOf,
+  calendarDepsFrom,
   createBooking,
   desc,
   eq,
@@ -34,6 +35,7 @@ import { requireSession } from "../auth/session";
 import { branchAccess, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { registerGoogleRoutes } from "./google";
 
 /*
  * The selected branch's bookings (?branch=), Relay's own booking book:
@@ -65,6 +67,9 @@ const patchBody = z.union([
 export function bookingRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  // The branch's Google Calendar, when Google is set up on this server.
+  const calendar = calendarDepsFrom(ctx.config);
+  registerGoogleRoutes(app, ctx);
 
   async function canManage(c: Context<BranchEnv>) {
     const found = await branchAccess(ctx, c.var.access, c.var.branchId);
@@ -165,6 +170,7 @@ export function bookingRoutes(ctx: AppContext) {
       from: zonedTime(date, 0, timezone),
       to: zonedTime(nextDate(date), 0, timezone),
       now: new Date(),
+      calendar,
     });
     if (!found.ok) return c.json({ times: [], problem: bookingProblem[found.reason] });
     return c.json({
@@ -229,9 +235,10 @@ export function bookingRoutes(ctx: AppContext) {
       userId: c.var.access.userId,
       now: new Date(),
       anyTime: true,
+      calendar,
     });
     if (!res.ok) return fail(c, 409, res.reason, bookingProblem[res.reason]);
-    return c.json({ booking: res.booking, label: res.label }, 201);
+    return c.json({ booking: res.booking, label: res.label, meetUrl: res.meetUrl }, 201);
   });
 
   app.patch("/:id", async (c) => {
@@ -250,6 +257,7 @@ export function bookingRoutes(ctx: AppContext) {
         organizationId,
         bookingId: b.id,
         status: parsed.data.status,
+        calendar,
       });
       return c.json({ booking: row });
     }
@@ -259,6 +267,7 @@ export function bookingRoutes(ctx: AppContext) {
       startsAt: new Date(parsed.data.startsAt),
       now: new Date(),
       anyTime: true,
+      calendar,
     });
     if (!res.ok) return fail(c, 409, res.reason, bookingProblem[res.reason]);
     return c.json({ booking: res.booking, label: res.label });

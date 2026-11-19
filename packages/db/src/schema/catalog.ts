@@ -206,6 +206,8 @@ export const catalogVariant = pgTable(
     bookable: boolean("bookable").notNull().default(false),
     /** Services: how many can be booked at the same time (tables, chairs). */
     bookingCapacity: integer("booking_capacity").notNull().default(1),
+    /** Services: online, so each booking gets a Google Meet link (when Google Calendar is connected). */
+    bookingOnline: boolean("booking_online").notNull().default(false),
     position: integer("position").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

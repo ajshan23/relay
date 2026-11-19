@@ -16,6 +16,7 @@ import { Switch } from "@relay/ui/ui/switch";
 import Link from "next/link";
 import { useState } from "react";
 import { ApiError } from "@/lib/api";
+import { GoogleCalendarBlock } from "./google-calendar";
 import { type BookingSettingsData, useBookingActions, useBookingSettings } from "./queries";
 
 /*
@@ -366,6 +367,24 @@ function SettingsForm({ data }: { data: BookingSettingsData }) {
             onValueChange={(v) => set({ reminderTemplateId: v === "none" ? null : v })}
           />
         </Field>
+        <Field
+          label="Template for online services (with the Meet link)"
+          hint="Optional. Start from “Online booking reminder”. Without one, online bookings use the template above."
+        >
+          <SelectField
+            options={[
+              { value: "none", label: "Same as above" },
+              ...data.templates.map((t) => ({
+                value: t.id,
+                label: t.name,
+                description: t.ready ? "Approved" : "Not approved yet",
+              })),
+            ]}
+            value={s.onlineReminderTemplateId ?? "none"}
+            disabled={!can}
+            onValueChange={(v) => set({ onlineReminderTemplateId: v === "none" ? null : v })}
+          />
+        </Field>
         {chosenTemplate && !chosenTemplate.ready ? (
           <Tag tone="warning" size="sm" className="self-start">
             This template isn't approved yet, so those reminders are skipped for now.
@@ -374,15 +393,7 @@ function SettingsForm({ data }: { data: BookingSettingsData }) {
       </Section>
 
       <Section title="Where free times come from">
-        <Panel className="flex items-start gap-3 text-[13px]">
-          <Icon name="calendar" size="sm" className="mt-0.5 text-muted-foreground" />
-          <span>
-            <span className="font-medium text-foreground">Relay's booking book.</span>{" "}
-            <span className="text-muted-foreground">
-              Google Calendar (with Meet links for online services) comes next, then Calendly and Cal.com.
-            </span>
-          </span>
-        </Panel>
+        <GoogleCalendarBlock />
       </Section>
 
       {can ? (

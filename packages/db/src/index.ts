@@ -23,6 +23,7 @@ export {
   sum,
 } from "drizzle-orm";
 export * from "./agents";
+export * from "./booking-calendar";
 export * from "./bookings";
 export * from "./catalog";
 export * from "./catalog-present";
