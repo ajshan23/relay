@@ -114,6 +114,9 @@ export function createFakeGoogle() {
         const body = JSON.parse(String(init.body)) as Record<string, unknown> & {
           conferenceData?: { createRequest?: { requestId: string } };
         };
+        // Like Google: a chosen id must be base32hex (0-9, a-v), 5 to 1024 characters.
+        if (typeof body.id === "string" && !/^[0-9a-v]{5,1024}$/.test(body.id))
+          return reply(400, { error: { code: 400, message: "Invalid resource id value." } });
         if (typeof body.id === "string" && state.events.some((x) => x.id === body.id))
           return reply(409, { error: { code: 409, message: "The requested identifier already exists." } });
         const e: FakeEvent = {

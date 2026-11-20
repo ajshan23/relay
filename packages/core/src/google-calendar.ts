@@ -328,9 +328,12 @@ export async function insertGoogleEvent(
   return eventResult(await json<RawEvent>(res));
 }
 
-/** A Google event id for a Relay booking: hex of the booking id (base32hex allows 0-9 and a-v). */
+/**
+ * A Google event id for a Relay booking: "rb" plus the hex of the booking id. Google only accepts
+ * base32hex (0-9 and a-v), 5 to 1024 characters, so the prefix must not use w-z either.
+ */
 export const googleEventIdFor = (bookingId: string) =>
-  `relay${[...new TextEncoder().encode(bookingId)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  `rb${[...new TextEncoder().encode(bookingId)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 
 export async function getGoogleEvent(
   cfg: GoogleConfig,
