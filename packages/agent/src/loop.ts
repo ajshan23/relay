@@ -1,6 +1,7 @@
 import { toolNames } from "./builtins";
 import { catalogToolNames, numbersIn, unknownAmounts } from "./catalog";
 import { confirmField, toolArguments } from "./custom";
+import { templatePhrases } from "./human";
 import { whatsappText } from "./prompt";
 import { envelope, runTool } from "./tools";
 import type {
@@ -58,6 +59,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
   let toolCount = 0;
   let rewroteMixed = false;
   let rewrotePrice = false;
+  let rewroteTemplate = false;
   // With a catalogue, amounts in a reply must come from this chat or this turn's tool results.
   const priceGuard = byName.has(catalogToolNames.search);
   const known = priceGuard ? numbersIn(JSON.stringify(input.messages)) : new Set<number>();
@@ -119,6 +121,16 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
           role: "system",
           content:
             "That message was not sent: it mixed languages. Write it again entirely in the customer's language, with no words from any other language.",
+        });
+        continue;
+      }
+      // Template phrases ("I'd be happy to", "not just X but Y"): ask once to say it in plain words.
+      const template = text && !rewroteTemplate ? templatePhrases(text) : [];
+      if (template.length) {
+        rewroteTemplate = true;
+        messages.push(...response.messages, {
+          role: "system",
+          content: `That message was not sent: it reads like a template (${template.map((p) => `"${p}"`).join(", ")}). Say the same thing the way a person from the business would type it on WhatsApp: plain everyday words, short. Keep every time, date, price, link and reference exactly as it is.`,
         });
         continue;
       }

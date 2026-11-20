@@ -19,14 +19,62 @@ import {
   mixesScripts,
   modelFor,
   moneyAmounts,
+  plainChat,
   qaChunk,
   type RunContext,
   runTurn,
   searchTerms,
   systemPrompt,
+  templatePhrases,
   toolNames,
   trimHistory,
 } from "../src/index";
+
+describe("writing like a person on WhatsApp", () => {
+  it("turns long dashes into commas but keeps ranges, links and the business's emoji", () => {
+    assert.equal(
+      plainChat(
+        "Done — your FlowFlex demo call is now moved to Sat 21 Nov at 3:00 pm. Your reference is still 66GEAF, and the meeting link is the same: https://meet.google.com/jmc-qstr-ros",
+      ),
+      "Done, your FlowFlex demo call is now moved to Sat 21 Nov at 3:00 pm. Your reference is still 66GEAF, and the meeting link is the same: https://meet.google.com/jmc-qstr-ros",
+    );
+    assert.equal(
+      plainChat("Great, Sam — if you’d like, I can also send the invite by email."),
+      "Great, Sam, if you'd like, I can also send the invite by email.",
+    );
+    assert.equal(plainChat("Hi Ajmal — I can’t see a booking."), "Hi Ajmal, I can't see a booking.");
+    assert.equal(
+      plainChat("The Basic plan fits a salon well — it has unlimited broadcasts."),
+      "The Basic plan fits a salon well. It has unlimited broadcasts.",
+      "after a whole clause, a full stop",
+    );
+    const confirmation =
+      "Thank you, the meeting is scheduled 👍\n\n📅 Monday, 2 Nov\n🕚 11:00 – 11:45 AM Bahrain time (1:30 – 2:15 PM India time)\n🔗 Google Meet: https://meet.google.com/iys-kfbd-eec";
+    assert.equal(plainChat(confirmation), confirmation, "a business's own format stays as it is");
+    assert.equal(plainChat("Open 9–6, delivery in 2–3 days"), "Open 9–6, delivery in 2–3 days");
+    assert.equal(plainChat("Moved: 9:00 am → 3:00 pm"), "Moved: 9:00 am to 3:00 pm");
+    assert.equal(plainChat("It’s “free”"), `It's "free"`);
+    assert.equal(plainChat("https://x.com/a—b"), "https://x.com/a—b", "links are never changed");
+  });
+
+  it("drops praise openers and help-offer closers, but only when something else was said", () => {
+    assert.equal(plainChat("Great question! We open at 9."), "We open at 9.");
+    assert.equal(plainChat("Absolutely! we deliver on Fridays."), "We deliver on Fridays.");
+    assert.equal(
+      plainChat("Your call is booked for Saturday at 3. Let me know if you have any other questions!"),
+      "Your call is booked for Saturday at 3.",
+    );
+    assert.equal(plainChat("Booked 👍 Feel free to reach out anytime."), "Booked 👍");
+    assert.equal(plainChat("We open at 9.\nHope this helps!"), "We open at 9.");
+    // Real questions and short answers stay.
+    assert.equal(plainChat("Let me know if Saturday works."), "Let me know if Saturday works.");
+    assert.equal(plainChat("Absolutely!"), "Absolutely!");
+    assert.equal(
+      plainChat("Let me know if you have any questions."),
+      "Let me know if you have any questions.",
+    );
+  });
+});
 
 const ctx: RunContext = {
   orgId: "org_1",
@@ -283,6 +331,21 @@ describe("turn loop", () => {
     );
     assert.equal(mixesScripts("نعم، Relay يعمل مع WhatsApp."), false);
     assert.equal(mixesScripts("Plain English only."), false);
+  });
+
+  it("asks once for a plain rewrite when a reply sounds like a template", async () => {
+    const stiff = "I'd be happy to help! FlowFlex is not just an inbox, but a whole sales system.";
+    const plain = "Sure. FlowFlex is a shared inbox plus chatbots and broadcasts.";
+    const { caller, seen } = scripted([respond({ text: stiff }), respond({ text: plain })]);
+    const res = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: caller });
+    assert.deepEqual(res.outcome, { kind: "reply", text: plain });
+    assert.match(JSON.stringify(seen[1]), /reads like a template/);
+    assert.deepEqual(templatePhrases(stiff), ["I'd be happy to", "not just … but …"]);
+    // Only once: a second stiff draft goes out (cleaned) rather than looping.
+    const again = scripted([respond({ text: stiff }), respond({ text: stiff })]);
+    const r2 = await runTurn({ model: "f", system: "s", messages: [], tools, ctx, callModel: again.caller });
+    assert.equal(r2.outcome.kind, "reply");
+    assert.deepEqual(templatePhrases("Booked for Saturday at 3. See you then"), []);
   });
 
   it("says it can't answer and keeps the question", async () => {

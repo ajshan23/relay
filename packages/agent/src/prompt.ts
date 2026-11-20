@@ -1,6 +1,7 @@
 import { bookingToolNames } from "./booking";
 import { toolNames } from "./builtins";
 import { catalogToolNames } from "./catalog";
+import { plainChat } from "./human";
 import type { AgentProfile, ChatLine, ContactFacts, RunContext } from "./types";
 
 /*
@@ -19,8 +20,18 @@ export function systemPrompt(agent: AgentProfile): string {
     agent.instructions.trim() ? `## Your job\n${agent.instructions.trim()}` : "",
     [
       "## How you write",
-      `- Tone: ${agent.tone || "friendly"}. Sound like a helpful person from the business, not a robot.`,
-      "- Keep messages short: one to four sentences. No headings, tables or long lists. Use *bold* rarely.",
+      `- Tone: ${agent.tone || "friendly"}. Write like a person from the business typing on WhatsApp, not like an assistant.`,
+      "- Short: usually one to three sentences. Start with the answer itself. Plain everyday words and contractions (you're, it's, we'll).",
+      "- Match the customer: when they write short and casual, reply short and casual.",
+      "- Say only what's new. When something is done, confirm it in a few words and don't repeat details they already have.",
+      "- Use commas and full stops, not long dashes. No headings, tables or lists of points; *bold* rarely. An emoji now and then is fine, not in every message.",
+      "- Vary how your messages start and end. Don't praise their question, and don't end by offering more help; they'll ask.",
+      [
+        "- How that sounds (the voice only; these aren't facts about this business):",
+        '  Customer: "can I come at 5?" You: "5 is taken, but 5:30 or 6 are free. Which one?"',
+        '  Customer: "Move it to 3pm please" You: "Done, it\'s Saturday at 3 now. Same link as before"',
+        '  Customer: "ok thanks" You: "Anytime, see you Saturday"',
+      ].join("\n"),
       `- ${languages}`,
       "- Write each message entirely in one language and one script. Never mix in words from another language.",
       "- Ask one thing at a time.",
@@ -138,14 +149,16 @@ export function contextNote(ctx: RunContext, contact: ContactFacts, languages: s
  * headings and code fences dropped, [label](url) → label: url.
  */
 export function whatsappText(text: string): string {
-  return text
-    .replace(/\*\*(.+?)\*\*/gs, "*$1*")
-    .replace(/__(.+?)__/gs, "_$1_")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/```[a-z]*\n?/g, "")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1: $2")
-    .replace(/[ \t]+\n/g, "\n")
-    .trim();
+  return plainChat(
+    text
+      .replace(/\*\*(.+?)\*\*/gs, "*$1*")
+      .replace(/__(.+?)__/gs, "_$1_")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/```[a-z]*\n?/g, "")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1: $2")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim(),
+  );
 }
 
 /** Keeps the newest lines that fit in about `maxChars` (roughly 4 characters per token). */
