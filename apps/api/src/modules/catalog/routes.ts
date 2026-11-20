@@ -36,9 +36,9 @@ import { z } from "zod";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
-import { branchAccess, fail, requireOrg } from "../branches/access";
+import { branchAccess, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { type BranchEnv, requireBranch, requirePermission } from "../contacts/shared";
 import { catalogImportRoutes } from "./imports";
 import { catalogMediaRoutes } from "./media";
 
@@ -71,7 +71,7 @@ const PAGE = 50;
 
 export function catalogRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("catalogue.view"));
   app.route("/media", catalogMediaRoutes(ctx));
   app.route("/imports", catalogImportRoutes(ctx));
   const T = schema.catalogType;
@@ -82,9 +82,13 @@ export function catalogRoutes(ctx: AppContext) {
   const M = schema.catalogMedia;
 
   async function canManage(c: Context<BranchEnv>) {
-    const found = await branchAccess(ctx, c.var.access, c.var.branchId);
-    return found?.role === "manager";
+    return can(c.var.access, "catalogue.manage", { branchId: c.var.branchId });
   }
+  /** Catalogue settings, types and fields are the whole company's. */
+  async function canTypes(c: Context<BranchEnv>) {
+    return can(c.var.access, "catalogue.types");
+  }
+
   const orgOf = (c: Context<BranchEnv>) => c.var.access.orgId;
   const inBranch = <Tbl extends { organizationId: unknown; branchId: unknown }>(
     c: Context<BranchEnv>,
@@ -146,11 +150,12 @@ export function catalogRoutes(ctx: AppContext) {
       counts: Object.fromEntries(counts.map((r) => [r.status, r.n])),
       templates: catalogTemplates.map(({ id, name, kind, hint }) => ({ id, name, kind, hint })),
       canManage: await canManage(c),
+      canTypes: await canTypes(c),
     });
   });
 
   app.put("/settings", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, z.object({ currency: currencySchema }));
     if ("error" in parsed) return parsed.error;
     const catalog = { currency: parsed.data.currency };
@@ -167,7 +172,7 @@ export function catalogRoutes(ctx: AppContext) {
   // ------------------------------------------------------------------ types and fields
 
   app.post("/types", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, catalogTypeSchema);
     if ("error" in parsed) return parsed.error;
     const type = await createCatalogType(ctx.db, {
@@ -179,7 +184,7 @@ export function catalogRoutes(ctx: AppContext) {
   });
 
   app.patch("/types/:id", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, catalogTypeSchema.pick({ name: true, kind: true }).partial());
     if ("error" in parsed) return parsed.error;
     const [type] = await ctx.db
@@ -191,7 +196,7 @@ export function catalogRoutes(ctx: AppContext) {
   });
 
   app.delete("/types/:id", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const [type] = await ctx.db
       .update(T)
       .set({ archivedAt: new Date(), updatedAt: new Date() })
@@ -201,7 +206,7 @@ export function catalogRoutes(ctx: AppContext) {
   });
 
   app.post("/types/:id/fields", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, catalogFieldSchema);
     if ("error" in parsed) return parsed.error;
     const typeId = c.req.param("id");
@@ -240,7 +245,7 @@ export function catalogRoutes(ctx: AppContext) {
   });
 
   app.patch("/fields/:id", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(
       c,
       z.object({
@@ -287,7 +292,7 @@ export function catalogRoutes(ctx: AppContext) {
   });
 
   app.delete("/fields/:id", async (c) => {
-    if (!(await canManage(c))) return fail(c, 403, "forbidden");
+    if (!(await canTypes(c))) return fail(c, 403, "forbidden");
     const [field] = await ctx.db
       .update(F)
       .set({ archivedAt: new Date(), updatedAt: new Date() })
@@ -528,7 +533,7 @@ export function catalogRoutes(ctx: AppContext) {
     );
     if ("error" in parsed) return parsed.error;
     const target = await branchAccess(ctx, c.var.access, parsed.data.toBranchId);
-    if (target?.role !== "manager")
+    if (!target || !can(c.var.access, "catalogue.manage", { branchId: parsed.data.toBranchId }))
       return fail(c, 403, "forbidden", "You can only copy to branches you manage.");
     try {
       const res = await copyCatalogItems(ctx.db, {

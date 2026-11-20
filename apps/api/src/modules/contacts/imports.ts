@@ -13,9 +13,9 @@ import { z } from "zod";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
-import { fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { activeFields, type BranchEnv, canEditContacts, createField, requireBranch } from "./shared";
+import { activeFields, type BranchEnv, canIn, createField, requireBranch, requirePermission } from "./shared";
 
 /*
  * Importing contacts from Excel (.xlsx, .xls) or CSV. The API never parses spreadsheets itself (a big
@@ -44,7 +44,7 @@ const targetSchema = z.discriminatedUnion("kind", [
 
 export function contactImportRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("contacts.view"));
   const storage = fileStorage();
   const im = schema.contactImport;
 
@@ -72,7 +72,7 @@ export function contactImportRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    if (!canIn(c2, "contacts.import")) return fail(c2, 403, "forbidden");
     const form = await c2.req.formData().catch(() => null);
     const file = form?.get("file");
     if (!(file instanceof File)) return fail(c2, 422, "invalid_input", "Choose a file to import.");
@@ -110,7 +110,7 @@ export function contactImportRoutes(ctx: AppContext) {
 
   app.post("/:id/start", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    if (!canIn(c2, "contacts.import")) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({
@@ -141,7 +141,7 @@ export function contactImportRoutes(ctx: AppContext) {
         "Pick the column with phone numbers or emails, so contacts can be matched.",
       );
     const newFields = used.filter((m) => m.target.kind === "new_field");
-    if (newFields.length && !isOrgAdmin(access.orgRole))
+    if (newFields.length && !can(access, "contacts.fields"))
       return fail(
         c2,
         403,

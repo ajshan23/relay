@@ -22,15 +22,16 @@ import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { stopForAgentReply } from "../automations/runs";
-import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type AccessEnv, can, fail, reaches, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { requireBranch } from "../contacts/shared";
 import {
   assignableUsers,
   type Conversation,
+  canAssign,
   canWork,
   findConversation,
-  reachableBranches,
+  seesPartOf,
   visibleTo,
 } from "./access";
 import { startBody, startConversation } from "./start";
@@ -143,7 +144,6 @@ export function conversationRoutes(ctx: AppContext) {
   // ?view=open|mine|unassigned|closed|all  ?channel=<channel id>  ?q=<name, phone or group>  ?cursor=
   app.get("/", async (c) => {
     const access = c.var.access;
-    const branches = await reachableBranches(ctx, access);
     const view = (views as readonly string[]).includes(c.req.query("view") ?? "")
       ? (c.req.query("view") as View)
       : "open";
@@ -151,6 +151,7 @@ export function conversationRoutes(ctx: AppContext) {
     // The inbox shows one branch at a time.
     const branchId = c.req.query("branch");
     if (!branchId || branchId === "all") return fail(c, 422, "branch_required", "Pick a branch.");
+    if (!reaches(access, branchId)) return fail(c, 403, "forbidden", "You don't work in that branch.");
     const q = c.req.query("q")?.trim();
     const cursor = c.req.query("cursor");
     const [cursorAt, cursorId] = cursor ? cursor.split("|") : [];
@@ -197,7 +198,7 @@ export function conversationRoutes(ctx: AppContext) {
       )
       .where(
         and(
-          visibleTo(access, branches),
+          visibleTo(access, branchId),
           viewFilter(view, access.userId),
           channelId ? eq(schema.conversation.channelAccountId, channelId) : undefined,
           eq(schema.conversation.branchId, branchId),
@@ -243,11 +244,11 @@ export function conversationRoutes(ctx: AppContext) {
   // How many conversations are in each view, and how many open ones have unread messages for the caller.
   app.get("/counts", async (c) => {
     const access = c.var.access;
-    const branches = await reachableBranches(ctx, access);
     const me = access.userId;
     // The inbox shows one branch at a time.
     const branchId = c.req.query("branch");
     if (!branchId || branchId === "all") return fail(c, 422, "branch_required", "Pick a branch.");
+    if (!reaches(access, branchId)) return fail(c, 403, "forbidden", "You don't work in that branch.");
     const [row] = await ctx.db
       .select({
         open: sql<number>`count(*) filter (where ${isOpen})::int`,
@@ -266,7 +267,8 @@ export function conversationRoutes(ctx: AppContext) {
           eq(schema.conversationRead.userId, me),
         ),
       )
-      .where(and(visibleTo(access, branches), eq(schema.conversation.branchId, branchId)));
+      .where(visibleTo(access, branchId));
+    if (row) return c.json({ ...row, partial: seesPartOf(access, branchId) });
     return c.json(row);
   });
 
@@ -372,6 +374,11 @@ export function conversationRoutes(ctx: AppContext) {
       contact,
       group,
       canWork: await canWork(ctx, access, conversation),
+      canAssign: canAssign(access, conversation),
+      canNote: can(access, "chats.notes", {
+        branchId: conversation.branchId,
+        channelId: conversation.channelAccountId,
+      }),
     });
   });
 
@@ -434,7 +441,14 @@ export function conversationRoutes(ctx: AppContext) {
   app.get("/:id/assignees", async (c) => {
     const conversation = await findConversation(ctx, c.var.access, c.req.param("id"));
     if (!conversation) return fail(c, 404, "not_found");
-    return c.json({ users: await assignableUsers(ctx, conversation.organizationId, conversation.branchId) });
+    return c.json({
+      users: await assignableUsers(
+        ctx,
+        conversation.organizationId,
+        conversation.branchId,
+        conversation.channelAccountId,
+      ),
+    });
   });
 
   // Assign, unassign, close or reopen.
@@ -444,16 +458,24 @@ export function conversationRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const conversation = await findConversation(ctx, access, c.req.param("id"));
     if (!conversation) return fail(c, 404, "not_found");
-    if (!(await canWork(ctx, access, conversation)))
-      return fail(c, 403, "forbidden", "Viewers can read conversations but not change them.");
     const { assignedUserId, status, snoozedUntil } = parsed.data;
+    // Taking a chat for yourself only needs "reply"; giving it to someone else, closing or snoozing
+    // needs "assign".
+    const takingIt = assignedUserId === access.userId && status === undefined && snoozedUntil === undefined;
+    if (!(takingIt ? await canWork(ctx, access, conversation) : canAssign(access, conversation)))
+      return fail(c, 403, "forbidden", "You can read this conversation but not change it.");
     const until = snoozedUntil ? new Date(snoozedUntil) : null;
     if (until && until.getTime() <= Date.now() + 30_000)
       return fail(c, 422, "invalid_input", "Pick a time in the future.");
     if (until && until.getTime() > Date.now() + 365 * 24 * 3600_000)
       return fail(c, 422, "invalid_input", "Snooze for up to a year.");
     if (assignedUserId) {
-      const people = await assignableUsers(ctx, conversation.organizationId, conversation.branchId);
+      const people = await assignableUsers(
+        ctx,
+        conversation.organizationId,
+        conversation.branchId,
+        conversation.channelAccountId,
+      );
       if (!people.some((p) => p.id === assignedUserId))
         return fail(c, 422, "invalid_assignee", "That person can't work on this branch's conversations.");
     }
@@ -557,12 +579,22 @@ export function conversationRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const conversation = await findConversation(ctx, access, c.req.param("id"));
     if (!conversation) return fail(c, 404, "not_found");
-    if (!(await canWork(ctx, access, conversation)))
-      return fail(c, 403, "forbidden", "Viewers can read conversations but not add notes.");
+    if (
+      !can(access, "chats.notes", {
+        branchId: conversation.branchId,
+        channelId: conversation.channelAccountId,
+      })
+    )
+      return fail(c, 403, "forbidden", "You can read this conversation but not add notes.");
     const text = parsed.data.text;
     const asked = [...text.matchAll(/@\[[^\]]{1,80}\]\(([\w-]{1,60})\)/g)].map((m) => m[1] as string);
     const team = asked.length
-      ? await assignableUsers(ctx, conversation.organizationId, conversation.branchId)
+      ? await assignableUsers(
+          ctx,
+          conversation.organizationId,
+          conversation.branchId,
+          conversation.channelAccountId,
+        )
       : [];
     const mentions = [...new Set(asked)].filter(
       (id) => id !== access.userId && team.some((u) => u.id === id),
@@ -620,13 +652,8 @@ export function conversationRoutes(ctx: AppContext) {
       .where(and(eq(m.id, c.req.param("noteId")), eq(m.conversationId, conversation.id), eq(m.type, "note")))
       .limit(1);
     if (!note) return fail(c, 404, "not_found");
-    if (note.senderUserId !== access.userId && !isOrgAdmin(access.orgRole))
-      return fail(
-        c,
-        403,
-        "forbidden",
-        "Only the person who wrote a note, or an owner or admin, can delete it.",
-      );
+    if (note.senderUserId !== access.userId && !can(access, "team.edit_access"))
+      return fail(c, 403, "forbidden", "Only the person who wrote a note, or an admin, can delete it.");
     await ctx.db.delete(m).where(eq(m.id, note.id));
     await announce(conversation);
     return c.body(null, 204);

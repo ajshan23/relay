@@ -21,7 +21,8 @@ export type SaveWhatsAppInput = {
   providerMeta: Record<string, unknown>;
   status: "active" | "setting_up";
   /** The branch it is connected from (new channels). */
-  branchIds: string[];
+  /** The one branch the number belongs to. */
+  branchId: string;
   /** Embedded Signup "Reconnect" on this channel: the number must be the same. */
   reconnectChannelId?: string | null;
   /** The manual route refuses a number that is already active in this business. */
@@ -97,33 +98,15 @@ export async function saveWhatsAppChannel(
 
   const id = await ctx.db.transaction(async (tx) => {
     if (existing) {
-      await tx.update(ca).set(values).where(eq(ca.id, existing.id));
-      // A reconnect keeps its branches; a disconnected number coming back gets the branch it's connected from.
-      if (!input.reconnectChannelId && input.branchIds.length) {
-        await tx
-          .delete(schema.channelAccountBranch)
-          .where(eq(schema.channelAccountBranch.channelAccountId, existing.id));
-        await tx.insert(schema.channelAccountBranch).values(
-          input.branchIds.map((branchId) => ({
-            channelAccountId: existing.id,
-            branchId,
-            organizationId: input.orgId,
-          })),
-        );
-        await tx.update(ca).set({ defaultBranchId: input.branchIds[0] }).where(eq(ca.id, existing.id));
-      }
+      // A reconnect keeps its branch; a disconnected number coming back gets the branch it's connected from.
+      await tx
+        .update(ca)
+        .set(input.reconnectChannelId ? values : { ...values, branchId: input.branchId })
+        .where(eq(ca.id, existing.id));
       return existing.id;
     }
     const channelId = newId("channelAccount");
-    await tx.insert(ca).values({ id: channelId, ...values, defaultBranchId: input.branchIds[0] ?? null });
-    if (input.branchIds.length)
-      await tx.insert(schema.channelAccountBranch).values(
-        input.branchIds.map((branchId) => ({
-          channelAccountId: channelId,
-          branchId,
-          organizationId: input.orgId,
-        })),
-      );
+    await tx.insert(ca).values({ id: channelId, ...values, branchId: input.branchId });
     return channelId;
   });
   return { ok: true, id, reconnected: !!existing };

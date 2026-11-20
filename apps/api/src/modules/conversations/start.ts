@@ -4,7 +4,7 @@ import { and, asc, eq, inArray, schema } from "@relay/db";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import type { Access } from "../branches/access";
-import { type Conversation, canWork } from "./access";
+import { can } from "../branches/access";
 
 /*
  * Starting a chat from Relay: "New conversation" in the inbox, or "Message on WhatsApp" on a contact.
@@ -41,9 +41,6 @@ export async function startConversation(
   body: z.infer<typeof startBody>,
 ): Promise<StartResult> {
   const db = ctx.db;
-  // Same rule as replying: owners, admins, and the branch's managers and agents.
-  if (!(await canWork(ctx, access, { branchId } as Conversation)))
-    return no(403, "forbidden", "Viewers can read conversations but not start them.");
 
   // The number to send from: this business's, active, and serving this branch.
   const ca = schema.channelAccount;
@@ -55,18 +52,10 @@ export async function startConversation(
   if (!channel) return no(404, "channel_not_found", "That number doesn't exist.");
   if (channel.status !== "active")
     return no(409, "channel_unavailable", `${channel.displayName} isn't active. Check Settings → Channels.`);
-  const [served] = await db
-    .select({ id: schema.channelAccountBranch.branchId })
-    .from(schema.channelAccountBranch)
-    .where(
-      and(
-        eq(schema.channelAccountBranch.channelAccountId, channel.id),
-        eq(schema.channelAccountBranch.branchId, branchId),
-      ),
-    )
-    .limit(1);
-  if (!served && channel.defaultBranchId !== branchId)
+  if (channel.branchId !== branchId)
     return no(409, "wrong_branch", `${channel.displayName} isn't connected to this branch.`);
+  if (!can(access, "chats.start", { branchId, channelId: channel.id }))
+    return no(403, "forbidden", `You can't start chats on ${channel.displayName}.`);
   if (channel.type !== "whatsapp")
     return no(422, "not_supported", "Starting chats is available on WhatsApp numbers for now.");
 

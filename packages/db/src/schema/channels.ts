@@ -6,7 +6,6 @@ import {
   jsonb,
   pgEnum,
   pgTable,
-  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -97,8 +96,10 @@ export const channelAccount = pgTable(
     providerMeta: jsonb("provider_meta").$type<Record<string, unknown>>().notNull().default({}),
     /** Choices the business makes per channel. readReceipts (default on): blue ticks and "typing…". */
     settings: jsonb("settings").$type<ChannelSettings>().notNull().default({}),
-    /** Branch that new conversations on this channel belong to. */
-    defaultBranchId: text("default_branch_id").references(() => branch.id, { onDelete: "set null" }),
+    /** The one branch this number belongs to: its chats, contacts and people are that branch's. */
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
     /** Why the channel is in error, in the provider's words (for example an expired token). */
     statusReason: text("status_reason"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -108,24 +109,7 @@ export const channelAccount = pgTable(
     // A number or page can be connected once in all of Relay.
     uniqueIndex("channel_account_type_external_uidx").on(t.type, t.externalId),
     index("channel_account_org_idx").on(t.organizationId),
-  ],
-);
-
-/** Which branches use a channel. One number can serve several branches. */
-export const channelAccountBranch = pgTable(
-  "channel_account_branch",
-  {
-    channelAccountId: text("channel_account_id")
-      .notNull()
-      .references(() => channelAccount.id, { onDelete: "cascade" }),
-    branchId: text("branch_id")
-      .notNull()
-      .references(() => branch.id, { onDelete: "cascade" }),
-    organizationId: text("organization_id").notNull(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.channelAccountId, t.branchId] }),
-    index("channel_account_branch_branch_idx").on(t.branchId),
+    index("channel_account_branch_idx").on(t.branchId),
   ],
 );
 

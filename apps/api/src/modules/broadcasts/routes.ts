@@ -1,5 +1,6 @@
 import { messagePreview, newId } from "@relay/core";
 import { planDays, retryOf, templateMessage, valuesFor } from "@relay/core/broadcasts";
+import { numbersFor } from "@relay/core/permissions";
 import { writeWorkbook } from "@relay/core/sheets";
 import { type TemplateContent, templateVariables } from "@relay/core/templates";
 import {
@@ -28,9 +29,9 @@ import { accountRef, channels } from "../../channels";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
-import { type Access, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type Access, can, fail, type Permission, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { type BranchEnv, requireBranch, requirePermission } from "../contacts/shared";
 
 /*
  * Broadcasts, one branch at a time (?branch=). The worker's engine does the sending (see
@@ -119,52 +120,37 @@ const draftSchema = z.object({
 
 export function broadcastRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("broadcasts.view"));
   const b = schema.broadcast;
   const r = schema.broadcastRecipient;
 
-  async function canManage(access: Access, branchId: string) {
-    if (isOrgAdmin(access.orgRole)) return true;
-    const [row] = await ctx.db
-      .select({ n: sql<number>`1` })
-      .from(schema.branchMember)
-      .where(
-        and(
-          eq(schema.branchMember.branchId, branchId),
-          eq(schema.branchMember.userId, access.userId),
-          eq(schema.branchMember.role, "manager"),
-        ),
-      )
-      .limit(1);
-    return !!row;
-  }
+  /** May they do `perm` in this branch (on any of its numbers, or on one)? */
+  const allowed = (access: Access, branchId: string, perm: Permission, channelId?: string | null) =>
+    can(access, perm, { branchId, channelId });
 
-  async function find(orgId: string, branchId: string, id: string) {
+  /** One broadcast of the branch, when the caller holds `perm` on its number. */
+  async function find(access: Access, branchId: string, id: string, perm: Permission = "broadcasts.view") {
     const [row] = await ctx.db
       .select()
       .from(b)
-      .where(and(eq(b.id, id), eq(b.organizationId, orgId), eq(b.branchId, branchId)))
+      .where(and(eq(b.id, id), eq(b.organizationId, access.orgId), eq(b.branchId, branchId)))
       .limit(1);
-    return row ?? null;
+    if (!row || !allowed(access, branchId, perm, row.channelAccountId)) return null;
+    return row;
   }
 
   /** The branch's channels that can broadcast. */
-  async function branchChannels(orgId: string, branchId: string) {
+  async function branchChannels(access: Access, branchId: string, perm: Permission = "broadcasts.view") {
     const ca = schema.channelAccount;
     const rows = await ctx.db
       .select()
       .from(ca)
-      .where(
-        and(
-          eq(ca.organizationId, orgId),
-          or(
-            eq(ca.defaultBranchId, branchId),
-            sql`exists (select 1 from ${schema.channelAccountBranch} x where x.channel_account_id = ${ca.id} and x.branch_id = ${branchId})`,
-          ),
-        ),
-      )
+      .where(and(eq(ca.organizationId, access.orgId), eq(ca.branchId, branchId)))
       .orderBy(asc(ca.createdAt));
-    return rows.filter((a) => channels().get(a.type)?.capabilities.broadcast);
+    const mine = numbersFor(access, perm, branchId);
+    return rows.filter(
+      (a) => channels().get(a.type)?.capabilities.broadcast && (mine === "all" || mine.has(a.id)),
+    );
   }
 
   async function branchTimezone(branchId: string) {
@@ -201,13 +187,16 @@ export function broadcastRoutes(ctx: AppContext) {
       )
       .orderBy(desc(b.createdAt))
       .limit(200);
-    return c.json({ broadcasts: rows });
+    const mine = numbersFor(access, "broadcasts.view", c.var.branchId);
+    return c.json({
+      broadcasts: rows.filter((r) => mine === "all" || !r.channelAccountId || mine.has(r.channelAccountId)),
+    });
   });
 
   // Everything the create screen needs: channels with their health, ready templates, lists, fields.
   app.get("/options", async (c) => {
     const access = c.var.access;
-    const accounts = await branchChannels(access.orgId, c.var.branchId);
+    const accounts = await branchChannels(access, c.var.branchId);
     const ids = accounts.map((a) => a.id);
     const templates = ids.length
       ? await ctx.db
@@ -273,13 +262,14 @@ export function broadcastRoutes(ctx: AppContext) {
         ...fields.map((f) => ({ key: f.key, label: f.label })),
       ],
       timezone: await branchTimezone(c.var.branchId),
-      canManage: await canManage(access, c.var.branchId),
+      canManage: allowed(access, c.var.branchId, "broadcasts.manage"),
+      canSend: allowed(access, c.var.branchId, "broadcasts.send"),
     });
   });
 
   app.get("/:id", async (c) => {
     const access = c.var.access;
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const bc = await find(access, c.var.branchId, c.req.param("id"));
     if (!bc) return fail(c, 404, "not_found");
     // Why people weren't reached, grouped.
     const reasons = await ctx.db
@@ -360,13 +350,15 @@ export function broadcastRoutes(ctx: AppContext) {
       variants,
       followUps: related.filter((x) => x.kind === "follow_up" && x.id !== bc.id),
       parent: related.find((x) => x.id === bc.parentId) ?? null,
-      canManage: await canManage(access, c.var.branchId),
+      canManage: allowed(access, c.var.branchId, "broadcasts.manage", bc.channelAccountId),
+      canSend: allowed(access, c.var.branchId, "broadcasts.send", bc.channelAccountId),
+      canExport: allowed(access, c.var.branchId, "broadcasts.export", bc.channelAccountId),
     });
   });
 
   app.get("/:id/recipients", async (c) => {
     const access = c.var.access;
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const bc = await find(access, c.var.branchId, c.req.param("id"));
     if (!bc) return fail(c, 404, "not_found");
     const status = c.req.query("status");
     const after = c.req.query("after") ?? "";
@@ -399,7 +391,7 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.get("/:id/export", async (c) => {
     const access = c.var.access;
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.export");
     if (!bc) return fail(c, 404, "not_found");
     const rows = await ctx.db
       .select({
@@ -438,12 +430,12 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId)))
-      return fail(c, 403, "forbidden", "Only managers can create broadcasts.");
+    if (!allowed(access, c.var.branchId, "broadcasts.manage"))
+      return fail(c, 403, "forbidden", "You don't have access to create broadcasts.");
     const parsed = await parseBody(c, draftSchema);
     if ("error" in parsed) return parsed.error;
     const d = parsed.data;
-    const account = (await branchChannels(access.orgId, c.var.branchId)).find(
+    const account = (await branchChannels(access, c.var.branchId, "broadcasts.manage")).find(
       (a) => a.id === d.channelAccountId,
     );
     if (!account) return fail(c, 422, "invalid_input", "Choose a channel of this branch.");
@@ -469,8 +461,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.manage")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.manage");
     if (!bc) return fail(c, 404, "not_found");
     if (bc.status !== "draft" && bc.status !== "scheduled")
       return fail(c, 409, "not_editable", "Only drafts and scheduled broadcasts can be changed.");
@@ -479,7 +471,9 @@ export function broadcastRoutes(ctx: AppContext) {
     const d = parsed.data;
     let channel: { type: string; id: string } | undefined;
     if (d.channelAccountId) {
-      channel = (await branchChannels(access.orgId, c.var.branchId)).find((a) => a.id === d.channelAccountId);
+      channel = (await branchChannels(access, c.var.branchId, "broadcasts.manage")).find(
+        (a) => a.id === d.channelAccountId,
+      );
       if (!channel) return fail(c, 422, "invalid_input", "Choose a channel of this branch.");
     }
     const [row] = await ctx.db
@@ -510,8 +504,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.manage")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.manage");
     if (!bc) return fail(c, 404, "not_found");
     if (bc.status !== "draft")
       return fail(c, 409, "not_draft", "Only drafts can be deleted; stop it instead.");
@@ -639,7 +633,7 @@ export function broadcastRoutes(ctx: AppContext) {
   }
 
   app.post("/:id/preview", async (c) => {
-    const bc = await find(c.var.access.orgId, c.var.branchId, c.req.param("id"));
+    const bc = await find(c.var.access, c.var.branchId, c.req.param("id"));
     if (!bc) return fail(c, 404, "not_found");
     const e = await estimate(bc);
     if ("error" in e) return fail(c, 422, "invalid_input", e.error ?? "Can't estimate");
@@ -648,8 +642,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/start", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.send")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send");
     if (!bc) return fail(c, 404, "not_found");
     if (bc.status !== "draft") return fail(c, 409, "not_draft", "This broadcast has already been started.");
     const problems: string[] = [];
@@ -753,7 +747,9 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/pause", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    if (!allowed(access, c.var.branchId, "broadcasts.send")) return fail(c, 403, "forbidden");
+    if (!(await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send")))
+      return fail(c, 404, "not_found");
     const [row] = await ctx.db
       .update(b)
       .set({
@@ -777,8 +773,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/resume", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.send")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send");
     if (!bc) return fail(c, 404, "not_found");
     if (bc.status !== "paused") return fail(c, 409, "not_paused", "Only a paused broadcast can be resumed.");
     // Recipients exist once it started; before that it goes back to waiting for its start.
@@ -802,8 +798,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/stop", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.send")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send");
     if (!bc) return fail(c, 404, "not_found");
     if (!["scheduled", "preparing", "sending", "paused"].includes(bc.status))
       return fail(c, 409, "not_running", "This broadcast isn't running.");
@@ -823,7 +819,7 @@ export function broadcastRoutes(ctx: AppContext) {
         .set({ status: "skipped", skipReason: "stopped", updatedAt: new Date() })
         .where(and(eq(r.broadcastId, bc.id), eq(r.status, "pending")));
     });
-    return c.json({ broadcast: await find(access.orgId, c.var.branchId, bc.id) });
+    return c.json({ broadcast: await find(access, c.var.branchId, bc.id) });
   });
 
   /* ------------------------------------------------------------------ test send, winner */
@@ -831,7 +827,7 @@ export function broadcastRoutes(ctx: AppContext) {
   /** People with a chat on the broadcast's number (the only ones a test can go to). */
   app.get("/:id/test-contacts", async (c) => {
     const access = c.var.access;
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send");
     if (!bc?.channelAccountId) return fail(c, 404, "not_found");
     const q = (c.req.query("q") ?? "").trim();
     const cv = schema.conversation;
@@ -857,8 +853,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/test", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.send")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.send");
     if (!bc?.channelAccountId) return fail(c, 404, "not_found");
     const parsed = await parseBody(
       c,
@@ -943,8 +939,8 @@ export function broadcastRoutes(ctx: AppContext) {
 
   app.post("/:id/winner", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const bc = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!allowed(access, c.var.branchId, "broadcasts.manage")) return fail(c, 403, "forbidden");
+    const bc = await find(access, c.var.branchId, c.req.param("id"), "broadcasts.manage");
     if (!bc) return fail(c, 404, "not_found");
     const parsed = await parseBody(c, z.object({ key: z.enum(["A", "B"]) }));
     if ("error" in parsed) return parsed.error;

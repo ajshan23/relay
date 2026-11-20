@@ -69,7 +69,7 @@ export function InboxNav({
           <span className="truncate">All channels</span>
         </Link>
         {(channels.data ?? [])
-          .filter((c) => c.defaultBranchId === branch.id)
+          .filter((c) => c.branchId === branch.id)
           .map((c) => (
             <Link
               key={c.id}

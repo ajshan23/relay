@@ -61,7 +61,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   const [mode, setMode] = useState<"reply" | "note">("reply");
   const note = mode === "note";
   const addNote = useAddNote(id);
-  const team = useAssignees(id, note && detail.canWork);
+  const team = useAssignees(id, note && !!detail.canNote);
   const quick = useQuickReplies(detail.canWork);
   /** "@Name" typed in a note → that teammate's id, turned into "@[Name](id)" when sent. */
   const mentioned = useRef(new Map<string, string>());
@@ -69,13 +69,13 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
   // The N key switches to a note (shortcuts.tsx).
   useEffect(() => {
     const onKey = (e: Event) => {
-      if ((e as CustomEvent<string>).detail !== "note" || !detail.canWork) return;
+      if ((e as CustomEvent<string>).detail !== "note" || !detail.canNote) return;
       setMode("note");
       requestAnimationFrame(() => input.current?.focus());
     };
     window.addEventListener("relay:inbox-shortcut", onKey);
     return () => window.removeEventListener("relay:inbox-shortcut", onKey);
-  }, [detail.canWork]);
+  }, [detail.canNote]);
   const [active, setActive] = useState(0);
   const [pending, setPending] = useState<Pending | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -277,7 +277,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
     }
   }
 
-  const noteButton = detail.canWork ? (
+  const noteButton = detail.canNote ? (
     <Button size="sm" variant="outline" onClick={() => setMode("note")}>
       <Icon name="lock" />
       Write a note
@@ -431,7 +431,7 @@ export function Composer({ detail, replyTo, onClearReply, dropped, onDroppedHand
           className="border-0 bg-transparent px-1.5 py-1 shadow-none focus-visible:ring-0 dark:bg-transparent"
         />
         <div className="flex items-center gap-1">
-          {detail.canWork ? (
+          {detail.canWork && detail.canNote ? (
             <Segmented
               size="sm"
               aria-label="Reply or internal note"

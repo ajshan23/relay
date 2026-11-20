@@ -20,7 +20,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { branchAccess, fail, requireOrg } from "../branches/access";
+import { branchAccess, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import type { BranchEnv } from "../contacts/shared";
 
@@ -70,7 +70,7 @@ async function resyncUpcoming(
 export function registerGoogleRoutes(app: Hono<BranchEnv>, ctx: AppContext) {
   const deps = calendarDepsFrom(ctx.config);
   const canManage = async (c: Context<BranchEnv>) =>
-    (await branchAccess(ctx, c.var.access, c.var.branchId))?.role === "manager";
+    can(c.var.access, "bookings.settings", { branchId: c.var.branchId });
 
   const shown = (conn: typeof C.$inferSelect | null) =>
     conn
@@ -172,7 +172,11 @@ export function googleCallbackRoutes(ctx: AppContext) {
     const access = (c as unknown as Context<BranchEnv>).var.access;
     if (state.e < Date.now() || state.u !== access.userId || state.o !== access.orgId)
       return back(c, "expired");
-    if ((await branchAccess(ctx, access, state.b))?.role !== "manager") return back(c, "forbidden");
+    if (
+      !(await branchAccess(ctx, access, state.b)) ||
+      !can(access, "bookings.settings", { branchId: state.b })
+    )
+      return back(c, "forbidden");
     try {
       const tokens = await exchangeGoogleCode(deps.google, c.req.query("code") ?? "");
       if (!tokens.refreshToken) return back(c, "no_offline_access");

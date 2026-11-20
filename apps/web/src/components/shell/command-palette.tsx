@@ -15,6 +15,7 @@ import { useTheme } from "next-themes";
 import { useEffect } from "react";
 import { useBranch } from "./branch-context";
 import { sections } from "./nav-config";
+import { useSectionAccess } from "./use-sections";
 
 /** Cmd/Ctrl+K: go to a section, switch branch, switch theme. */
 export function CommandPalette({
@@ -27,6 +28,7 @@ export function CommandPalette({
   const router = useRouter();
   const { setTheme } = useTheme();
   const { branches, setBranch } = useBranch();
+  const allowed = useSectionAccess();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,12 +57,14 @@ export function CommandPalette({
       <CommandList>
         <CommandEmpty>No match.</CommandEmpty>
         <CommandGroup heading="Go to">
-          {sections.map((s) => (
-            <CommandItem key={s.id} value={`go to ${s.label}`} onSelect={run(() => router.push(s.href))}>
-              <s.icon />
-              {s.label}
-            </CommandItem>
-          ))}
+          {sections
+            .filter((s) => allowed(s.id))
+            .map((s) => (
+              <CommandItem key={s.id} value={`go to ${s.label}`} onSelect={run(() => router.push(s.href))}>
+                <s.icon />
+                {s.label}
+              </CommandItem>
+            ))}
         </CommandGroup>
         <CommandGroup heading="Branch">
           {branches.map((b) => (

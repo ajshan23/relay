@@ -43,6 +43,8 @@ export type Counts = {
   snoozed: number;
   closed: number;
   unread: number;
+  /** They see only some of this branch's chats (their own, or some numbers). */
+  partial?: boolean;
 };
 
 export type MediaKind = "image" | "video" | "audio" | "document" | "sticker";
@@ -103,6 +105,10 @@ export type ConversationDetail = {
     }[];
   } | null;
   canWork: boolean;
+  /** Can give it to someone else, close and snooze it. */
+  canAssign?: boolean;
+  /** Can write internal notes. */
+  canNote?: boolean;
 };
 
 export type MessageStatus =
@@ -171,10 +177,8 @@ export type ChannelSummary = {
   displayName: string;
   displayPhone: string | null;
   status: string;
-  /** The branch this channel's conversations and contacts belong to. */
-  defaultBranchId: string | null;
-  /** Branches this channel serves. */
-  branchIds?: string[];
+  /** The one branch this number belongs to: its conversations and contacts are that branch's. */
+  branchId: string;
   statusReason?: string | null;
   /** Choices made per channel. readReceipts: missing means on. */
   settings?: { readReceipts?: boolean };

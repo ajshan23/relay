@@ -13,13 +13,15 @@ import { ApiError, api, type Branch } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { BranchFormModal } from "./branch-form-modal";
 import { BranchPeoplePanel } from "./branch-people-panel";
-import { branchRoleLabel, errorText, orgRoleLabel, timezoneLabel } from "./words";
+import { errorText, timezoneLabel } from "./words";
 
 const col = createDataTableColumns<Branch>();
 
 /** Settings → Branches: every branch the signed-in person can reach, and what they can do with it. */
 export function BranchesSettings() {
-  const { me, canManageOrg, refresh } = useMe();
+  const { me, can, refresh } = useMe();
+  const canAdd = can("branches.create");
+  const canArchive = can("branches.delete");
   const [branches, setBranches] = useState<Branch[] | null>(null);
   const [failed, setFailed] = useState(false);
   // Each overlay keeps its branch after closing, so titles don't change during the close animation.
@@ -69,7 +71,6 @@ export function BranchesSettings() {
     }
   };
 
-  const myOrgRole = me.orgRole;
   const columns = useMemo(
     () =>
       col.columns([
@@ -95,21 +96,18 @@ export function BranchesSettings() {
         col.accessor("role", {
           header: "You",
           enableSorting: false,
-          cell: (info) =>
-            myOrgRole === "owner" || myOrgRole === "admin" ? (
-              <Tag tone="primary" size="sm">
-                {orgRoleLabel[myOrgRole]}
-              </Tag>
-            ) : (
-              <Tag size="sm">{branchRoleLabel[info.getValue()]}</Tag>
-            ),
+          cell: (info) => (
+            <Tag tone={me.owner ? "primary" : "plain"} size="sm">
+              {info.getValue() ?? "No role"}
+            </Tag>
+          ),
         }),
         col.display({
           id: "actions",
           header: () => <span className="sr-only">Actions</span>,
           cell: ({ row }) => {
             const branch = row.original;
-            const canEdit = canManageOrg || branch.role === "manager";
+            const canEdit = can("branches.edit", branch.id);
             return (
               <div className="flex items-center justify-end gap-0.5">
                 <IconButton
@@ -132,7 +130,7 @@ export function BranchesSettings() {
                     }}
                   />
                 ) : null}
-                {canManageOrg ? (
+                {canArchive ? (
                   <IconButton
                     icon="archive"
                     size="sm"
@@ -148,10 +146,10 @@ export function BranchesSettings() {
           },
         }),
       ]),
-    [canManageOrg, myOrgRole],
+    [can, canArchive, me.owner],
   );
 
-  const addButton = canManageOrg ? (
+  const addButton = canAdd ? (
     <Button onClick={() => openForm(null)}>
       <Icon name="add" />
       Add branch
@@ -162,7 +160,7 @@ export function BranchesSettings() {
     <Section
       title="Branches"
       description={
-        canManageOrg
+        canAdd
           ? "Each branch is one shop or location, with its own chats, team and timezone."
           : "The branches you work in. Ask an owner or admin to add a new one."
       }
@@ -193,7 +191,7 @@ export function BranchesSettings() {
               icon={<Icon name="branch" />}
               title="No branches yet"
               description={
-                canManageOrg
+                canAdd
                   ? "Add your first shop or location so chats and your team have somewhere to go."
                   : "You haven't been added to a branch yet. Ask an owner or admin to add you."
               }

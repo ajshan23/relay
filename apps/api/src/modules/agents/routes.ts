@@ -53,9 +53,10 @@ import { z } from "zod";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
-import { branchAccess, fail, requireOrg } from "../branches/access";
+import { can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { type BranchEnv, canIn, requireBranch, requirePermission } from "../contacts/shared";
+import { assignableUsers } from "../conversations/access";
 import { registerToolRoutes, testContact, tryTools } from "./tools";
 
 /** What a booking question in Try would do on Yes, in words. */
@@ -145,13 +146,12 @@ const tryBody = z.object({
 
 export function agentRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("agent.view"));
   const A = schema.aiAgent;
   const K = schema.knowledgeSource;
 
   async function canManage(c: Context<BranchEnv>) {
-    const found = await branchAccess(ctx, c.var.access, c.var.branchId);
-    return found?.role === "manager";
+    return canIn(c, "agent.manage");
   }
   const agentIn = (c: Context<BranchEnv>, id: string) =>
     and(eq(A.id, id), eq(A.organizationId, c.var.access.orgId), eq(A.branchId, c.var.branchId));
@@ -242,6 +242,13 @@ export function agentRoutes(ctx: AppContext) {
     if (!(await canManage(c))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, agentPatchSchema);
     if ("error" in parsed) return parsed.error;
+    // Mira hands chats to someone who can reply in this branch.
+    const handTo = parsed.data.handoff?.assignToUserId;
+    if (handTo) {
+      const people = await assignableUsers(ctx, c.var.access.orgId, c.var.branchId);
+      if (!people.some((p) => p.id === handTo))
+        return fail(c, 422, "invalid_assignee", "That person can't reply to chats in this branch.");
+    }
     const set = Object.fromEntries(Object.entries(parsed.data).filter(([, v]) => v !== undefined));
     return saveAgent(c, async () => {
       const [row] = await ctx.db
@@ -292,6 +299,8 @@ export function agentRoutes(ctx: AppContext) {
 
   /** One turn of the real harness on a pretend chat: the reply plus what the agent looked at. */
   app.post("/:id/try", async (c) => {
+    if (!canIn(c, "agent.try"))
+      return fail(c, 403, "forbidden", "You don't have access to try the AI agent.");
     const parsed = await parseBody(c, tryBody);
     if ("error" in parsed) return parsed.error;
     if (!aiConfigured(ctx.config))
@@ -689,6 +698,7 @@ export function agentRoutes(ctx: AppContext) {
   });
 
   app.get("/usage", async (c) => {
+    if (!can(c.var.access, "usage.view")) return fail(c, 403, "forbidden");
     const orgId = c.var.access.orgId;
     const credits = await aiCredits(ctx.db, orgId, defaultMonthlyCredits);
     const U = schema.aiUsage;

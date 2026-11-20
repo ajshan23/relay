@@ -1,4 +1,5 @@
 import { newId, publishInboxEvent } from "@relay/core";
+import { canAnywhere } from "@relay/core/permissions";
 import { templateLibrary } from "@relay/core/template-library";
 import {
   authContent,
@@ -15,7 +16,7 @@ import { accountRef, channels } from "../../channels";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
-import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type Access, type AccessEnv, can, fail, type Permission, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 
 /*
@@ -63,22 +64,38 @@ type Account = typeof schema.channelAccount.$inferSelect;
 
 export function templateRoutes(ctx: AppContext) {
   const app = new Hono<AccessEnv>();
-  app.use(requireSession, requireOrg(ctx));
+  app.use(requireSession, requireOrg(ctx), async (c, next) => {
+    if (!canAnywhere(c.var.access, "templates.view")) return fail(c, 403, "forbidden");
+    await next();
+  });
 
+  /** Templates live on numbers: a person sees and manages the ones on their numbers. */
   async function canManage(access: Access) {
-    if (isOrgAdmin(access.orgRole)) return true;
-    const [row] = await ctx.db
-      .select({ n: sql<number>`1` })
-      .from(schema.branchMember)
-      .where(
-        and(
-          eq(schema.branchMember.organizationId, access.orgId),
-          eq(schema.branchMember.userId, access.userId),
-          eq(schema.branchMember.role, "manager"),
-        ),
-      )
-      .limit(1);
-    return !!row;
+    return canAnywhere(access, "templates.manage");
+  }
+  const onNumber = (access: Access, perm: Permission, a: Pick<Account, "id" | "branchId">) =>
+    can(access, perm, { branchId: a.branchId, channelId: a.id });
+
+  /** The numbers the template is on (published or not). */
+  async function copiesOf(templateIds: string[]) {
+    if (!templateIds.length) return [];
+    return ctx.db
+      .select({
+        templateId: schema.templateChannel.templateId,
+        id: schema.channelAccount.id,
+        branchId: schema.channelAccount.branchId,
+      })
+      .from(schema.templateChannel)
+      .innerJoin(schema.channelAccount, eq(schema.channelAccount.id, schema.templateChannel.channelAccountId))
+      .where(inArray(schema.templateChannel.templateId, templateIds));
+  }
+  /** May they see (or manage) this template: every number it's on must be theirs. A draft on no number: anyone with the permission. */
+  async function mayTouch(access: Access, perm: Permission, templateId: string) {
+    const copies = await copiesOf([templateId]);
+    if (!copies.length) return canAnywhere(access, perm);
+    return perm === "templates.view"
+      ? copies.some((x) => onNumber(access, perm, x))
+      : copies.every((x) => onNumber(access, perm, x));
   }
 
   const announce = (organizationId: string, templateId: string) =>
@@ -164,8 +181,10 @@ export function templateRoutes(ctx: AppContext) {
    * Publishes (or republishes) a template to channels. Checks it against each channel's rules first,
    * then queues one job per scope (accounts sharing templates are published together).
    */
-  async function publish(template: Template, channelIds: string[]) {
-    const all = await orgChannels(template.organizationId);
+  async function publish(access: Access, template: Template, channelIds: string[]) {
+    const all = (await orgChannels(template.organizationId)).filter(({ account }) =>
+      onNumber(access, "templates.manage", account),
+    );
     const chosen = all.filter((c) => channelIds.includes(c.account.id));
     if (chosen.length !== channelIds.length) return { error: "Some of those channels were not found." };
     const unsupported = chosen.find((c) => !c.limits);
@@ -228,9 +247,19 @@ export function templateRoutes(ctx: AppContext) {
       .from(schema.messageTemplate)
       .where(eq(schema.messageTemplate.organizationId, orgId))
       .orderBy(sql`${schema.messageTemplate.updatedAt} desc`);
-    const chans = await orgChannels(orgId);
+    const access = c.var.access;
+    const chans = (await orgChannels(orgId)).filter(({ account }) =>
+      onNumber(access, "templates.view", account),
+    );
+    const copies = await copiesOf(rows.map((r) => r.id));
+    const seen = rows.filter((r) => {
+      const mine = copies.filter((x) => x.templateId === r.id);
+      return mine.length
+        ? mine.some((x) => onNumber(access, "templates.view", x))
+        : canAnywhere(access, "templates.view");
+    });
     return c.json({
-      templates: await withChannels(rows),
+      templates: await withChannels(seen),
       channels: chans.map(({ account, limits }) => ({
         id: account.id,
         name: account.displayName,
@@ -247,7 +276,7 @@ export function templateRoutes(ctx: AppContext) {
 
   app.get("/:id", async (c) => {
     const t = await findTemplate(c.var.access.orgId, c.req.param("id"));
-    if (!t) return fail(c, 404, "not_found");
+    if (!t || !(await mayTouch(c.var.access, "templates.view", t.id))) return fail(c, 404, "not_found");
     const [one] = await withChannels([t]);
     return c.json({ template: one });
   });
@@ -255,7 +284,7 @@ export function templateRoutes(ctx: AppContext) {
   app.post("/", async (c) => {
     const access = c.var.access;
     if (!(await canManage(access)))
-      return fail(c, 403, "forbidden", "Only owners, admins and managers can add templates.");
+      return fail(c, 403, "forbidden", "You don't have access to add templates.");
     const parsed = await parseBody(c, templateBody);
     if ("error" in parsed) return parsed.error;
     // Authentication templates: the wording comes from the settings, never from the client.
@@ -280,7 +309,7 @@ export function templateRoutes(ctx: AppContext) {
       .returning();
     if (!template) return fail(c, 500, "internal_error");
     if (b.channelIds?.length) {
-      const result = await publish(template, b.channelIds);
+      const result = await publish(access, template, b.channelIds);
       if ("error" in result) {
         // Keep the draft so nothing typed is lost; say what to fix.
         const [one] = await withChannels([template]);
@@ -303,6 +332,8 @@ export function templateRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const t = await findTemplate(access.orgId, c.req.param("id"));
     if (!t) return fail(c, 404, "not_found");
+    if (!(await mayTouch(access, "templates.manage", t.id)))
+      return fail(c, 403, "forbidden", "This template is on a number you don't manage.");
     // Authentication templates: the wording comes from the settings, never from the client.
     const b =
       parsed.data.purpose === "login" && parsed.data.content.auth
@@ -331,7 +362,7 @@ export function templateRoutes(ctx: AppContext) {
     if (!template) return fail(c, 500, "internal_error");
     const targets = [...new Set([...published.map((p) => p.channelId), ...(b.channelIds ?? [])])];
     if (targets.length) {
-      const result = await publish(template, targets);
+      const result = await publish(access, template, targets);
       if ("error" in result) {
         const [one] = await withChannels([template]);
         return c.json(
@@ -355,7 +386,16 @@ export function templateRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const t = await findTemplate(access.orgId, c.req.param("id"));
     if (!t) return fail(c, 404, "not_found");
-    const result = await publish(t, parsed.data.channelIds);
+    if (!(await mayTouch(access, "templates.manage", t.id)))
+      return fail(c, 403, "forbidden", "This template is on a number you don't manage.");
+    const allowedIds = new Set(
+      (await orgChannels(access.orgId))
+        .filter(({ account }) => onNumber(access, "templates.manage", account))
+        .map(({ account }) => account.id),
+    );
+    if (parsed.data.channelIds.some((id) => !allowedIds.has(id)))
+      return fail(c, 403, "forbidden", "You can only publish to numbers you manage.");
+    const result = await publish(access, t, parsed.data.channelIds);
     if ("error" in result)
       return c.json({ error: "not_published", message: result.error, issues: result.issues ?? [] }, 422);
     const [one] = await withChannels([t]);
@@ -367,6 +407,8 @@ export function templateRoutes(ctx: AppContext) {
     if (!(await canManage(access))) return fail(c, 403, "forbidden");
     const t = await findTemplate(access.orgId, c.req.param("id"));
     if (!t) return fail(c, 404, "not_found");
+    if (!(await mayTouch(access, "templates.manage", t.id)))
+      return fail(c, 403, "forbidden", "This template is on a number you don't manage.");
     const name = `${t.name} (copy)`;
     const [copy] = await ctx.db
       .insert(schema.messageTemplate)
@@ -394,6 +436,8 @@ export function templateRoutes(ctx: AppContext) {
     if (!(await canManage(access))) return fail(c, 403, "forbidden");
     const t = await findTemplate(access.orgId, c.req.param("id"));
     if (!t) return fail(c, 404, "not_found");
+    if (!(await mayTouch(access, "templates.manage", t.id)))
+      return fail(c, 403, "forbidden", "This template is on a number you don't manage.");
     const copies = await ctx.db
       .select()
       .from(schema.templateChannel)
@@ -428,7 +472,9 @@ export function templateRoutes(ctx: AppContext) {
   app.post("/sync", async (c) => {
     const access = c.var.access;
     if (!(await canManage(access))) return fail(c, 403, "forbidden");
-    const chans = (await orgChannels(access.orgId)).filter((x) => x.limits && x.account.status === "active");
+    const chans = (await orgChannels(access.orgId)).filter(
+      (x) => x.limits && x.account.status === "active" && onNumber(access, "templates.manage", x.account),
+    );
     for (const { account } of chans)
       await enqueue(
         ctx.queues.templates,

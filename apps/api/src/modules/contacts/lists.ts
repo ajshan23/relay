@@ -9,7 +9,7 @@ import { fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { broadcastsUsingList } from "../broadcasts/routes";
 import { compileFilter, FilterError } from "./filter";
-import { activeFields, type BranchEnv, canEditContacts, listsById, requireBranch } from "./shared";
+import { activeFields, type BranchEnv, canIn, listsById, requireBranch, requirePermission } from "./shared";
 
 /*
  * Lists: who a broadcast goes to. Static lists are picked by hand (members added from the table);
@@ -35,7 +35,7 @@ const SMART_COUNT_TTL_S = 60;
 
 export function contactListRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("contacts.view"));
   const l = schema.contactList;
   const c = schema.contact;
 
@@ -112,7 +112,7 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    if (!canIn(c2, "contacts.edit")) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({
@@ -149,7 +149,7 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    if (!canIn(c2, "contacts.edit")) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({ name: z.string().trim().min(1).max(80).optional(), filter: filterSchema.optional() }),
@@ -193,7 +193,7 @@ export function contactListRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!(await canEditContacts(ctx.db, access, c2.var.branchId))) return fail(c2, 403, "forbidden");
+    if (!canIn(c2, "contacts.edit")) return fail(c2, 403, "forbidden");
     // A broadcast scheduled to start from this list would have nobody to send to.
     const using = (await broadcastsUsingList(ctx, c2.req.param("id"))).filter(
       (x) => x.status === "scheduled",

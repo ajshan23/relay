@@ -1,5 +1,5 @@
 import { env, type IdKind, idPrefixes, newId } from "@relay/core";
-import { asc, createDb, eq, schema } from "@relay/db";
+import { and, applyInvitationGrants, asc, createDb, ensureBuiltInRoles, eq, schema } from "@relay/db";
 import { createEmailOutbox } from "@relay/email";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -20,8 +20,6 @@ const CODE_MINUTES = 10;
 const RESET_MINUTES = 60;
 const INVITATION_DAYS = 2;
 
-const roleLabels: Record<string, string> = { owner: "an owner", admin: "an admin", member: "a team member" };
-
 /**
  * Queue an email without making the request wait or fail on it. Not awaiting also keeps response
  * times the same whether or not an email was sent, so they reveal nothing about accounts.
@@ -29,6 +27,37 @@ const roleLabels: Record<string, string> = { owner: "an owner", admin: "an admin
 function queueInBackground(work: Promise<unknown>) {
   work.catch((err) => console.error("[email] could not queue", err));
 }
+
+/** The invitation email (Better Auth's invites and Relay's own Team invites both send it). */
+export function queueInvitationEmail(d: {
+  id: string;
+  email: string;
+  organizationId: string;
+  organizationName: string;
+  inviterId: string;
+  inviterName: string;
+  inviterEmail: string;
+}) {
+  const url = `${config.WEB_URL}/accept-invitation/${d.id}`;
+  if (dev) console.log(`[auth] invitation for ${d.email} to ${d.organizationName}: ${url}`);
+  queueInBackground(
+    emailOutbox.queueEmail(
+      "team-invitation",
+      d.email,
+      {
+        inviterName: d.inviterName,
+        inviterEmail: d.inviterEmail,
+        organizationName: d.organizationName,
+        roleLabel: "a team member",
+        url,
+        expiresInDays: INVITATION_DAYS,
+      },
+      { organizationId: d.organizationId, userId: d.inviterId },
+    ),
+  );
+}
+
+export const invitationDays = INVITATION_DAYS;
 
 /** Rules the web app shows next to the sign-up form; the auth config below enforces them. */
 export const passwordMinLength = 10;
@@ -41,7 +70,7 @@ const strictLimit = { window: 60, max: 5 };
 
 /**
  * Sign-in, sessions, organizations, members and invitations.
- * Branches and per-branch roles are ours (see modules/branches); Better Auth teams carry no role.
+ * Branches, roles and who may do what are ours (see @relay/core/permissions); Better Auth teams carry no role.
  *
  * The browser reaches this through the web app's /api rewrite, so the public origin is WEB_URL.
  */
@@ -151,25 +180,36 @@ export const auth = betterAuth({
       // sent to that same email.
       requireEmailVerificationOnInvitation: true,
       invitationExpiresIn: INVITATION_DAYS * 24 * 60 * 60,
-      sendInvitationEmail: async (data) => {
-        const url = `${config.WEB_URL}/accept-invitation/${data.id}`;
-        if (dev) console.log(`[auth] invitation for ${data.email} to ${data.organization.name}: ${url}`);
-        queueInBackground(
-          emailOutbox.queueEmail(
-            "team-invitation",
-            data.email,
-            {
-              inviterName: data.inviter.user.name,
-              inviterEmail: data.inviter.user.email,
-              organizationName: data.organization.name,
-              roleLabel: roleLabels[data.role] ?? "a team member",
-              url,
-              expiresInDays: INVITATION_DAYS,
-            },
-            { organizationId: data.organization.id, userId: data.inviter.user.id },
-          ),
-        );
+      // Access is ours (roles and grants, see @relay/core/permissions), kept in step here.
+      organizationHooks: {
+        afterCreateOrganization: async ({ organization }) => {
+          await ensureBuiltInRoles(db, organization.id);
+        },
+        // The access chosen when inviting becomes theirs when they accept.
+        afterAcceptInvitation: async ({ invitation, member }) => {
+          await applyInvitationGrants(db, invitation.id, member.userId);
+        },
+        afterRemoveMember: async ({ member }) => {
+          await db
+            .delete(schema.memberGrant)
+            .where(
+              and(
+                eq(schema.memberGrant.organizationId, member.organizationId),
+                eq(schema.memberGrant.userId, member.userId),
+              ),
+            );
+        },
       },
+      sendInvitationEmail: async (data) =>
+        queueInvitationEmail({
+          id: data.id,
+          email: data.email,
+          organizationId: data.organization.id,
+          organizationName: data.organization.name,
+          inviterId: data.inviter.user.id,
+          inviterName: data.inviter.user.name,
+          inviterEmail: data.inviter.user.email,
+        }),
     }),
   ],
   advanced: {

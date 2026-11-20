@@ -19,6 +19,7 @@ import {
   type ValidationContext,
   validateDefinition,
 } from "@relay/core/automations";
+import { numbersFor } from "@relay/core/permissions";
 import { type TemplateContent, templateVariables } from "@relay/core/templates";
 import { and, desc, eq, ilike, inArray, isNull, ne, or, schema, sql } from "@relay/db";
 import type { RunStatus } from "@relay/kairos";
@@ -26,10 +27,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type Access, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type Access, can, fail, type Permission, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, requireBranch } from "../contacts/shared";
-import { assignableUsers, type Conversation, canWork } from "../conversations/access";
+import { assignableUsers, canWork, findConversation, visibleTo } from "../conversations/access";
 import { resolveMapLink, reversePlace, searchPlaces } from "./places";
 import { isLiveRun, startRunInChat, stopRun } from "./runs";
 
@@ -78,38 +79,43 @@ const checksum = (def: AutomationDefinition) =>
 export function automationRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  // The inbox's "run an automation in this chat" routes only need the chat; everything else needs to see automations.
+  app.use(async (c, next) => {
+    if (
+      !c.req.path.includes("/chat/") &&
+      !can(c.var.access, "automations.view", { branchId: c.var.branchId })
+    )
+      return fail(c, 403, "forbidden");
+    await next();
+  });
   const a = schema.automation;
   const v = schema.automationVersion;
 
-  async function canManage(access: Access, branchId: string) {
-    if (isOrgAdmin(access.orgRole)) return true;
-    const [row] = await ctx.db
-      .select({ n: sql<number>`1` })
-      .from(schema.branchMember)
-      .where(
-        and(
-          eq(schema.branchMember.branchId, branchId),
-          eq(schema.branchMember.userId, access.userId),
-          eq(schema.branchMember.role, "manager"),
-        ),
-      )
-      .limit(1);
-    return !!row;
+  /** May they do `perm` in this branch (on one of its numbers, when given)? */
+  async function canManage(
+    access: Access,
+    branchId: string,
+    perm: Permission = "automations.manage",
+    channelId?: string | null,
+  ) {
+    return can(access, perm, { branchId, channelId });
   }
 
-  async function find(orgId: string, branchId: string, id: string) {
+  /** One automation of the branch, when they hold `perm` on its number. */
+  async function find(access: Access, branchId: string, id: string, perm: Permission = "automations.view") {
     const [row] = await ctx.db
       .select()
       .from(a)
-      .where(and(eq(a.id, id), eq(a.organizationId, orgId), eq(a.branchId, branchId)))
+      .where(and(eq(a.id, id), eq(a.organizationId, access.orgId), eq(a.branchId, branchId)))
       .limit(1);
-    return row ?? null;
+    if (!row || !can(access, perm, { branchId, channelId: row.channelAccountId })) return null;
+    return row;
   }
 
   /** WhatsApp numbers that serve this branch. */
-  async function branchNumbers(orgId: string, branchId: string) {
+  async function branchNumbers(access: Access, branchId: string, perm: Permission = "automations.view") {
     const ca = schema.channelAccount;
-    return ctx.db
+    const rows = await ctx.db
       .select({
         id: ca.id,
         displayName: ca.displayName,
@@ -117,21 +123,16 @@ export function automationRoutes(ctx: AppContext) {
         status: ca.status,
       })
       .from(ca)
-      .leftJoin(
-        schema.channelAccountBranch,
-        and(
-          eq(schema.channelAccountBranch.channelAccountId, ca.id),
-          eq(schema.channelAccountBranch.branchId, branchId),
-        ),
-      )
       .where(
         and(
-          eq(ca.organizationId, orgId),
+          eq(ca.organizationId, access.orgId),
           eq(ca.type, "whatsapp"),
           ne(ca.status, "disconnected"),
-          or(eq(ca.defaultBranchId, branchId), eq(schema.channelAccountBranch.branchId, branchId)),
+          eq(ca.branchId, branchId),
         ),
       );
+    const mine = numbersFor(access, perm, branchId);
+    return rows.filter((n) => mine === "all" || mine.has(n.id));
   }
 
   /** What the editor and validation need: tags, fields, team and this number's templates. */
@@ -281,15 +282,19 @@ export function automationRoutes(ctx: AppContext) {
         s,
       ]),
     );
+    const mine = numbersFor(access, "automations.view", c.var.branchId);
     return c.json({
-      automations: rows.map((r) => ({
-        ...view(r),
-        runs7d: byId.get(r.id)?.runs7d ?? 0,
-        liveRuns: byId.get(r.id)?.live ?? 0,
-        lastRunAt: byId.get(r.id)?.last_run ?? null,
-      })),
-      numbers: await branchNumbers(access.orgId, c.var.branchId),
+      automations: rows
+        .filter((r) => mine === "all" || !r.channelAccountId || mine.has(r.channelAccountId))
+        .map((r) => ({
+          ...view(r),
+          runs7d: byId.get(r.id)?.runs7d ?? 0,
+          liveRuns: byId.get(r.id)?.live ?? 0,
+          lastRunAt: byId.get(r.id)?.last_run ?? null,
+        })),
+      numbers: await branchNumbers(access, c.var.branchId),
       canManage: await canManage(access, c.var.branchId),
+      canPublish: await canManage(access, c.var.branchId, "automations.publish"),
     });
   });
 
@@ -328,7 +333,7 @@ export function automationRoutes(ctx: AppContext) {
     const parsed = await parseBody(c, createBody);
     if ("error" in parsed) return parsed.error;
     const body = parsed.data;
-    const numbers = await branchNumbers(access.orgId, c.var.branchId);
+    const numbers = await branchNumbers(access, c.var.branchId, "automations.manage");
     if (!numbers.some((n) => n.id === body.channelAccountId))
       return fail(c, 422, "wrong_number", "That number isn't connected to this branch.");
     const starter = body.starterId ? starters.find((s) => s.id === body.starterId) : null;
@@ -356,7 +361,7 @@ export function automationRoutes(ctx: AppContext) {
 
   app.get("/:id", async (c) => {
     const access = c.var.access;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found");
     const def = migrateDefinition(row.draft);
     const versions = await ctx.db
@@ -380,27 +385,28 @@ export function automationRoutes(ctx: AppContext) {
       versions: versions.map(({ checksum: _, ...x }) => x),
       liveVersion: live ? { id: live.id, number: live.number } : null,
       unpublishedChanges: !live || live.checksum !== checksum(def),
-      canManage: await canManage(access, c.var.branchId),
+      canManage: await canManage(access, c.var.branchId, "automations.manage", row.channelAccountId),
+      canPublish: await canManage(access, c.var.branchId, "automations.publish", row.channelAccountId),
     });
   });
 
   app.get("/:id/options", async (c) => {
     const access = c.var.access;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found");
     return c.json({
       ...(await options(access.orgId, c.var.branchId, row.channelAccountId)),
-      numbers: await branchNumbers(access.orgId, c.var.branchId),
+      numbers: await branchNumbers(access, c.var.branchId),
     });
   });
 
   app.patch("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    if (!(await canManage(access, c.var.branchId, "automations.manage"))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, patchBody);
     if ("error" in parsed) return parsed.error;
     const body = parsed.data;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.manage");
     if (!row) return fail(c, 404, "not_found");
     let draft: AutomationDefinition | undefined;
     if (body.draft !== undefined) {
@@ -414,7 +420,7 @@ export function automationRoutes(ctx: AppContext) {
       // moving a live automation would change it without a publish and without these checks.
       if (row.status === "live")
         return fail(c, 409, "number_locked", "Pause the automation to move it to another number.");
-      const numbers = await branchNumbers(access.orgId, c.var.branchId);
+      const numbers = await branchNumbers(access, c.var.branchId, "automations.manage");
       if (!numbers.some((n) => n.id === body.channelAccountId))
         return fail(c, 422, "wrong_number", "That number isn't connected to this branch.");
     }
@@ -446,9 +452,9 @@ export function automationRoutes(ctx: AppContext) {
 
   app.post("/:id/publish", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    if (!(await canManage(access, c.var.branchId, "automations.publish"))) return fail(c, 403, "forbidden");
     const ack = !!(await c.req.json().catch(() => ({})))?.acknowledgeWarnings;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.publish");
     if (!row) return fail(c, 404, "not_found");
     if (row.status === "archived")
       return fail(c, 409, "archived", "This automation is archived, so it can't be published.");
@@ -517,8 +523,8 @@ export function automationRoutes(ctx: AppContext) {
   for (const action of ["pause", "resume", "archive"] as const)
     app.post(`/:id/${action}`, async (c) => {
       const access = c.var.access;
-      if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-      const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+      if (!(await canManage(access, c.var.branchId, "automations.publish"))) return fail(c, 403, "forbidden");
+      const row = await find(access, c.var.branchId, c.req.param("id"), "automations.publish");
       if (!row) return fail(c, 404, "not_found");
       if (action === "resume" && !row.liveVersionId)
         return fail(c, 409, "never_published", "Publish it first.");
@@ -570,8 +576,8 @@ export function automationRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!(await canManage(access, c.var.branchId, "automations.manage"))) return fail(c, 403, "forbidden");
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.manage");
     if (!row) return fail(c, 404, "not_found");
     if (row.liveVersionId)
       return fail(
@@ -586,8 +592,8 @@ export function automationRoutes(ctx: AppContext) {
 
   app.post("/:id/versions/:n/restore", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!(await canManage(access, c.var.branchId, "automations.manage"))) return fail(c, 403, "forbidden");
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.manage");
     if (!row) return fail(c, 404, "not_found");
     const [ver] = await ctx.db
       .select()
@@ -696,7 +702,7 @@ export function automationRoutes(ctx: AppContext) {
 
   app.get("/:id/runs", async (c) => {
     const access = c.var.access;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found");
     const status = c.req.query("status");
     const before = c.req.query("before");
@@ -733,7 +739,7 @@ export function automationRoutes(ctx: AppContext) {
 
   app.get("/:id/runs/:runId", async (c) => {
     const access = c.var.access;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"));
     if (!row) return fail(c, 404, "not_found");
     const found = await ctx.kairos.getRun(c.req.param("runId"));
     const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels>;
@@ -803,8 +809,8 @@ export function automationRoutes(ctx: AppContext) {
 
   app.post("/:id/runs/:runId/stop", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    if (!(await canManage(access, c.var.branchId, "automations.publish"))) return fail(c, 403, "forbidden");
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.publish");
     if (!row) return fail(c, 404, "not_found");
     const found = await ctx.kairos.getRun(c.req.param("runId"));
     const l = (found?.run.labels ?? {}) as Partial<AutomationRunLabels>;
@@ -818,7 +824,7 @@ export function automationRoutes(ctx: AppContext) {
 
   app.get("/:id/test-chats", async (c) => {
     const access = c.var.access;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.manage");
     if (!row?.channelAccountId) return fail(c, 404, "not_found");
     const q = c.req.query("q")?.trim();
     const cv = schema.conversation;
@@ -837,7 +843,7 @@ export function automationRoutes(ctx: AppContext) {
         and(
           eq(cv.channelAccountId, row.channelAccountId),
           eq(cv.kind, "direct"),
-          eq(cv.organizationId, access.orgId),
+          visibleTo(access, c.var.branchId),
           q ? or(ilike(ct.name, `%${q}%`), ilike(ct.phone, `%${q.replace(/\D/g, "") || q}%`)) : undefined,
         ),
       )
@@ -848,11 +854,19 @@ export function automationRoutes(ctx: AppContext) {
 
   app.post("/:id/test", async (c) => {
     const access = c.var.access;
-    if (!(await canManage(access, c.var.branchId))) return fail(c, 403, "forbidden");
+    if (!(await canManage(access, c.var.branchId, "automations.manage"))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, z.object({ conversationId: z.string().min(1) }));
     if ("error" in parsed) return parsed.error;
-    const row = await find(access.orgId, c.var.branchId, c.req.param("id"));
+    const row = await find(access, c.var.branchId, c.req.param("id"), "automations.manage");
     if (!row) return fail(c, 404, "not_found");
+    const testChat = await findConversation(ctx, access, parsed.data.conversationId);
+    if (
+      !testChat ||
+      testChat.branchId !== c.var.branchId ||
+      testChat.channelAccountId !== row.channelAccountId ||
+      !(await canWork(ctx, access, testChat))
+    )
+      return fail(c, 404, "not_found", "Pick one of this number's chats you can reply in.");
     const def = migrateDefinition(row.draft);
     const opts = await options(access.orgId, c.var.branchId, row.channelAccountId);
     const issues = await check(row, def, opts);
@@ -895,14 +909,7 @@ export function automationRoutes(ctx: AppContext) {
   // ---- from a chat in the inbox
 
   async function chatFor(access: Access, conversationId: string) {
-    const [conv] = await ctx.db
-      .select()
-      .from(schema.conversation)
-      .where(
-        and(eq(schema.conversation.id, conversationId), eq(schema.conversation.organizationId, access.orgId)),
-      )
-      .limit(1);
-    return conv ?? null;
+    return findConversation(ctx, access, conversationId);
   }
 
   app.get("/chat/:conversationId", async (c) => {
@@ -964,7 +971,11 @@ export function automationRoutes(ctx: AppContext) {
         ),
       )
       .orderBy(a.name);
-    return c.json({ current, runnable, canRun: await canWork(ctx, access, conv as Conversation) });
+    return c.json({
+      current,
+      runnable,
+      canRun: can(access, "automations.run", { branchId: conv.branchId, channelId: conv.channelAccountId }),
+    });
   });
 
   app.post("/chat/:conversationId/run", async (c) => {
@@ -973,7 +984,8 @@ export function automationRoutes(ctx: AppContext) {
     if ("error" in parsed) return parsed.error;
     const conv = await chatFor(access, c.req.param("conversationId"));
     if (!conv) return fail(c, 404, "not_found");
-    if (!(await canWork(ctx, access, conv as Conversation))) return fail(c, 403, "forbidden");
+    if (!can(access, "automations.run", { branchId: conv.branchId, channelId: conv.channelAccountId }))
+      return fail(c, 403, "forbidden");
     const [row] = await ctx.db
       .select({ a, def: v.definition, versionId: v.id })
       .from(a)
@@ -1005,7 +1017,8 @@ export function automationRoutes(ctx: AppContext) {
     const access = c.var.access;
     const conv = await chatFor(access, c.req.param("conversationId"));
     if (!conv) return fail(c, 404, "not_found");
-    if (!(await canWork(ctx, access, conv as Conversation))) return fail(c, 403, "forbidden");
+    if (!can(access, "automations.run", { branchId: conv.branchId, channelId: conv.channelAccountId }))
+      return fail(c, 403, "forbidden");
     if (conv.automationRunId) await stopRun(ctx, conv.automationRunId, conv.id);
     return c.json({ ok: true });
   });

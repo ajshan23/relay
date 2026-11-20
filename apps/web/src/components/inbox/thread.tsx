@@ -454,7 +454,7 @@ function ThreadHeader({
         }),
     });
   changeRef.current = (status) =>
-    d?.canWork
+    d?.canAssign
       ? change({ status }, status === "closed" ? "Conversation closed" : "Conversation reopened")
       : undefined;
 
@@ -525,14 +525,14 @@ function ThreadHeader({
                   Assign to me
                 </DropdownMenuItem>
               ) : null}
-              {d.assignee ? (
+              {d.assignee && d.canAssign ? (
                 <DropdownMenuItem onSelect={() => change({ assignedUserId: null }, "Unassigned")}>
                   <Icon name="close" size="sm" />
                   Unassign
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuSeparator />
-              {people.isPending ? (
+              {d.canAssign ? <DropdownMenuSeparator /> : null}
+              {!d.canAssign ? null : people.isPending ? (
                 <div className="flex justify-center py-3">
                   <Spinner />
                 </div>
@@ -557,14 +557,14 @@ function ThreadHeader({
           </DropdownMenu>
         ) : null}
         {c.kind === "direct" ? <RunAutomationButton conversationId={c.id} /> : null}
-        {d.canWork && c.status === "open" ? (
+        {d.canAssign && c.status === "open" ? (
           <SnoozeMenu
             snoozedUntil={c.snoozedUntil}
             busy={update.isPending}
             onSnooze={(until, label) => change({ snoozedUntil: until }, label)}
           />
         ) : null}
-        {d.canWork ? (
+        {d.canAssign ? (
           c.status === "open" ? (
             <Button
               ref={closeRef}

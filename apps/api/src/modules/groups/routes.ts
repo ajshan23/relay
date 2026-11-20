@@ -1,14 +1,14 @@
 import type { ChannelIdentity } from "@relay/channels";
 import { newId } from "@relay/core";
-import { and, asc, desc, eq, inArray, isNull, or, schema, sql } from "@relay/db";
+import { and, asc, desc, eq, inArray, isNull, or, schema } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
 import { accountRef, channels, providerFailure } from "../../channels";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type Access, type AccessEnv, branchAccess, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type Access, type AccessEnv, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { reachableBranches } from "../conversations/routes";
+import { reachFilter } from "../conversations/access";
 
 /*
  * Group chats on any channel that has them. Everything goes through the channel's adapter and is
@@ -56,11 +56,10 @@ export function groupRoutes(ctx: AppContext) {
 
   /** Groups the caller may see, in the active business. */
   async function visible(access: Access) {
-    const branches = await reachableBranches(ctx, access);
-    const inOrg = eq(schema.channelGroup.organizationId, access.orgId);
-    if (branches === null) return inOrg;
-    if (!branches.length) return sql`false`;
-    return and(inOrg, inArray(schema.channelGroup.branchId, branches));
+    return and(
+      eq(schema.channelGroup.organizationId, access.orgId),
+      reachFilter(access, "groups.view", schema.channelGroup.branchId, schema.channelGroup.channelAccountId),
+    );
   }
 
   async function load(access: Access, id: string) {
@@ -73,17 +72,16 @@ export function groupRoutes(ctx: AppContext) {
     return row ?? null;
   }
 
-  async function canManage(access: Access, branchId: string | null) {
-    if (isOrgAdmin(access.orgRole)) return true;
-    if (!branchId) return false;
-    return (await branchAccess(ctx, access, branchId))?.role === "manager";
+  async function canManage(access: Access, branchId: string | null, channelId?: string) {
+    return can(access, "groups.manage", { branchId, channelId });
   }
 
   /** The loaded group and its channel's group adapter, or an error answer. */
   async function managed(c: Parameters<typeof fail>[0], access: Access, id: string) {
     const row = await load(access, id);
     if (!row) return { error: fail(c, 404, "not_found") };
-    if (!(await canManage(access, row.group.branchId))) return { error: fail(c, 403, "forbidden") };
+    if (!(await canManage(access, row.group.branchId, row.group.channelAccountId)))
+      return { error: fail(c, 403, "forbidden") };
     const adapter = channels().get(row.account.type);
     if (!adapter?.groups || !adapter.capabilities.groups) {
       return { error: fail(c, 409, "not_supported", "This channel has no group chats.") };
@@ -119,20 +117,10 @@ export function groupRoutes(ctx: AppContext) {
       )
       .limit(1);
     if (!account) return fail(c, 404, "not_found", "Unknown channel.");
-    const branchId = body.branchId ?? account.defaultBranchId;
-    if (!(await canManage(access, branchId))) return fail(c, 403, "forbidden");
-    if (branchId && body.branchId) {
-      const linked = await ctx.db
-        .select()
-        .from(schema.channelAccountBranch)
-        .where(
-          and(
-            eq(schema.channelAccountBranch.channelAccountId, account.id),
-            eq(schema.channelAccountBranch.branchId, branchId),
-          ),
-        );
-      if (!linked.length) return fail(c, 422, "invalid_input", "That branch does not use this channel.");
-    }
+    const branchId = account.branchId;
+    if (body.branchId && body.branchId !== branchId)
+      return fail(c, 422, "invalid_input", "That branch does not use this channel.");
+    if (!(await canManage(access, branchId, account.id))) return fail(c, 403, "forbidden");
     const adapter = channels().get(account.type);
     if (!adapter?.groups || !adapter.capabilities.groups?.canCreate) {
       return fail(c, 409, "not_supported", "This channel cannot create group chats.");

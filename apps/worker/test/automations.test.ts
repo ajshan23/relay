@@ -289,7 +289,7 @@ before(async () => {
     displayName: "Lumen test",
     credentials: "test",
     status: "active",
-    defaultBranchId: ids.branch,
+    branchId: ids.branch,
   });
   const def = welcomeMenu();
   await db.insert(schema.automation).values({

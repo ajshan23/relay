@@ -65,7 +65,7 @@ before(async () => {
     displayName: "Lumen booking test",
     credentials: "test",
     status: "active",
-    defaultBranchId: ids.branch,
+    branchId: ids.branch,
   });
   await db.insert(schema.contact).values({
     id: ids.contact,

@@ -1,27 +1,58 @@
 /** Shapes returned by the API. Keep in step with docs/02-accounts-api.md. */
 
+import type { Permission } from "@relay/core/permissions";
+
+export type { Permission };
 export type OrgRole = "owner" | "admin" | "member";
-export type BranchRole = "manager" | "agent" | "viewer";
+/** Built-in role keys (Admin, Manager, Agent, Viewer). */
+export type BranchRole = "admin" | "manager" | "agent" | "viewer";
 
 export type Me = {
   user: { id: string; name: string; email: string; image: string | null };
   organization: { id: string; name: string; slug: string } | null;
+  /** Kept for older screens: "owner", "admin" (can change anyone's access) or "member". */
   orgRole: OrgRole | null;
+  /** The company owner can do everything. */
+  owner: boolean;
+  /** What they may do across the company (numbers, team, roles, settings...). */
+  permissions: Permission[];
   branches: BranchSummary[];
 };
 
-export type BranchSummary = { id: string; name: string; slug: string; timezone: string; role: BranchRole };
+export type BranchSummary = {
+  id: string;
+  name: string;
+  slug: string;
+  timezone: string;
+  /** Their role name(s) in this branch, or "Owner". */
+  role: string | null;
+  /** What they may do in this branch (on at least one of its numbers). */
+  permissions: Permission[];
+};
 export type Branch = BranchSummary & { createdAt: string; memberCount: number };
+
+/** One role given to someone, in some branches and numbers. */
+export type AccessGrant = {
+  id?: string;
+  roleId: string;
+  roleName?: string;
+  allBranches: boolean;
+  branchIds: string[];
+  allNumbers: boolean;
+  numberIds: string[];
+};
 
 export type BranchMember = {
   userId: string;
   name: string;
   email: string;
   image: string | null;
-  orgRole: OrgRole;
-  /** Null when the person reaches this branch only through their organization role. */
-  branchRole: BranchRole | null;
-  /** True for organization owners and admins, who can manage every branch. */
+  owner: boolean;
+  /** Their role name(s) here. */
+  role: string;
+  /** The grants that reach this branch. */
+  grants: AccessGrant[];
+  /** Their access here comes from the owner role or a grant for several branches: change it in Team. */
   inherited: boolean;
 };
 

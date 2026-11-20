@@ -17,7 +17,8 @@
     "./agent-tools": "./src/agent-tools.ts",
     "./bookings": "./src/bookings.ts",
     "./google-calendar": "./src/google-calendar.ts",
-    "./net": "./src/net.ts"
+    "./net": "./src/net.ts",
+    "./permissions": "./src/permissions.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

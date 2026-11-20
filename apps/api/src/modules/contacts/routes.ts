@@ -14,17 +14,18 @@ import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
 import { requireSession } from "../auth/session";
 import { onTagsAdded } from "../automations/runs";
-import { type Access, type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type Access, type AccessEnv, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { compileFilter, compileKeyset, compileSort, FilterError } from "./filter";
 import {
   type BranchEnv,
-  canEditContacts,
+  canIn,
   createField,
   listsById,
   activeFields as loadFields,
   ownChannel,
   requireBranch,
+  requirePermission,
   setOptOut,
 } from "./shared";
 
@@ -90,12 +91,12 @@ const fieldTypeSchema = z.enum([
 
 export function contactRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("contacts.view"));
   const exportStorage = fileStorage();
 
   /* ---------------------------------------------------------------- access */
 
-  const canEdit = (access: Access, branchId: string) => canEditContacts(ctx.db, access, branchId);
+  const canEdit = (access: Access, branchId: string) => can(access, "contacts.edit", { branchId });
 
   const activeFields = (orgId: string) => loadFields(ctx.db, orgId);
   const byKey = (rows: { key: string }[]) =>
@@ -333,6 +334,8 @@ export function contactRoutes(ctx: AppContext) {
    */
   app.post("/export", async (c2) => {
     const access = c2.var.access;
+    if (!canIn(c2, "contacts.export"))
+      return fail(c2, 403, "forbidden", "You don't have access to export contacts.");
     const parsed = await parseBody(
       c2,
       querySchema.extend({
@@ -449,7 +452,7 @@ export function contactRoutes(ctx: AppContext) {
         .where(
           and(
             eq(schema.channelAccount.organizationId, access.orgId),
-            eq(schema.channelAccount.defaultBranchId, c2.var.branchId),
+            eq(schema.channelAccount.branchId, c2.var.branchId),
           ),
         ),
       ctx.db
@@ -487,7 +490,10 @@ export function contactRoutes(ctx: AppContext) {
       views: views.map((v) => ({ ...v, shared: v.ownerUserId === null })),
       lists,
       canEdit: await canEdit(access, c2.var.branchId),
-      canManage: isOrgAdmin(access.orgRole),
+      canManage: can(access, "contacts.fields"),
+      canDelete: canIn(c2, "contacts.delete"),
+      canImport: canIn(c2, "contacts.import"),
+      canExport: canIn(c2, "contacts.export"),
     });
   });
 
@@ -715,7 +721,7 @@ export function contactRoutes(ctx: AppContext) {
     const parsed = await parseBody(c2, bulkSchema);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
-    if (b.action === "delete" ? !isOrgAdmin(access.orgRole) : !(await canEdit(access, c2.var.branchId)))
+    if (!canIn(c2, b.action === "delete" ? "contacts.delete" : "contacts.edit"))
       return fail(c2, 403, "forbidden");
     const scope = and(
       eq(c.organizationId, access.orgId),
@@ -814,8 +820,8 @@ export function contactRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c2, 403, "forbidden", "Only owners and admins can delete contacts.");
+    if (!canIn(c2, "contacts.delete"))
+      return fail(c2, 403, "forbidden", "You don't have access to delete contacts.");
     const res = await ctx.db
       .delete(c)
       .where(
@@ -861,7 +867,7 @@ export function contactRoutes(ctx: AppContext) {
       eq(schema.contactNote.contactId, c2.req.param("id")),
       eq(schema.contactNote.organizationId, access.orgId),
       // Your own notes, or anyone's for owners and admins.
-      isOrgAdmin(access.orgRole) ? undefined : eq(schema.contactNote.authorUserId, access.userId),
+      can(access, "team.edit_access") ? undefined : eq(schema.contactNote.authorUserId, access.userId),
     );
     const res = await ctx.db.delete(schema.contactNote).where(where).returning({ id: schema.contactNote.id });
     if (!res.length) return fail(c2, 404, "not_found");
@@ -895,8 +901,8 @@ export function contactFieldRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c2, 403, "forbidden", "Only owners and admins can add fields.");
+    if (!can(access, "contacts.fields"))
+      return fail(c2, 403, "forbidden", "You don't have access to add fields.");
     const parsed = await parseBody(c2, fieldBody);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
@@ -909,7 +915,7 @@ export function contactFieldRoutes(ctx: AppContext) {
   // Rename, change options, reorder. The type and key never change (stored values depend on them).
   app.patch("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!isOrgAdmin(access.orgRole)) return fail(c2, 403, "forbidden");
+    if (!can(access, "contacts.fields")) return fail(c2, 403, "forbidden");
     const parsed = await parseBody(
       c2,
       z.object({
@@ -937,7 +943,7 @@ export function contactFieldRoutes(ctx: AppContext) {
   // Archive: the column disappears, the values stay on the contacts (restorable later).
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!isOrgAdmin(access.orgRole)) return fail(c2, 403, "forbidden");
+    if (!can(access, "contacts.fields")) return fail(c2, 403, "forbidden");
     const [row] = await ctx.db
       .update(f)
       .set({ archivedAt: new Date(), updatedAt: new Date(), indexed: false })
@@ -1008,6 +1014,8 @@ export function tagRoutes(ctx: AppContext) {
 
   app.post("/", async (c2) => {
     const access = c2.var.access;
+    if (!can(access, "contacts.fields"))
+      return fail(c2, 403, "forbidden", "You don't have access to add tags.");
     const parsed = await parseBody(c2, tagBody);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
@@ -1032,6 +1040,8 @@ export function tagRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c2) => {
     const access = c2.var.access;
+    if (!can(access, "contacts.fields"))
+      return fail(c2, 403, "forbidden", "You don't have access to change tags.");
     const parsed = await parseBody(c2, tagBody.partial());
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
@@ -1049,8 +1059,8 @@ export function tagRoutes(ctx: AppContext) {
   // Deleting a tag also takes it off every contact, in one transaction.
   app.delete("/:id", async (c2) => {
     const access = c2.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c2, 403, "forbidden", "Only owners and admins can delete tags.");
+    if (!can(access, "contacts.fields"))
+      return fail(c2, 403, "forbidden", "You don't have access to delete tags.");
     const id = c2.req.param("id");
     const done = await ctx.db.transaction(async (tx) => {
       const res = await tx
@@ -1077,7 +1087,7 @@ export function tagRoutes(ctx: AppContext) {
 
 export function contactViewRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("contacts.view"));
   const v = schema.contactView;
   const viewBody = z.object({
     name: z.string().trim().min(1).max(60),
@@ -1096,7 +1106,7 @@ export function contactViewRoutes(ctx: AppContext) {
       eq(v.id, id),
       eq(v.organizationId, access.orgId),
       eq(v.branchId, branchId),
-      isOrgAdmin(access.orgRole)
+      can(access, "contacts.fields")
         ? or(isNull(v.ownerUserId), eq(v.ownerUserId, access.userId))
         : eq(v.ownerUserId, access.userId),
     );
@@ -1106,8 +1116,8 @@ export function contactViewRoutes(ctx: AppContext) {
     const parsed = await parseBody(c2, viewBody);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
-    if (b.shared && !isOrgAdmin(access.orgRole))
-      return fail(c2, 403, "forbidden", "Only owners and admins can share views with everyone.");
+    if (b.shared && !can(access, "contacts.fields"))
+      return fail(c2, 403, "forbidden", "You don't have access to share views with everyone.");
     const [row] = await ctx.db
       .insert(v)
       .values({

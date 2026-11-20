@@ -3,7 +3,7 @@ import { type FieldOption, type FieldType, fieldKey, optionColours } from "@rela
 import { and, eq, inArray, isNull, schema, sql } from "@relay/db";
 import type { MiddlewareHandler } from "hono";
 import type { AppContext } from "../../context";
-import { type Access, type AccessEnv, fail, isOrgAdmin } from "../branches/access";
+import { type AccessEnv, can, fail, type Permission, reaches } from "../branches/access";
 
 export { activeFields, listsById } from "@relay/db";
 
@@ -146,32 +146,21 @@ export function requireBranch(ctx: AppContext): MiddlewareHandler<BranchEnv> {
       )
       .limit(1);
     if (!found) return fail(c, 404, "branch_not_found", "That branch doesn't exist.");
-    if (!isOrgAdmin(access.orgRole)) {
-      const [member] = await ctx.db
-        .select({ n: sql<number>`1` })
-        .from(schema.branchMember)
-        .where(and(eq(schema.branchMember.branchId, id), eq(schema.branchMember.userId, access.userId)))
-        .limit(1);
-      if (!member) return fail(c, 403, "forbidden", "You don't work in that branch.");
-    }
+    if (!reaches(access, id)) return fail(c, 403, "forbidden", "You don't work in that branch.");
     c.set("branchId", id);
     await next();
   };
 }
 
-/** Owners and admins, or the branch's managers and agents, may change its contacts. */
-export async function canEditContacts(db: Db, access: Access, branchId: string) {
-  if (isOrgAdmin(access.orgRole)) return true;
-  const [row] = await db
-    .select({ n: sql<number>`1` })
-    .from(schema.branchMember)
-    .where(
-      and(
-        eq(schema.branchMember.branchId, branchId),
-        eq(schema.branchMember.userId, access.userId),
-        inArray(schema.branchMember.role, ["manager", "agent"]),
-      ),
-    )
-    .limit(1);
-  return !!row;
+/** Middleware for branch routers: 403 unless the caller holds `perm` in the request's branch. */
+export function requirePermission(perm: Permission, message?: string): MiddlewareHandler<BranchEnv> {
+  return async (c, next) => {
+    if (!can(c.var.access, perm, { branchId: c.var.branchId }))
+      return fail(c, 403, "forbidden", message ?? "You don't have access to this.");
+    await next();
+  };
 }
+
+/** Does the caller hold `perm` in this branch? */
+export const canIn = (c: { var: BranchEnv["Variables"] }, perm: Permission) =>
+  can(c.var.access, perm, { branchId: c.var.branchId });

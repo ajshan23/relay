@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type AccessEnv, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 
 /*
@@ -32,13 +32,13 @@ export function settingsRoutes(ctx: AppContext) {
 
   app.get("/broadcasts", async (c) => {
     const access = c.var.access;
-    return c.json({ rules: await rules(access.orgId), canEdit: isOrgAdmin(access.orgRole) });
+    return c.json({ rules: await rules(access.orgId), canEdit: can(access, "settings.manage") });
   });
 
   app.put("/broadcasts", async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c, 403, "forbidden", "Only owners and admins can change this.");
+    if (!can(access, "settings.manage"))
+      return fail(c, 403, "forbidden", "You don't have access to change this.");
     const parsed = await parseBody(c, rulesSchema);
     if ("error" in parsed) return parsed.error;
     await ctx.db
@@ -54,7 +54,7 @@ export function settingsRoutes(ctx: AppContext) {
   app.get("/storage", async (c) => {
     const access = c.var.access;
     const usage = await getStorageUsage(ctx.db, access.orgId);
-    const admin = isOrgAdmin(access.orgRole);
+    const admin = can(access, "usage.view");
     let largest: {
       id: string;
       name: string | null;

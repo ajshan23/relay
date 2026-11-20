@@ -100,7 +100,9 @@ function CoexistenceProgress({ meta }: { meta: ChannelMeta | undefined }) {
 }
 
 export function ChannelsSettings() {
-  const { canManageOrg } = useMe();
+  const { can: canDo, me } = useMe();
+  const canManageOrg = canDo("numbers.manage");
+  const branchName = (id: string) => me.branches.find((b) => b.id === id)?.name;
   const { branch } = useBranch();
   const channels = useChannels();
   const qc = useQueryClient();
@@ -220,6 +222,7 @@ export function ChannelsSettings() {
                       </ItemTitle>
                       <ItemDescription>
                         {ch.displayPhone ?? ch.type}
+                        {branchName(ch.branchId) ? ` · ${branchName(ch.branchId)}` : ""}
                         {facts.length ? ` · ${facts.join(" · ")}` : ""}
                       </ItemDescription>
                       {ch.status !== "active" && ch.statusReason ? (
@@ -289,7 +292,7 @@ export function ChannelsSettings() {
       )}
       {!canManageOrg ? (
         <p className="text-xs text-muted-foreground">
-          Only owners and admins can connect and change channels.
+          Only people who can manage numbers can connect and change them.
         </p>
       ) : null}
       {connect.dialog}

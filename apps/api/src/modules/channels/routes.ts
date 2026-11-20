@@ -1,10 +1,10 @@
-import { and, asc, eq, inArray, isNull, schema, sql } from "@relay/db";
+import { and, asc, eq, isNull, schema, sql } from "@relay/db";
 import { Hono } from "hono";
 import { z } from "zod";
 import { providerFailure, channels as registry } from "../../channels";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type AccessEnv, fail, isOrgAdmin, requireOrg } from "../branches/access";
+import { type AccessEnv, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { requireBranch } from "../contacts/shared";
 import { finishSetup, runEmbeddedSignup, signupBody } from "./embedded-signup";
@@ -24,7 +24,8 @@ const connectBody = z.object({
   wabaId: z.string().trim().regex(/^\d+$/, "wabaId is the numeric WhatsApp Business Account id"),
   accessToken: z.string().trim().min(20, "accessToken looks too short"),
   displayName: z.string().trim().max(80).optional(),
-  branchIds: z.array(z.string()).optional(),
+  /** The branch the number belongs to (default: the oldest branch). */
+  branchId: z.string().optional(),
 });
 
 /** What the browser may see of a channel: never the credentials. */
@@ -36,7 +37,7 @@ const publicColumns = {
   externalId: schema.channelAccount.externalId,
   status: schema.channelAccount.status,
   statusReason: schema.channelAccount.statusReason,
-  defaultBranchId: schema.channelAccount.defaultBranchId,
+  branchId: schema.channelAccount.branchId,
   providerMeta: schema.channelAccount.providerMeta,
   settings: schema.channelAccount.settings,
   createdAt: schema.channelAccount.createdAt,
@@ -52,32 +53,28 @@ export function channelRoutes(ctx: AppContext) {
       .from(schema.channelAccount)
       .where(eq(schema.channelAccount.organizationId, c.var.access.orgId))
       .orderBy(asc(schema.channelAccount.createdAt));
-    const links = channels.length
-      ? await ctx.db
-          .select()
-          .from(schema.channelAccountBranch)
-          .where(
-            inArray(
-              schema.channelAccountBranch.channelAccountId,
-              channels.map((ch) => ch.id),
-            ),
-          )
-      : [];
     return c.json({
-      channels: channels.map((ch) => ({
-        ...ch,
-        branchIds: links.filter((l) => l.channelAccountId === ch.id).map((l) => l.branchId),
-        /** Whether this kind of channel can show customers read receipts and "typing…". */
-        canShowRead: !!registry().get(ch.type)?.capabilities.readReceipts,
-      })),
+      channels: channels
+        // Numbers they look after, or chat on.
+        .filter((ch) =>
+          (["numbers.view", "chats.view", "chats.view_unassigned", "chats.view_all"] as const).some((p) =>
+            can(c.var.access, p, { branchId: ch.branchId, channelId: ch.id }),
+          ),
+        )
+        .map((ch) => ({
+          ...ch,
+          branchIds: [ch.branchId],
+          /** Whether this kind of channel can show customers read receipts and "typing…". */
+          canShowRead: !!registry().get(ch.type)?.capabilities.readReceipts,
+        })),
     });
   });
 
   // A channel's settings. Owners and admins only.
   app.patch("/:id", async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c, 403, "forbidden", "Only owners and admins can change channel settings.");
+    if (!can(access, "numbers.manage"))
+      return fail(c, 403, "forbidden", "You don't have access to change numbers.");
     const parsed = await parseBody(
       c,
       z.object({ settings: z.object({ readReceipts: z.boolean().optional() }) }),
@@ -98,23 +95,23 @@ export function channelRoutes(ctx: AppContext) {
 
   app.post("/whatsapp", async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c, 403, "forbidden", "Only owners and admins can connect channels.");
+    if (!can(access, "numbers.manage"))
+      return fail(c, 403, "forbidden", "You don't have access to connect numbers.");
     const key = ctx.config.CHANNEL_SECRET_KEY;
     if (!key) return fail(c, 503, "not_configured", "CHANNEL_SECRET_KEY is not set on the server.");
     const parsed = await parseBody(c, connectBody);
     if ("error" in parsed) return parsed.error;
     const body = parsed.data;
 
-    // Branches: the given ones (must belong to this business), or every active branch.
+    // The branch: the one given (it must belong to this business), or the oldest active branch.
     const branches = await ctx.db
       .select({ id: schema.branch.id })
       .from(schema.branch)
       .where(and(eq(schema.branch.organizationId, access.orgId), isNull(schema.branch.archivedAt)))
       .orderBy(asc(schema.branch.createdAt));
-    const branchIds = body.branchIds?.length ? body.branchIds : branches.map((b) => b.id);
-    if (branchIds.some((id) => !branches.find((b) => b.id === id)))
-      return fail(c, 422, "invalid_input", "Unknown branch in branchIds.");
+    const branchId = body.branchId ?? branches[0]?.id;
+    if (!branchId || !branches.some((b) => b.id === branchId))
+      return fail(c, 422, "invalid_input", "Pick one of your branches for this number.");
 
     // Check the credentials with the channel (and subscribe to its webhooks) before storing anything.
     const adapter = registry().get("whatsapp");
@@ -143,7 +140,7 @@ export function channelRoutes(ctx: AppContext) {
         onboarding: { method: "manual", coexistence: false, onboardedAt: new Date().toISOString() },
       },
       status: "active",
-      branchIds,
+      branchId,
       allowActive: false,
     });
     if (!saved.ok)
@@ -152,7 +149,7 @@ export function channelRoutes(ctx: AppContext) {
       .select(publicColumns)
       .from(schema.channelAccount)
       .where(eq(schema.channelAccount.id, saved.id));
-    return c.json({ channel: { ...channel, branchIds } }, saved.reconnected ? 200 : 201);
+    return c.json({ channel: { ...channel, branchIds: [branchId] } }, saved.reconnected ? 200 : 201);
   });
 
   // Embedded Signup: what the browser needs to open Meta's window (nothing secret).
@@ -178,8 +175,8 @@ export function channelRoutes(ctx: AppContext) {
   // Embedded Signup: the popup finished. Connects the number to the current branch (?branch=).
   app.post("/whatsapp/embedded-signup", requireBranch(ctx), async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
-      return fail(c, 403, "forbidden", "Only owners and admins can connect channels.");
+    if (!can(access, "numbers.manage"))
+      return fail(c, 403, "forbidden", "You don't have access to connect numbers.");
     const parsed = await parseBody(c, signupBody);
     if ("error" in parsed) return parsed.error;
     const result = await runEmbeddedSignup(
@@ -215,7 +212,7 @@ export function channelRoutes(ctx: AppContext) {
   // Retries the steps after saving (webhooks, registration) with the stored token.
   app.post("/:id/finish-setup", async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
+    if (!can(access, "numbers.manage"))
       return fail(c, 403, "forbidden", "Only owners and admins can change channels.");
     const [ch] = await ctx.db
       .select({ id: schema.channelAccount.id })
@@ -238,7 +235,7 @@ export function channelRoutes(ctx: AppContext) {
   // Disconnect: stops sending and receiving, keeps every conversation and message.
   app.delete("/:id", async (c) => {
     const access = c.var.access;
-    if (!isOrgAdmin(access.orgRole))
+    if (!can(access, "numbers.manage"))
       return fail(c, 403, "forbidden", "Only owners and admins can disconnect channels.");
     const [row] = await ctx.db
       .update(schema.channelAccount)

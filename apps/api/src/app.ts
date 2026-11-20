@@ -24,6 +24,7 @@ import { healthRoutes } from "./modules/health/routes";
 import { meRoutes } from "./modules/me/routes";
 import { quickReplyRoutes } from "./modules/quick-replies/routes";
 import { settingsRoutes } from "./modules/settings/routes";
+import { roleRoutes, teamRoutes } from "./modules/team/routes";
 import { templateRoutes } from "./modules/templates/routes";
 import { metaWebhookRoutes } from "./modules/webhooks/meta";
 
@@ -47,6 +48,8 @@ export function createApp(ctx: AppContext) {
   app.route("/api/auth-options", authOptionsRoutes());
   app.route("/api/me", meRoutes(ctx));
   app.route("/api/branches", branchRoutes(ctx));
+  app.route("/api/team", teamRoutes(ctx));
+  app.route("/api/roles", roleRoutes(ctx));
   app.route("/api/conversations", conversationRoutes(ctx));
   app.route("/api/channels", channelRoutes(ctx));
   app.route("/api/groups", groupRoutes(ctx));

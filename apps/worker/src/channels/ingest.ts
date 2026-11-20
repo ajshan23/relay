@@ -108,21 +108,9 @@ export function createIngest(
     return row;
   }
 
-  // A channel without a branch counts as the business's first branch (oldest, not archived).
-  const firstBranch = new Map<string, string>();
+  // Every number belongs to exactly one branch: its chats and contacts are that branch's.
   async function branchFor(account: Account): Promise<string> {
-    if (account.defaultBranchId) return account.defaultBranchId;
-    const known = firstBranch.get(account.organizationId);
-    if (known) return known;
-    const [row] = await db
-      .select({ id: schema.branch.id })
-      .from(schema.branch)
-      .where(eq(schema.branch.organizationId, account.organizationId))
-      .orderBy(sql`${schema.branch.archivedAt} is not null`, schema.branch.createdAt)
-      .limit(1);
-    if (!row) throw new Error(`organization ${account.organizationId} has no branch`);
-    firstBranch.set(account.organizationId, row.id);
-    return row.id;
+    return account.branchId;
   }
 
   /**
@@ -270,7 +258,7 @@ export function createIngest(
         id: newId("group"),
         organizationId: account.organizationId,
         channelAccountId: account.id,
-        branchId: account.defaultBranchId,
+        branchId: account.branchId,
         externalId: groupExternalId,
         status: "active",
       })

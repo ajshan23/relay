@@ -1,13 +1,13 @@
 import { type InboxEvent, inboxChannel, publishInboxEvent } from "@relay/core";
-import { eq, schema } from "@relay/db";
+import { type Access, canAnywhere, canSeeChat, reachableBranchIds } from "@relay/core/permissions";
+import { eq, loadAccessFor, schema } from "@relay/db";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { type AccessEnv, fail, requireOrg } from "../branches/access";
+import { type AccessEnv, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { reachableBranches } from "../conversations/access";
 import { createEventHub } from "./hub";
 
 /*
@@ -30,28 +30,57 @@ const presenceKey = (conversationId: string) => `relay:presence:${conversationId
 const BRANCHES_REFRESH_MS = 60_000;
 
 /**
- * Which branches each person can reach, shared by all their open tabs on this process and refreshed
- * once a minute: one query per person, not one per tab.
+ * Each person's access (grants), shared by all their open tabs on this process and refreshed once a
+ * minute: one query per person, not one per tab. A change of access reaches open tabs within a minute.
  */
 function createAccessCache(ctx: AppContext) {
-  const entries = new Map<string, { at: number; branches: Promise<string[] | null> }>();
+  const entries = new Map<string, { at: number; access: Promise<Access | null> }>();
   // Drop people who closed their tabs a while ago.
   setInterval(() => {
     const cutoff = Date.now() - BRANCHES_REFRESH_MS * 5;
     for (const [key, e] of entries) if (e.at < cutoff) entries.delete(key);
   }, BRANCHES_REFRESH_MS * 5).unref();
   return {
-    branches(access: AccessEnv["Variables"]["access"]) {
-      const key = `${access.orgId}:${access.userId}`;
+    access(a: Access) {
+      const key = `${a.orgId}:${a.userId}`;
       const hit = entries.get(key);
-      if (hit && Date.now() - hit.at < BRANCHES_REFRESH_MS) return hit.branches;
-      const branches = reachableBranches(ctx, access);
+      if (hit && Date.now() - hit.at < BRANCHES_REFRESH_MS) return hit.access;
+      const access = loadAccessFor(ctx.db, a.orgId, a.userId);
       // A failed lookup isn't kept, so the next event asks again.
-      branches.catch(() => entries.delete(key));
-      entries.set(key, { at: Date.now(), branches });
-      return branches;
+      access.catch(() => entries.delete(key));
+      entries.set(key, { at: Date.now(), access });
+      return access;
     },
     size: () => entries.size,
+  };
+}
+
+type ChatInfo = { orgId: string; branchId: string | null; channelId: string; assignedUserId: string | null };
+
+/**
+ * A conversation's branch, number and assignee, for deciding who hears about it. Shared by every
+ * open stream on this process and at most a second old, so a reassignment is seen right away.
+ */
+function createChatCache(ctx: AppContext) {
+  const entries = new Map<string, { at: number; info: Promise<ChatInfo | null> }>();
+  return (conversationId: string, maxAgeMs = 1000) => {
+    const hit = entries.get(conversationId);
+    if (hit && Date.now() - hit.at < maxAgeMs) return hit.info;
+    const info = ctx.db
+      .select({
+        orgId: schema.conversation.organizationId,
+        branchId: schema.conversation.branchId,
+        channelId: schema.conversation.channelAccountId,
+        assignedUserId: schema.conversation.assignedUserId,
+      })
+      .from(schema.conversation)
+      .where(eq(schema.conversation.id, conversationId))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    info.catch(() => entries.delete(conversationId));
+    entries.set(conversationId, { at: Date.now(), info });
+    if (entries.size > 50_000) entries.clear();
+    return info;
   };
 }
 
@@ -60,6 +89,7 @@ export function eventRoutes(ctx: AppContext) {
   app.use(requireSession, requireOrg(ctx));
   const hub = createEventHub(ctx.config.REDIS_URL);
   const reach = createAccessCache(ctx);
+  const chat = createChatCache(ctx);
   // Proxies (the web app's /api rewrite in development, CDNs later) must pass events through as they
   // come: no compression (no-transform), no buffering. Set after the handler; streamSSE sets its own.
   app.use(async (c, next) => {
@@ -71,23 +101,25 @@ export function eventRoutes(ctx: AppContext) {
   app.get("/", async (c) => {
     const access = c.var.access;
     const only = c.req.query("branch") || null;
-    const atStart = await reach.branches(access);
-    if (only && atStart !== null && !atStart.includes(only)) return fail(c, 403, "forbidden");
+    const atStart = reachableBranchIds(access);
+    if (only && atStart !== "all" && !atStart.has(only)) return fail(c, 403, "forbidden");
     return streamSSE(c, async (stream) => {
       let closed = false;
       let queue = Promise.resolve();
 
       const allowed = async (event: InboxEvent) => {
-        if (event.type === "template.updated") return true; // templates are organization-wide
+        const now = (await reach.access(access)) ?? access;
+        if (event.type === "template.updated") return canAnywhere(now, "templates.view");
         if (event.type === "conversation.read" && event.userId !== access.userId) return false;
         // A mention is for the person mentioned only.
         if (event.type === "mention" && event.userId !== access.userId) return false;
         // Your own presence never comes back to you.
         if (event.type === "presence" && event.userId === access.userId) return false;
         if (only && event.branchId !== only) return false;
-        const branches = await reach.branches(access);
-        if (branches === null) return true;
-        return !!event.branchId && branches.includes(event.branchId);
+        // Only chats they may see: their branches and numbers, and (by role) only their own or unassigned.
+        const info = await chat(event.conversationId);
+        if (!info || info.orgId !== access.orgId) return false;
+        return canSeeChat(now, info);
       };
 
       // Writes go one after another, in the order the events came.
@@ -125,25 +157,12 @@ export function eventRoutes(ctx: AppContext) {
    * "typing" at most every 3 s while typing, and "left" when they close it. Kept in Redis for 40 s so
    * a tab opened later sees who is already there, and published as a live event to the branch.
    */
-  const conversationBranch = new Map<string, { at: number; orgId: string; branchId: string | null }>();
-  /** The conversation's business and branch, if the caller can see it (cached for a minute). */
+  /** The conversation's company and branch, if the caller can see it. */
   async function reachable(access: AccessEnv["Variables"]["access"], conversationId: string) {
-    let hit = conversationBranch.get(conversationId);
-    if (!hit || Date.now() - hit.at > 60_000) {
-      const [row] = await ctx.db
-        .select({ orgId: schema.conversation.organizationId, branchId: schema.conversation.branchId })
-        .from(schema.conversation)
-        .where(eq(schema.conversation.id, conversationId))
-        .limit(1);
-      if (!row) return null;
-      hit = { at: Date.now(), ...row };
-      conversationBranch.set(conversationId, hit);
-      if (conversationBranch.size > 50_000) conversationBranch.clear();
-    }
-    if (hit.orgId !== access.orgId) return null;
-    const branches = await reach.branches(access);
-    if (branches !== null && !(hit.branchId && branches.includes(hit.branchId))) return null;
-    return hit;
+    const info = await chat(conversationId, 60_000);
+    if (!info || info.orgId !== access.orgId) return null;
+    const now = (await reach.access(access)) ?? access;
+    return canSeeChat(now, info) ? info : null;
   }
 
   const lastWrite = new Map<string, number>();
@@ -157,6 +176,12 @@ export function eventRoutes(ctx: AppContext) {
     const { conversationId, state } = parsed.data;
     const conv = await reachable(access, conversationId);
     if (!conv) return fail(c, 404, "not_found");
+    // Only people who can reply show as typing.
+    if (
+      state === "typing" &&
+      !can(access, "chats.reply", { branchId: conv.branchId, channelId: conv.channelId })
+    )
+      return c.body(null, 204);
     // At most one write per person per conversation per second ("left" always goes through).
     const k = `${access.userId}:${conversationId}`;
     if (state !== "left" && Date.now() - (lastWrite.get(k) ?? 0) < 1000) return c.body(null, 204);

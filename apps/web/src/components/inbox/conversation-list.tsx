@@ -127,6 +127,11 @@ export function ConversationList({ filter, selectedId, onSelect, onViewChange, o
             On <span className="font-medium text-foreground">{channelName}</span>
           </p>
         ) : null}
+        {counts.data?.partial ? (
+          <p className="-mt-1 text-xs text-muted-foreground">
+            Showing the chats your role lets you see in this branch.
+          </p>
+        ) : null}
       </header>
 
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1.5">

@@ -22,6 +22,7 @@ export {
   sql,
   sum,
 } from "drizzle-orm";
+export * from "./access";
 export * from "./agents";
 export * from "./booking-calendar";
 export * from "./bookings";

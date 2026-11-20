@@ -47,13 +47,8 @@ if (existing) {
     displayPhone: "+1 555 000 9999",
     credentials: encryptSecret({ accessToken: "fake-token" }, config.CHANNEL_SECRET_KEY),
     providerMeta: { wabaId: WABA, fake: true },
-    defaultBranchId: branches[0]?.id ?? null,
+    branchId: branches[0]?.id ?? "",
   });
-  if (branches.length) {
-    await db
-      .insert(schema.channelAccountBranch)
-      .values(branches.map((b) => ({ channelAccountId: id, branchId: b.id, organizationId: org.id })));
-  }
   console.log(
     `Connected fake WhatsApp number ${phoneId} to ${org.name} as ${id} (branch: ${branches[0]?.name ?? "none"})`,
   );

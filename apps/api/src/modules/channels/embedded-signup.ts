@@ -296,7 +296,7 @@ export async function runEmbeddedSignup(
           : {}),
       },
       status: "setting_up",
-      branchIds: [who.branchId],
+      branchId: who.branchId,
       reconnectChannelId: body.reconnectChannelId ?? null,
       allowActive: true,
     });

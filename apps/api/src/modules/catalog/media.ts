@@ -15,7 +15,7 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { enqueue } from "../../lib/enqueue";
-import { branchAccess, fail } from "../branches/access";
+import { can, fail } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import type { BranchEnv } from "../contacts/shared";
 
@@ -42,7 +42,7 @@ export function catalogMediaRoutes(ctx: AppContext) {
   const storage = fileStorage();
 
   const canManage = async (c: Context<BranchEnv>) =>
-    (await branchAccess(ctx, c.var.access, c.var.branchId))?.role === "manager";
+    can(c.var.access, "catalogue.manage", { branchId: c.var.branchId });
   const mediaIn = (c: Context<BranchEnv>, id: string) =>
     and(eq(M.id, id), eq(M.organizationId, c.var.access.orgId), eq(M.branchId, c.var.branchId));
   const prepare = (mediaId: string) =>

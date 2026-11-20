@@ -3,215 +3,201 @@
 import { useConfirm } from "@relay/ui/components/confirm-dialog";
 import { createDataTableColumns, DataTable } from "@relay/ui/components/data-table";
 import { EmptyState } from "@relay/ui/components/empty-state";
-import { FieldGroup, FormActions } from "@relay/ui/components/field";
-import { Form, FormError, FormField, useZodForm } from "@relay/ui/components/form";
+import { Field } from "@relay/ui/components/field";
 import { Icon, IconButton } from "@relay/ui/components/icon";
-import { Modal } from "@relay/ui/components/modal";
+import { Modal, ModalActions } from "@relay/ui/components/modal";
 import { Person } from "@relay/ui/components/person";
 import { Panel, Section } from "@relay/ui/components/section";
-import { SelectField } from "@relay/ui/components/select-field";
+import { SidePanel } from "@relay/ui/components/side-panel";
 import { Tag } from "@relay/ui/components/tag";
 import { TextInput } from "@relay/ui/components/text-input";
 import { notify } from "@relay/ui/components/toast";
 import { Button } from "@relay/ui/ui/button";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { z } from "zod";
-import type { OrgRole } from "@/lib/api";
-import { authClient } from "@/lib/auth-client";
+import { type AccessGrant, api } from "@/lib/api";
 import { useMe } from "@/lib/me";
-import { listOrgMembers, type OrgMember } from "./org-members";
-import { errorText, orgRoleLabel, orgRoleOptions, unwrap } from "./words";
+import { useBranch } from "../shell/branch-context";
+import {
+  AccessEditor,
+  type BranchOption,
+  emptyGrant,
+  grantProblem,
+  grantSummary,
+  type NumberOption,
+  type RoleOption,
+} from "./access-editor";
+import { errorText } from "./words";
 
-type Invitation = {
+type TeamPerson = {
+  userId: string;
+  name: string;
+  email: string;
+  image: string | null;
+  owner: boolean;
+  you: boolean;
+  grants: AccessGrant[];
+};
+type TeamInvitation = {
   id: string;
   email: string;
-  role: OrgRole;
-  expiresAt: Date;
+  expiresAt: string;
+  expired: boolean;
+  grants: AccessGrant[];
+};
+type Team = {
+  people: TeamPerson[];
+  invitations: TeamInvitation[];
+  roles: RoleOption[];
+  branches: BranchOption[];
+  numbers: NumberOption[];
+  canInvite: boolean;
+  canEditAccess: boolean;
+  canRemove: boolean;
 };
 
-const memberCol = createDataTableColumns<OrgMember>();
-const inviteCol = createDataTableColumns<Invitation>();
-
+const personCol = createDataTableColumns<TeamPerson>();
+const inviteCol = createDataTableColumns<TeamInvitation>();
 const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 
-function invitationLink(id: string) {
-  return `${window.location.origin}/accept-invitation/${id}`;
-}
-
-async function listPendingInvitations(): Promise<Invitation[]> {
-  const data = await unwrap(authClient.organization.listInvitations({ query: {} }));
-  const now = Date.now();
-  return (data ?? [])
-    .filter((i) => i.status === "pending" && new Date(i.expiresAt).getTime() > now)
-    .map((i) => ({
-      id: i.id,
-      email: i.email,
-      role: (i.role === "admin" || i.role === "owner" ? i.role : "member") as OrgRole,
-      expiresAt: new Date(i.expiresAt),
-    }));
-}
-
-/** Settings → Team: everyone in the business, their organization role, and pending invitations. */
+/** Settings → Team: everyone in the company, what each can do (roles in branches and numbers), invitations. */
 export function TeamSettings() {
-  const { me, canManageOrg, refresh } = useMe();
-  const [members, setMembers] = useState<OrgMember[] | null>(null);
-  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const { me, can, refresh } = useMe();
+  const [team, setTeam] = useState<Team | null>(null);
   const [failed, setFailed] = useState(false);
-  const [inviteOpen, setInviteOpen] = useState(false);
+  const [editing, setEditing] = useState<TeamPerson | null>(null);
+  const [inviting, setInviting] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, confirmElement] = useConfirm();
 
-  const loadMembers = useCallback(async () => {
+  const load = useCallback(async () => {
     setFailed(false);
     try {
-      setMembers(await listOrgMembers());
+      setTeam(await api<Team>("/team"));
     } catch {
       setFailed(true);
     }
   }, []);
-
-  const loadInvitations = useCallback(async () => {
-    if (!canManageOrg) return;
-    try {
-      setInvitations(await listPendingInvitations());
-    } catch {
-      // Only owners and admins may list invitations; anything else just leaves the list empty.
-      setInvitations([]);
-    }
-  }, [canManageOrg]);
-
   useEffect(() => {
-    void loadMembers();
-    void loadInvitations();
-  }, [loadMembers, loadInvitations]);
-
-  const changeRole = useCallback(
-    async (member: OrgMember, role: "admin" | "member") => {
-      if (role === member.role) return;
-      setBusy(member.memberId);
-      try {
-        await unwrap(authClient.organization.updateMemberRole({ memberId: member.memberId, role }));
-        notify.success(`${member.name} is now ${role === "admin" ? "an admin" : "a member"}`);
-        await Promise.all([loadMembers(), refresh()]);
-      } catch (err) {
-        notify.error(errorText(err, "Couldn't change the role. Try again."));
-      } finally {
-        setBusy(null);
-      }
-    },
-    [loadMembers, refresh],
-  );
+    void load();
+  }, [load]);
 
   const remove = useCallback(
-    async (member: OrgMember) => {
+    async (p: TeamPerson) => {
       const ok = await confirm({
-        title: `Remove ${member.name} from the team?`,
+        title: `Remove ${p.name} from the team?`,
         description:
-          "They can't sign in to this business any more and lose every branch right away. Chats they handled are kept.",
+          "They can't sign in to this business any more and lose every branch right away. Their open chats become unassigned; the history stays.",
         confirmLabel: "Remove from team",
         tone: "danger",
       });
       if (!ok) return;
-      setBusy(member.memberId);
+      setBusy(p.userId);
       try {
-        await unwrap(authClient.organization.removeMember({ memberIdOrEmail: member.memberId }));
-        notify.success(`${member.name} removed from the team`);
-        await Promise.all([loadMembers(), refresh()]);
+        await api(`/team/${p.userId}`, { method: "DELETE" });
+        notify.success(`${p.name} removed from the team`);
+        await load();
       } catch (err) {
         notify.error(errorText(err, "Couldn't remove them. Try again."));
       } finally {
         setBusy(null);
       }
     },
-    [confirm, loadMembers, refresh],
+    [confirm, load],
   );
 
   const cancelInvitation = useCallback(
-    async (invitation: Invitation) => {
-      setBusy(invitation.id);
+    async (inv: TeamInvitation) => {
+      setBusy(inv.id);
       try {
-        await unwrap(authClient.organization.cancelInvitation({ invitationId: invitation.id }));
-        notify.success(`Invitation for ${invitation.email} cancelled`);
-        await loadInvitations();
+        await api(`/team/invitations/${inv.id}`, { method: "DELETE" });
+        notify.success(`Invitation for ${inv.email} cancelled`);
+        await load();
       } catch (err) {
         notify.error(errorText(err, "Couldn't cancel the invitation. Try again."));
       } finally {
         setBusy(null);
       }
     },
-    [loadInvitations],
+    [load],
   );
 
-  const myUserId = me.user.id;
-  const memberColumns = useMemo(
+  const personColumns = useMemo(
     () =>
-      memberCol.columns([
-        memberCol.accessor("name", {
+      personCol.columns([
+        personCol.accessor("name", {
           header: "Person",
           cell: ({ row }) => {
-            const m = row.original;
+            const p = row.original;
             return (
               <span className="flex min-w-0 items-center gap-2.5">
-                <Person name={m.name} src={m.image ?? undefined} size="sm" decorative />
+                <Person name={p.name} src={p.image ?? undefined} size="sm" decorative />
                 <span className="flex min-w-0 flex-col">
                   <span className="truncate font-medium">
-                    {m.name}
-                    {m.userId === myUserId ? (
-                      <span className="font-normal text-muted-foreground"> (you)</span>
-                    ) : null}
+                    {p.name}
+                    {p.you ? <span className="font-normal text-muted-foreground"> (you)</span> : null}
                   </span>
-                  <span className="truncate text-[13px] text-muted-foreground">{m.email}</span>
+                  <span className="truncate text-[13px] text-muted-foreground">{p.email}</span>
                 </span>
               </span>
             );
           },
         }),
-        memberCol.accessor("role", {
-          header: "Role",
+        personCol.display({
+          id: "access",
+          header: "Can do",
           cell: ({ row }) => {
-            const m = row.original;
-            const editable = canManageOrg && m.role !== "owner" && m.userId !== myUserId;
-            if (!editable) {
+            const p = row.original;
+            if (p.owner)
               return (
-                <Tag size="sm" tone={m.role === "member" ? "plain" : "primary"}>
-                  {orgRoleLabel[m.role]}
+                <Tag size="sm" tone="primary">
+                  Owner: everything
                 </Tag>
               );
-            }
+            if (!p.grants.length)
+              return <span className="text-[13px] text-muted-foreground">No access yet</span>;
             return (
-              <SelectField
-                size="sm"
-                aria-label={`Role for ${m.name}`}
-                value={m.role === "admin" ? "admin" : "member"}
-                options={orgRoleOptions}
-                disabled={busy === m.memberId}
-                onValueChange={(role) => void changeRole(m, role)}
-                className="w-32"
-              />
+              <span className="flex max-w-72 min-w-40 flex-col gap-0.5 text-[13px] whitespace-normal">
+                {p.grants.map((g) => (
+                  <span key={g.id}>{team ? grantSummary(g, team) : g.roleName}</span>
+                ))}
+              </span>
             );
           },
         }),
-        memberCol.display({
+        personCol.display({
           id: "actions",
           header: () => <span className="sr-only">Actions</span>,
           cell: ({ row }) => {
-            const m = row.original;
-            if (!canManageOrg || m.role === "owner" || m.userId === myUserId) return null;
+            const p = row.original;
+            if (p.owner || p.you) return null;
             return (
-              <div className="flex justify-end">
-                <IconButton
-                  icon="delete"
-                  size="sm"
-                  label={`Remove ${m.name} from the team`}
-                  disabled={busy === m.memberId}
-                  onClick={() => void remove(m)}
-                />
+              <div className="flex justify-end gap-1">
+                {team?.canEditAccess ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={busy === p.userId}
+                    onClick={() => setEditing(p)}
+                  >
+                    Change access
+                  </Button>
+                ) : null}
+                {team?.canRemove ? (
+                  <IconButton
+                    icon="delete"
+                    size="sm"
+                    label={`Remove ${p.name} from the team`}
+                    disabled={busy === p.userId}
+                    onClick={() => void remove(p)}
+                  />
+                ) : null}
               </div>
             );
           },
         }),
       ]),
-    [busy, canManageOrg, changeRole, myUserId, remove],
+    [busy, remove, team],
   );
 
   const inviteColumns = useMemo(
@@ -221,14 +207,29 @@ export function TeamSettings() {
           header: "Email",
           cell: (info) => <span className="font-medium">{info.getValue()}</span>,
         }),
-        inviteCol.accessor("role", {
+        inviteCol.display({
+          id: "access",
           header: "Joins as",
-          enableSorting: false,
-          cell: (info) => <Tag size="sm">{orgRoleLabel[info.getValue()]}</Tag>,
+          cell: ({ row }) => (
+            <span className="flex flex-col gap-0.5 text-[13px]">
+              {row.original.grants.map((g) => (
+                <span key={g.id}>{team ? grantSummary(g, team) : g.roleName}</span>
+              ))}
+            </span>
+          ),
         }),
         inviteCol.accessor("expiresAt", {
           header: "Link works until",
-          cell: (info) => <span className="text-muted-foreground">{dateFormat.format(info.getValue())}</span>,
+          cell: ({ row }) =>
+            row.original.expired ? (
+              <Tag size="sm" tone="warning">
+                Expired
+              </Tag>
+            ) : (
+              <span className="text-muted-foreground">
+                {dateFormat.format(new Date(row.original.expiresAt))}
+              </span>
+            ),
         }),
         inviteCol.display({
           id: "actions",
@@ -242,7 +243,9 @@ export function TeamSettings() {
                   variant="outline"
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(invitationLink(inv.id));
+                      await navigator.clipboard.writeText(
+                        `${window.location.origin}/accept-invitation/${inv.id}`,
+                      );
                       notify.success("Link copied");
                     } catch {
                       notify.error("Couldn't copy. Your browser blocked it.");
@@ -265,17 +268,39 @@ export function TeamSettings() {
           },
         }),
       ]),
-    [busy, cancelInvitation],
+    [busy, cancelInvitation, team],
   );
+
+  if (!can("team.view"))
+    return (
+      <Panel padding="none">
+        <EmptyState
+          icon={<Icon name="lock" />}
+          title="You can't see the team"
+          description="Ask an admin if you need to see who's in the team or change what people can do."
+        />
+      </Panel>
+    );
 
   return (
     <div className="flex flex-col gap-10">
       <Section
         title="People"
-        description="Owners and admins reach every branch. Members only reach the branches they are added to."
+        description={
+          <>
+            What each person can do comes from their roles, in the branches and numbers you pick.{" "}
+            <Link
+              href="/settings/roles"
+              className="font-medium text-primary underline-offset-4 hover:underline"
+            >
+              Roles
+            </Link>{" "}
+            lists what each role allows.
+          </>
+        }
         actions={
-          canManageOrg ? (
-            <Button onClick={() => setInviteOpen(true)}>
+          team?.canInvite ? (
+            <Button onClick={() => setInviting(true)}>
               <Icon name="addUser" />
               Invite someone
             </Button>
@@ -289,7 +314,7 @@ export function TeamSettings() {
               title="Couldn't load your team"
               description="Check your connection and try again."
               action={
-                <Button variant="outline" onClick={() => void loadMembers()}>
+                <Button variant="outline" onClick={() => void load()}>
                   Try again
                 </Button>
               }
@@ -298,112 +323,220 @@ export function TeamSettings() {
         ) : (
           <DataTable
             aria-label="Team"
-            columns={memberColumns}
-            data={members ?? []}
-            loading={members === null}
-            getRowId={(m) => m.memberId}
+            columns={personColumns}
+            data={team?.people ?? []}
+            loading={team === null}
+            getRowId={(p) => p.userId}
           />
         )}
       </Section>
 
-      {canManageOrg && invitations.length > 0 ? (
+      {team?.invitations.length ? (
         <Section
           title="Waiting to join"
-          description="Invitation emails are not sent yet. Copy the link and send it to them yourself."
+          description="They get an email with the link. You can also copy the link and send it yourself."
         >
           <DataTable
             aria-label="Waiting to join"
             density="compact"
             columns={inviteColumns}
-            data={invitations}
+            data={team.invitations}
             getRowId={(i) => i.id}
           />
         </Section>
       ) : null}
 
-      <Modal
-        open={inviteOpen}
-        onOpenChange={setInviteOpen}
-        size="sm"
-        title="Invite someone"
-        description="They join your business once they open the invitation link and sign in."
-      >
-        <InviteForm
-          onCancel={() => setInviteOpen(false)}
-          onInvited={async (email) => {
-            notify.success(`Invitation ready for ${email}`, {
-              description: "Copy the link under Waiting to join.",
-            });
-            setInviteOpen(false);
-            await loadInvitations();
+      {team ? (
+        <AccessPanel
+          team={team}
+          person={editing}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            setEditing(null);
+            await Promise.all([load(), refresh()]);
           }}
         />
-      </Modal>
-
+      ) : null}
+      {team ? (
+        <InviteModal
+          team={team}
+          open={inviting}
+          myBranch={me.branches[0]?.id}
+          onClose={() => setInviting(false)}
+          onInvited={async (email) => {
+            notify.success(`Invitation sent to ${email}`);
+            setInviting(false);
+            await load();
+          }}
+        />
+      ) : null}
       {confirmElement}
     </div>
   );
 }
 
-const inviteSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter an email address"),
-  role: z.enum(["admin", "member"]),
-});
-
-function InviteForm({
-  onCancel,
-  onInvited,
+function AccessPanel({
+  team,
+  person,
+  onClose,
+  onSaved,
 }: {
-  onCancel: () => void;
-  onInvited: (email: string) => Promise<void>;
+  team: Team;
+  person: TeamPerson | null;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
 }) {
-  const form = useZodForm(inviteSchema, { defaultValues: { email: "", role: "member" } });
+  const [grants, setGrants] = useState<AccessGrant[]>([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (person) setGrants(person.grants.map((g) => ({ ...g })));
+  }, [person]);
+  const problem = grants.map(grantProblem).find(Boolean) ?? null;
   return (
-    <Form
-      form={form}
-      onSubmit={async (values) => {
-        await unwrap(authClient.organization.inviteMember({ email: values.email, role: values.role }));
-        await onInvited(values.email);
-      }}
-    >
-      <FieldGroup>
-        <FormField control={form.control} name="email" label="Email" required>
-          {({ field, control }) => (
-            <TextInput
-              {...field}
-              {...control}
-              type="email"
-              autoComplete="off"
-              placeholder="name@example.com"
-              autoFocus
-            />
-          )}
-        </FormField>
-        <FormField
-          control={form.control}
-          name="role"
-          label="Role"
-          hint="You can add members to branches after they join."
+    <SidePanel
+      open={!!person}
+      onOpenChange={(o) => !o && onClose()}
+      width="md"
+      title={person ? `What ${person.name} can do` : "Access"}
+      description="Each role applies only in the branches and numbers picked for it."
+      footer={
+        <ModalActions
+          start={problem ? <span className="text-[13px] text-muted-foreground">{problem}</span> : null}
         >
-          {({ field, control }) => (
-            <SelectField
-              {...control}
-              ref={field.ref}
-              value={field.value}
-              onValueChange={field.onChange}
-              onBlur={field.onBlur}
-              options={orgRoleOptions}
-            />
-          )}
-        </FormField>
-        <FormError />
-        <FormActions>
-          <Button type="button" variant="outline" onClick={onCancel}>
+          <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit">Create invitation</Button>
-        </FormActions>
-      </FieldGroup>
-    </Form>
+          <Button
+            disabled={saving || !!problem}
+            onClick={async () => {
+              if (!person) return;
+              setSaving(true);
+              try {
+                await api(`/team/${person.userId}/access`, { method: "PUT", json: { grants } });
+                notify.success(`${person.name}'s access saved`);
+                await onSaved();
+              } catch (err) {
+                notify.error(errorText(err, "Couldn't save their access. Try again."));
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {saving ? <Icon name="loading" size="sm" /> : null}
+            Save access
+          </Button>
+        </ModalActions>
+      }
+    >
+      {grants.length ? (
+        <AccessEditor value={grants} onChange={setGrants} {...team} disabled={saving} />
+      ) : (
+        <EmptyState
+          size="sm"
+          icon={<Icon name="lock" />}
+          title="No access"
+          description="They can sign in but can't see any branch."
+          action={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                setGrants([
+                  emptyGrant(team.roles.find((r) => r.builtIn === "agent")?.id ?? "", team.branches[0]?.id),
+                ])
+              }
+            >
+              <Icon name="add" size="sm" />
+              Give a role
+            </Button>
+          }
+        />
+      )}
+    </SidePanel>
+  );
+}
+
+function InviteModal({
+  team,
+  open,
+  myBranch,
+  onClose,
+  onInvited,
+}: {
+  team: Team;
+  open: boolean;
+  myBranch?: string;
+  onClose: () => void;
+  onInvited: (email: string) => Promise<void>;
+}) {
+  const { branch } = useBranch();
+  const start = () => [
+    emptyGrant(
+      team.roles.find((r) => r.builtIn === "agent")?.id ?? "",
+      branch?.id ?? myBranch ?? team.branches[0]?.id,
+    ),
+  ];
+  const [email, setEmail] = useState("");
+  const [grants, setGrants] = useState<AccessGrant[]>(start);
+  const [saving, setSaving] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset each time it opens
+  useEffect(() => {
+    if (open) {
+      setEmail("");
+      setGrants(start());
+    }
+  }, [open]);
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const problem = !validEmail ? "Enter their email." : (grants.map(grantProblem).find(Boolean) ?? null);
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      size="md"
+      title="Invite someone"
+      description="They get an email with a link. Once they sign in, they have the access you pick here."
+      footer={
+        <ModalActions
+          start={
+            problem && email ? <span className="text-[13px] text-muted-foreground">{problem}</span> : null
+          }
+        >
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={saving || !!problem}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await api("/team/invitations", { method: "POST", json: { email: email.trim(), grants } });
+                await onInvited(email.trim());
+              } catch (err) {
+                notify.error(errorText(err, "Couldn't send the invitation. Try again."));
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {saving ? <Icon name="loading" size="sm" /> : <Icon name="send" size="sm" />}
+            Send invitation
+          </Button>
+        </ModalActions>
+      }
+    >
+      <div className="flex flex-col gap-5">
+        <Field label="Email" required>
+          <TextInput
+            type="email"
+            autoComplete="off"
+            placeholder="name@example.com"
+            autoFocus
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </Field>
+        <AccessEditor value={grants} onChange={setGrants} {...team} disabled={saving} />
+      </div>
+    </Modal>
   );
 }

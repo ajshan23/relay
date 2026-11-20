@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useContacts } from "@/components/contacts/queries";
 import { useBranch } from "@/components/shell/branch-context";
 import { ApiError, api } from "@/lib/api";
+import { useMe } from "@/lib/me";
 import { keys, useChannels } from "./queries";
 import type { ChannelSummary } from "./types";
 
@@ -23,19 +24,19 @@ import type { ChannelSummary } from "./types";
  * outside WhatsApp's 24-hour window has to be a template.
  */
 
-/** WhatsApp numbers this branch can send from. */
+/** WhatsApp numbers this branch can start chats from (none when their role can't start chats). */
 export function useBranchNumbers() {
   const { branch } = useBranch();
+  const { can } = useMe();
+  const canStart = can("chats.start", branch.id);
   const channels = useChannels();
   const numbers = useMemo(
     () =>
       (channels.data ?? []).filter(
         (c: ChannelSummary) =>
-          c.type === "whatsapp" &&
-          c.status === "active" &&
-          (c.branchIds?.includes(branch.id) || c.defaultBranchId === branch.id),
+          canStart && c.type === "whatsapp" && c.status === "active" && c.branchId === branch.id,
       ),
-    [channels.data, branch.id],
+    [channels.data, branch.id, canStart],
   );
   return { numbers, loading: channels.isPending };
 }

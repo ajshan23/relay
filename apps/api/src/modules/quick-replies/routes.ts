@@ -4,9 +4,9 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { fail, requireOrg } from "../branches/access";
+import { can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { type BranchEnv, canEditContacts, requireBranch } from "../contacts/shared";
+import { type BranchEnv, requireBranch } from "../contacts/shared";
 
 /*
  * Quick replies: saved answers agents insert with "/" in the reply box. For the whole business
@@ -43,6 +43,17 @@ export function quickReplyRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
   app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
   const qr = schema.quickReply;
+  /** Branch quick replies need the permission in the branch; whole-business ones on every branch. */
+  const mayEdit = (c: { var: BranchEnv["Variables"] }, branchId: string | null) =>
+    can(c.var.access, "quick_replies.manage", branchId ? { branchId } : {});
+  async function existing(c: { var: BranchEnv["Variables"] }, id: string) {
+    const [row] = await ctx.db
+      .select({ branchId: qr.branchId })
+      .from(qr)
+      .where(and(eq(qr.id, id), visible(c.var.access.orgId, c.var.branchId)))
+      .limit(1);
+    return row ?? null;
+  }
   const visible = (orgId: string, branchId: string) =>
     and(eq(qr.organizationId, orgId), or(isNull(qr.branchId), eq(qr.branchId, branchId)));
 
@@ -79,10 +90,10 @@ export function quickReplyRoutes(ctx: AppContext) {
 
   app.post("/", async (c) => {
     const access = c.var.access;
-    if (!(await canEditContacts(ctx.db, access, c.var.branchId))) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, body);
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
+    if (!mayEdit(c, b.branchId)) return fail(c, 403, "forbidden");
     if (b.branchId !== null && b.branchId !== c.var.branchId)
       return fail(c, 422, "invalid_input", "A quick reply can be for the whole business or this branch.");
     const out = await save(c, async () => {
@@ -102,7 +113,9 @@ export function quickReplyRoutes(ctx: AppContext) {
 
   app.patch("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canEditContacts(ctx.db, access, c.var.branchId))) return fail(c, 403, "forbidden");
+    const was = await existing(c, c.req.param("id"));
+    if (!was) return fail(c, 404, "not_found");
+    if (!mayEdit(c, was.branchId) || !mayEdit(c, c.var.branchId)) return fail(c, 403, "forbidden");
     const parsed = await parseBody(c, body.partial());
     if ("error" in parsed) return parsed.error;
     const b = parsed.data;
@@ -122,7 +135,9 @@ export function quickReplyRoutes(ctx: AppContext) {
 
   app.delete("/:id", async (c) => {
     const access = c.var.access;
-    if (!(await canEditContacts(ctx.db, access, c.var.branchId))) return fail(c, 403, "forbidden");
+    const was = await existing(c, c.req.param("id"));
+    if (!was) return fail(c, 404, "not_found");
+    if (!mayEdit(c, was.branchId) || !mayEdit(c, c.var.branchId)) return fail(c, 403, "forbidden");
     const gone = await ctx.db
       .delete(qr)
       .where(and(eq(qr.id, c.req.param("id")), visible(access.orgId, c.var.branchId)))

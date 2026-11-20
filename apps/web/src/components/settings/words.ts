@@ -1,22 +1,5 @@
 import type { SelectOption } from "@relay/ui/components/select-field";
-import { ApiError, type BranchRole, type OrgRole } from "@/lib/api";
-
-/** Plain words for a branch role, as a shop owner would say it. */
-export const branchRoleLabel: Record<BranchRole, string> = {
-  manager: "Can manage this branch",
-  agent: "Replies to customers",
-  viewer: "Can only look",
-};
-
-export const branchRoleOptions: SelectOption<BranchRole>[] = [
-  { value: "manager", label: branchRoleLabel.manager, description: "Changes the branch and who is in it" },
-  { value: "agent", label: branchRoleLabel.agent, description: "Answers chats for this branch" },
-  {
-    value: "viewer",
-    label: branchRoleLabel.viewer,
-    description: "Sees chats and customers, changes nothing",
-  },
-];
+import { ApiError, type OrgRole } from "@/lib/api";
 
 export const orgRoleLabel: Record<OrgRole, string> = {
   owner: "Owner",
@@ -24,17 +7,14 @@ export const orgRoleLabel: Record<OrgRole, string> = {
   member: "Member",
 };
 
-export const orgRoleOptions: SelectOption<"admin" | "member">[] = [
-  { value: "admin", label: "Admin", description: "Reaches every branch and manages the team" },
-  { value: "member", label: "Member", description: "Reaches only the branches they are added to" },
-];
-
 /** Turns a failed call into a short sentence for a toast or form. */
 export function errorText(err: unknown, fallback = "Something went wrong. Try again."): string {
   if (err instanceof ApiError) {
     switch (err.code) {
       case "forbidden":
-        return "You don't have permission to do that.";
+        return err.message && err.message !== err.code
+          ? err.message
+          : "You don't have permission to do that.";
       case "not_found":
         return "That branch is no longer here. Refresh the page.";
       case "last_branch":
@@ -46,7 +26,7 @@ export function errorText(err: unknown, fallback = "Something went wrong. Try ag
       case "no_active_organization":
         return "Pick a business first.";
       default:
-        return fallback;
+        return err.message && err.message !== err.code ? err.message : fallback;
     }
   }
   if (err instanceof TypeError) return "Couldn't reach the server. Check your connection.";

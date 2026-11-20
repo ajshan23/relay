@@ -1,16 +1,30 @@
 "use client";
 
+import { companyPermissions } from "@relay/core/permissions";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { ApiError, api, type Me } from "./api";
+import { ApiError, api, type Me, type Permission } from "./api";
 
 type MeContextValue = {
   me: Me;
   /** Fetches the account again, after a change to the organization, branches or roles. */
   refresh: () => Promise<void>;
-  /** True for organization owners and admins, who can manage every branch and the team. */
+  /** True for people who can change anyone's access (owners and admins). */
   canManageOrg: boolean;
+  /**
+   * May they do this? Company-wide permissions ignore the branch; others are checked in `branchId`
+   * (on at least one of its numbers). The server always decides; this only hides what won't work.
+   */
+  can: (perm: Permission, branchId?: string | null) => boolean;
+  /** Do they hold this permission in any branch? */
+  canAnywhere: (perm: Permission) => boolean;
 };
+
+export function canFor(me: Me, perm: Permission, branchId?: string | null) {
+  if (me.owner) return true;
+  if (companyPermissions.has(perm) || !branchId) return me.permissions.includes(perm);
+  return !!me.branches.find((b) => b.id === branchId)?.permissions.includes(perm);
+}
 
 const MeContext = createContext<MeContextValue | null>(null);
 
@@ -48,7 +62,19 @@ export function MeProvider({ children, fallback = null }: { children: ReactNode;
   }, []);
 
   const value = useMemo(
-    () => (me ? { me, refresh: load, canManageOrg: me.orgRole === "owner" || me.orgRole === "admin" } : null),
+    () =>
+      me
+        ? {
+            me,
+            refresh: load,
+            canManageOrg: me.owner || me.permissions.includes("team.edit_access"),
+            can: (perm: Permission, branchId?: string | null) => canFor(me, perm, branchId),
+            canAnywhere: (perm: Permission) =>
+              me.owner ||
+              me.permissions.includes(perm) ||
+              me.branches.some((b) => b.permissions.includes(perm)),
+          }
+        : null,
     [me, load],
   );
 

@@ -15,11 +15,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { signOut } from "@/lib/auth-client";
 import { sectionForPath, sections } from "./nav-config";
 import { ThemeToggle } from "./theme-toggle";
+import { useSectionAccess } from "./use-sections";
 
 /** The top bar below the md breakpoint, where the sidebar is hidden. */
 export function MobileNav({ onOpenPalette }: { onOpenPalette: () => void }) {
   const pathname = usePathname();
   const current = sectionForPath(pathname);
+  const allowed = useSectionAccess();
   const router = useRouter();
   const leave = async () => {
     await signOut();
@@ -39,14 +41,16 @@ export function MobileNav({ onOpenPalette }: { onOpenPalette: () => void }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-48">
-          {sections.map((s) => (
-            <DropdownMenuItem key={s.id} asChild>
-              <Link href={s.href} aria-current={current?.id === s.id ? "page" : undefined}>
-                <s.icon />
-                {s.label}
-              </Link>
-            </DropdownMenuItem>
-          ))}
+          {sections
+            .filter((s) => allowed(s.id))
+            .map((s) => (
+              <DropdownMenuItem key={s.id} asChild>
+                <Link href={s.href} aria-current={current?.id === s.id ? "page" : undefined}>
+                  <s.icon />
+                  {s.label}
+                </Link>
+              </DropdownMenuItem>
+            ))}
           <DropdownMenuSeparator />
           <DropdownMenuItem asChild>
             <Link href="/settings/branches">

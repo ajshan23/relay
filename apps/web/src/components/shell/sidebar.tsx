@@ -38,6 +38,7 @@ import { useMe } from "@/lib/me";
 import { useBranch } from "./branch-context";
 import { currentSubTopic, type Section, type SectionId, sectionForPath, sections } from "./nav-config";
 import { ThemeToggle } from "./theme-toggle";
+import { useSectionAccess, useSettingsAccess } from "./use-sections";
 
 /*
  * The Linear-style sidebar chosen in the design lab: the full labelled menu plus the
@@ -243,6 +244,7 @@ function FullNav({
   const pathname = usePathname();
   const { me } = useMe();
   const settingsActive = isActive(pathname, "/settings");
+  const allowed = useSectionAccess();
   const link = (id: SectionId) => {
     const s = byId(id);
     const active = isActive(pathname, s.href);
@@ -279,14 +281,14 @@ function FullNav({
 
       <nav aria-label="Main" className="flex flex-col">
         <div className="flex flex-col gap-px">
-          {mainOrder.map(link)}
+          {mainOrder.filter(allowed).map(link)}
           <button type="button" onClick={onOpenAsk} className={sideItem(false)}>
             <Sparkles className="size-3.5 shrink-0" />
             <span className="flex-1">Ask Relay</span>
             <kbd className="font-sans text-[11px] text-nav-muted">⌘J</kbd>
           </button>
         </div>
-        <SideGroup label="Workspace">{workspaceOrder.map(link)}</SideGroup>
+        <SideGroup label="Workspace">{workspaceOrder.filter(allowed).map(link)}</SideGroup>
       </nav>
 
       <Link
@@ -318,13 +320,14 @@ function IconRail({ onExpand, onOpenPalette }: { onExpand: () => void; onOpenPal
   const pathname = usePathname();
   const router = useRouter();
   const { me } = useMe();
+  const allowed = useSectionAccess();
   return (
     <div className="flex w-[52px] shrink-0 flex-col items-center gap-1 pt-3 pb-2">
       <span className="mb-2 inline-flex size-7 items-center justify-center" title={me.organization?.name}>
         <WorkspaceMark />
       </span>
       <nav aria-label="Main" className="flex flex-col items-center gap-1">
-        {[...mainOrder, ...workspaceOrder].map((id) => {
+        {[...mainOrder, ...workspaceOrder].filter(allowed).map((id) => {
           const s = byId(id);
           const active = isActive(pathname, s.href);
           return (
@@ -449,6 +452,7 @@ const settingsGroups = [
     items: [
       { label: "Branches", href: "/settings/branches" },
       { label: "Team", href: "/settings/team" },
+      { label: "Roles", href: "/settings/roles" },
       { label: "Usage", href: "/settings/usage" },
     ],
   },
@@ -464,25 +468,28 @@ const settingsGroups = [
 ];
 
 function SettingsSubMenu({ pathname, onClose }: { pathname: string; onClose: () => void }) {
+  const allowed = useSettingsAccess();
   return (
     <SubMenuFrame title="Settings" onClose={onClose}>
       <nav aria-label="Settings pages" className="flex flex-col">
         {settingsGroups.map((g, gi) => (
           <div key={g.label} className={cn("flex flex-col gap-px", gi > 0 && "mt-4")}>
             <p className="mb-0.5 px-2 text-xs text-nav-muted">{g.label}</p>
-            {g.items.map((item) => {
-              const active = isActive(pathname, item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  aria-current={active ? "page" : undefined}
-                  className={sideItem(active)}
-                >
-                  <span className="truncate">{item.label}</span>
-                </Link>
-              );
-            })}
+            {g.items
+              .filter((item) => allowed(item.href))
+              .map((item) => {
+                const active = isActive(pathname, item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? "page" : undefined}
+                    className={sideItem(active)}
+                  >
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
           </div>
         ))}
       </nav>

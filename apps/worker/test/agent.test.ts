@@ -552,7 +552,7 @@ before(async () => {
     displayName: "Lumen agent test",
     credentials: "test",
     status: "active",
-    defaultBranchId: ids.branch,
+    branchId: ids.branch,
   });
   await db.insert(schema.aiAgent).values({
     id: ids.agent,

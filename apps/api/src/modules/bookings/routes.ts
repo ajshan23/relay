@@ -32,9 +32,9 @@ import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
-import { branchAccess, fail, requireOrg } from "../branches/access";
+import { can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
-import { type BranchEnv, requireBranch } from "../contacts/shared";
+import { type BranchEnv, requireBranch, requirePermission } from "../contacts/shared";
 import { registerGoogleRoutes } from "./google";
 
 /*
@@ -66,15 +66,18 @@ const patchBody = z.union([
 
 export function bookingRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
-  app.use(requireSession, requireOrg(ctx), requireBranch(ctx));
+  app.use(requireSession, requireOrg(ctx), requireBranch(ctx), requirePermission("bookings.view"));
   // The branch's Google Calendar, when Google is set up on this server.
   const calendar = calendarDepsFrom(ctx.config);
   registerGoogleRoutes(app, ctx);
 
+  /** Booking settings (hours, reminders, calendars). */
   async function canManage(c: Context<BranchEnv>) {
-    const found = await branchAccess(ctx, c.var.access, c.var.branchId);
-    return found?.role === "manager";
+    return can(c.var.access, "bookings.settings", { branchId: c.var.branchId });
   }
+  /** Adding, moving and cancelling bookings. */
+  const canBook = (c: Context<BranchEnv>) =>
+    can(c.var.access, "bookings.manage", { branchId: c.var.branchId });
   const scope = (c: Context<BranchEnv>) => ({ organizationId: c.var.access.orgId, branchId: c.var.branchId });
 
   app.get("/settings", async (c) => {
@@ -94,7 +97,14 @@ export function bookingRoutes(ctx: AppContext) {
       .groupBy(schema.messageTemplate.id, schema.messageTemplate.name)
       .orderBy(asc(schema.messageTemplate.name));
     const { timezone, ...rest } = settings;
-    return c.json({ settings: rest, timezone, services, templates, canManage: await canManage(c) });
+    return c.json({
+      settings: rest,
+      timezone,
+      services,
+      templates,
+      canManage: await canManage(c),
+      canBook: canBook(c),
+    });
   });
 
   app.put("/settings", async (c) => {
@@ -199,6 +209,7 @@ export function bookingRoutes(ctx: AppContext) {
   });
 
   app.post("/", async (c) => {
+    if (!canBook(c)) return fail(c, 403, "forbidden", "You don't have access to add bookings.");
     const parsed = await parseBody(c, createBody);
     if ("error" in parsed) return parsed.error;
     const { organizationId, branchId } = scope(c);
@@ -206,7 +217,11 @@ export function bookingRoutes(ctx: AppContext) {
       .select({ id: schema.contact.id })
       .from(schema.contact)
       .where(
-        and(eq(schema.contact.id, parsed.data.contactId), eq(schema.contact.organizationId, organizationId)),
+        and(
+          eq(schema.contact.id, parsed.data.contactId),
+          eq(schema.contact.organizationId, organizationId),
+          eq(schema.contact.branchId, branchId),
+        ),
       );
     if (!contact) return fail(c, 422, "invalid_input", "That customer wasn't found.");
     const [conv] = await ctx.db
@@ -242,6 +257,7 @@ export function bookingRoutes(ctx: AppContext) {
   });
 
   app.patch("/:id", async (c) => {
+    if (!canBook(c)) return fail(c, 403, "forbidden", "You don't have access to change bookings.");
     const parsed = await parseBody(c, patchBody);
     if ("error" in parsed) return parsed.error;
     const { organizationId, branchId } = scope(c);
