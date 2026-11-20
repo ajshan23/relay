@@ -156,6 +156,103 @@ export function bookingTimeLabel(at: Date, timezone: string): string {
   return `${day}, ${time}`;
 }
 
+const clock = (at: Date, timezone: string) =>
+  new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" })
+    .format(at)
+    .toLowerCase();
+
+/** "5:30 – 6:00 pm" (or "11:30 am – 12:00 pm") in a timezone. */
+export function bookingRangeLabel(start: Date, end: Date, timezone: string): string {
+  const a = clock(start, timezone);
+  const b = clock(end, timezone);
+  return a.slice(-2) === b.slice(-2) ? `${a.slice(0, -3)} – ${b}` : `${a} – ${b}`;
+}
+
+/*
+ * Where a customer is, from their WhatsApp number, so booking times can be shown in their own time.
+ * Only countries with a single timezone; a number from anywhere else (the US, Australia, Russia,
+ * Brazil…) gets the branch's time, as before.
+ */
+const phoneZones: [prefix: string, place: string, timezone: string][] = [
+  ["971", "UAE", "Asia/Dubai"],
+  ["973", "Bahrain", "Asia/Bahrain"],
+  ["966", "Saudi", "Asia/Riyadh"],
+  ["974", "Qatar", "Asia/Qatar"],
+  ["965", "Kuwait", "Asia/Kuwait"],
+  ["968", "Oman", "Asia/Muscat"],
+  ["962", "Jordan", "Asia/Amman"],
+  ["961", "Lebanon", "Asia/Beirut"],
+  ["964", "Iraq", "Asia/Baghdad"],
+  ["963", "Syria", "Asia/Damascus"],
+  ["967", "Yemen", "Asia/Aden"],
+  ["972", "Israel", "Asia/Jerusalem"],
+  ["970", "Palestine", "Asia/Gaza"],
+  ["91", "India", "Asia/Kolkata"],
+  ["92", "Pakistan", "Asia/Karachi"],
+  ["880", "Bangladesh", "Asia/Dhaka"],
+  ["94", "Sri Lanka", "Asia/Colombo"],
+  ["977", "Nepal", "Asia/Kathmandu"],
+  ["960", "Maldives", "Indian/Maldives"],
+  ["98", "Iran", "Asia/Tehran"],
+  ["93", "Afghanistan", "Asia/Kabul"],
+  ["90", "Turkey", "Europe/Istanbul"],
+  ["20", "Egypt", "Africa/Cairo"],
+  ["212", "Morocco", "Africa/Casablanca"],
+  ["216", "Tunisia", "Africa/Tunis"],
+  ["213", "Algeria", "Africa/Algiers"],
+  ["249", "Sudan", "Africa/Khartoum"],
+  ["234", "Nigeria", "Africa/Lagos"],
+  ["254", "Kenya", "Africa/Nairobi"],
+  ["255", "Tanzania", "Africa/Dar_es_Salaam"],
+  ["256", "Uganda", "Africa/Kampala"],
+  ["251", "Ethiopia", "Africa/Addis_Ababa"],
+  ["233", "Ghana", "Africa/Accra"],
+  ["27", "South Africa", "Africa/Johannesburg"],
+  ["44", "UK", "Europe/London"],
+  ["353", "Ireland", "Europe/Dublin"],
+  ["33", "France", "Europe/Paris"],
+  ["49", "Germany", "Europe/Berlin"],
+  ["39", "Italy", "Europe/Rome"],
+  ["34", "Spain", "Europe/Madrid"],
+  ["31", "Netherlands", "Europe/Amsterdam"],
+  ["32", "Belgium", "Europe/Brussels"],
+  ["41", "Switzerland", "Europe/Zurich"],
+  ["43", "Austria", "Europe/Vienna"],
+  ["46", "Sweden", "Europe/Stockholm"],
+  ["47", "Norway", "Europe/Oslo"],
+  ["45", "Denmark", "Europe/Copenhagen"],
+  ["48", "Poland", "Europe/Warsaw"],
+  ["30", "Greece", "Europe/Athens"],
+  ["65", "Singapore", "Asia/Singapore"],
+  ["60", "Malaysia", "Asia/Kuala_Lumpur"],
+  ["63", "Philippines", "Asia/Manila"],
+  ["66", "Thailand", "Asia/Bangkok"],
+  ["84", "Vietnam", "Asia/Ho_Chi_Minh"],
+  ["86", "China", "Asia/Shanghai"],
+  ["852", "Hong Kong", "Asia/Hong_Kong"],
+  ["81", "Japan", "Asia/Tokyo"],
+  ["82", "Korea", "Asia/Seoul"],
+  ["64", "New Zealand", "Pacific/Auckland"],
+];
+
+/** The customer's place and timezone from a phone number (digits, "+" optional), or null. */
+export function phoneTimezone(phone: string | null | undefined): { place: string; timezone: string } | null {
+  const digits = (phone ?? "").replace(/\D/g, "").replace(/^00/, "");
+  if (digits.length < 8) return null;
+  const hit = phoneZones
+    .filter(([prefix]) => digits.startsWith(prefix))
+    .sort((a, b) => b[0].length - a[0].length)[0];
+  return hit ? { place: hit[1], timezone: hit[2] } : null;
+}
+
+/** A short name for a timezone, for "… UAE time": the country when known, else the city. */
+export function timezonePlace(timezone: string): string {
+  return (
+    phoneZones.find(([, , tz]) => tz === timezone)?.[1] ??
+    (timezone.split("/").at(-1) ?? timezone).replace(/_/g, " ")
+  );
+}
+
 // ------------------------------------------------------------------ free times
 
 export type Busy = { start: Date; end: Date };

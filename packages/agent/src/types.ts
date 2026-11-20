@@ -16,6 +16,8 @@ export type RunContext = {
   now: Date;
   /** The customer, for values a business's own tools fill in from the chat ({{contact.phone}}). */
   contact?: { phone: string | null; name: string | null; fields: Record<string, string> };
+  /** Where the customer is (from their number), when that's somewhere with its own single timezone. */
+  customerZone?: { place: string; timezone: string } | null;
 };
 
 /** What the business taught the agent (the stable part of the prompt). */

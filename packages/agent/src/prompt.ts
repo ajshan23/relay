@@ -92,6 +92,7 @@ export function systemPrompt(agent: AgentProfile): string {
           `- When the customer picks one of the times you offered, go straight on with it (${bookingToolNames.book} or ${bookingToolNames.move}). Don't offer the times again.`,
           "- If nothing is free that day, offer the nearest other days.",
           "- When a booking's result has a meetLink (an online service), always give the customer that exact link in your confirmation.",
+          "- Write times exactly as the booking tools give them (their labels, time and ourTime). Never work out a time in another timezone yourself.",
           `- When they want a calendar invite or the meeting by email, ask for their email if they haven't given it, then use ${bookingToolNames.invite}. Say what its result says: invited, or why not.`,
         ].join("\n")
       : "",

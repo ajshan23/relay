@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  bookingRangeLabel,
   bookingReplyId,
   bookingReplyOf,
   bookingSettingsSchema,
@@ -9,6 +10,8 @@ import {
   freeTimes,
   isOfferedTime,
   localTime,
+  phoneTimezone,
+  timezonePlace,
   zonedTime,
 } from "../src/bookings";
 
@@ -126,6 +129,30 @@ describe("free times", () => {
     assert.equal(
       bookingSettingsSchema.safeParse({ ...base, hours: [{ day: 1, from: "10:00", to: "09:00" }] }).success,
       false,
+    );
+  });
+});
+
+describe("the customer's own time", () => {
+  it("knows where a number is from, only for countries with one timezone", () => {
+    assert.deepEqual(phoneTimezone("919876543210"), { place: "India", timezone: "Asia/Kolkata" });
+    assert.deepEqual(phoneTimezone("+973 3612 3456"), { place: "Bahrain", timezone: "Asia/Bahrain" });
+    assert.deepEqual(phoneTimezone("00971501234567"), { place: "UAE", timezone: "Asia/Dubai" });
+    assert.equal(phoneTimezone("14155550123"), null, "the US has several timezones");
+    assert.equal(phoneTimezone("97150"), null, "too short to be a number");
+    assert.equal(phoneTimezone(null), null);
+    assert.equal(timezonePlace("Asia/Dubai"), "UAE");
+    assert.equal(timezonePlace("America/New_York"), "New York");
+  });
+
+  it("writes a time range the way people do", () => {
+    const start = new Date("2026-11-21T13:30:00Z");
+    const end = new Date("2026-11-21T14:00:00Z");
+    assert.equal(bookingRangeLabel(start, end, "Asia/Dubai"), "5:30 – 6:00 pm");
+    assert.equal(bookingRangeLabel(start, end, "Asia/Kolkata"), "7:00 – 7:30 pm");
+    assert.equal(
+      bookingRangeLabel(new Date("2026-11-21T07:30:00Z"), new Date("2026-11-21T08:15:00Z"), "Asia/Dubai"),
+      "11:30 am – 12:15 pm",
     );
   });
 });

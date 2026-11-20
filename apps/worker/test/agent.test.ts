@@ -1583,6 +1583,62 @@ describe("bookings with Mira", () => {
     assert.match(offered?.options?.[0]?.title ?? "", /, 9:30 am$/);
   });
 
+  it("gives a customer in another country times in their own time and books the time they tapped", async () => {
+    bookingService = catalog.haircut;
+    const chat = await newChat();
+    // An Indian number on a UAE (Asia/Dubai) branch: India is 1 h 30 ahead.
+    await db
+      .update(schema.contact)
+      .set({ phone: `9198765${T.slice(-5)}` })
+      .where(eq(schema.contact.id, chat.contactId));
+    await customerSays(chat, "Can I book a haircut tomorrow?");
+    const [q] = await until("the times", async () => {
+      const m = await agentMessages(chat.conversationId);
+      return m.length ? m : null;
+    });
+    const options = (q?.content as { options?: { id: string; title: string }[] } | undefined)?.options ?? [];
+    const first = options[0] as { id: string; title: string };
+    // The branch opens at 9:00 UAE time, so no Indian time before 10:30 am is offered.
+    const shownAt = first.title.match(/(\d{1,2}):(\d{2}) (am|pm)$/);
+    assert.ok(shownAt, first.title);
+    const shownMinutes =
+      ((Number(shownAt[1]) % 12) + (shownAt[3] === "pm" ? 12 : 0)) * 60 + Number(shownAt[2]);
+    assert.ok(shownMinutes >= 10 * 60 + 30, `${first.title} is India time`);
+    const found = JSON.stringify(calls.at(-1)?.messages ?? []);
+    assert.match(found, /India time, the customer's own/);
+    assert.match(found, /UAE time/);
+
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, first.title, first, q?.id ?? null);
+    const asked = await until("the Yes / No question", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 2 ? m[1] : null;
+    });
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    const yes = (asked.content as { options: { id: string; title: string }[] }).options[0] ?? null;
+    await customerSays(chat, "Yes", yes, asked?.id ?? null);
+    const [booked] = await until("the booking", async () => {
+      const rows = await db
+        .select()
+        .from(schema.booking)
+        .where(eq(schema.booking.conversationId, chat.conversationId));
+      return rows.length ? rows : null;
+    });
+    // Booked at the time the customer saw, in India: 1 h 30 earlier on the branch's clock.
+    const india = localTime(booked?.startsAt as Date, "Asia/Kolkata").minute;
+    const uae = localTime(booked?.startsAt as Date, "Asia/Dubai").minute;
+    assert.equal(india, shownMinutes);
+    assert.equal(india - uae, 90);
+    // The result Mira words her confirmation from has both, already worked out.
+    await until("the confirmation", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 3 ? m : null;
+    });
+    const result = JSON.stringify(calls.at(-1)?.messages ?? []);
+    assert.match(result, /"time\\?":\\?"[^"\\]+ India time/);
+    assert.match(result, /"ourTime\\?":\\?"[^"\\]+ UAE time/);
+  });
+
   it("marks a booking confirmed when the customer taps Confirm on a reminder, and says thanks", async () => {
     const chat = await newChat();
     const bookingId = `bkg_c${T}`;

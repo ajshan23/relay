@@ -55,7 +55,14 @@ import {
   optionOfReply,
   optionReplyId,
 } from "@relay/core/automations";
-import { bookingReplyOf, bookingTimeLabel, zonedTime } from "@relay/core/bookings";
+import {
+  bookingRangeLabel,
+  bookingReplyOf,
+  bookingTimeLabel,
+  phoneTimezone,
+  timezonePlace,
+  zonedTime,
+} from "@relay/core/bookings";
 import {
   agentFreeTimes,
   aiCredits,
@@ -839,6 +846,19 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         if (v != null && typeof v !== "object") fields[k] = String(v);
       runCtx.contact = { phone: c?.phone ?? null, name: c?.name ?? null, fields };
     }
+    // Booking times are given in the customer's own time when their number says where they are.
+    if (agent.booking) {
+      const phone =
+        runCtx.contact?.phone ??
+        (
+          await db
+            .select({ phone: schema.contact.phone })
+            .from(schema.contact)
+            .where(eq(schema.contact.id, input.contactId))
+            .limit(1)
+        )[0]?.phone;
+      runCtx.customerZone = phoneTimezone(phone);
+    }
     return runCtx;
   }
 
@@ -896,22 +916,35 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const setup = agent.booking;
     if (!setup || !runCtx.conversationId) return undefined;
     const tz = setup.timezone;
+    // When the customer's number says they live in another timezone, the tools speak only in theirs
+    // (the times they show and the times they take), and the code converts to the branch's both
+    // ways. The model never converts a time itself, so it can't get one wrong.
+    const zone = runCtx.customerZone && runCtx.customerZone.timezone !== tz ? runCtx.customerZone : null;
+    const theirTz = zone?.timezone ?? tz;
+    const ourPlace = timezonePlace(tz);
     const org = { organizationId: runCtx.orgId, branchId: runCtx.branchId };
     const startOf = (date: string, time: string) =>
-      zonedTime(date, Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5)), tz);
+      zonedTime(date, Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5)), theirTz);
     const note = (key: string, text: string) =>
       addNoteIn(runCtx.conversationId as string, agent.id, `booking:${key}`, text);
     const shown = (b: {
       reference: string;
       title: string;
       startsAt: Date;
+      endsAt?: Date;
       status: string;
       partySize: number | null;
       meetUrl?: string | null;
     }) => ({
       reference: b.reference,
       service: b.title,
-      when: bookingTimeLabel(b.startsAt, tz),
+      when: bookingTimeLabel(b.startsAt, theirTz),
+      ...(b.endsAt
+        ? { time: `${bookingRangeLabel(b.startsAt, b.endsAt, theirTz)} ${zone?.place ?? ourPlace} time` }
+        : {}),
+      ...(b.endsAt && zone
+        ? { ourTime: `${bookingRangeLabel(b.startsAt, b.endsAt, tz)} ${ourPlace} time` }
+        : {}),
       ...(b.partySize ? { people: b.partySize } : {}),
       ...(b.meetUrl ? { meetLink: b.meetUrl } : {}),
       status: b.status,
@@ -926,18 +959,28 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       return all.find((b) => b.reference.toUpperCase() === reference.trim().toUpperCase()) ?? null;
     };
     return {
-      timezone: tz,
+      timezone: zone ? `the customer's own time (${zone.place}, ${theirTz})` : tz,
       services: setup.services,
-      findTimes: ({ variantId, date, partOfDay }) =>
-        agentFreeTimes(db, {
+      findTimes: async ({ variantId, date, partOfDay }) => {
+        const res = await agentFreeTimes(db, {
           calendar: d.calendar ?? null,
           ...org,
           variantId,
-          timezone: tz,
+          timezone: theirTz,
           ...(date ? { date } : {}),
           ...(partOfDay ? { partOfDay } : {}),
           now: new Date(),
-        }),
+        });
+        if (!zone || !("times" in res) || !res.times) return res;
+        return {
+          ...res,
+          timesAre: `${zone.place} time, the customer's own`,
+          times: res.times.map((t) => ({
+            ...t,
+            ourTime: `${bookingTimeLabel(startOf(t.date, t.time), tz)} ${ourPlace} time`,
+          })),
+        };
+      },
       book: async ({ variantId, date, time, partySize, notes }) => {
         const res = await createBooking(db, {
           calendar: d.calendar ?? null,
