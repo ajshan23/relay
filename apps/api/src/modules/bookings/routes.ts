@@ -14,6 +14,7 @@ import {
   bookingProblem,
   bookingSettingsOf,
   calendarDepsFrom,
+  cleanGuestEmails,
   createBooking,
   desc,
   eq,
@@ -21,8 +22,10 @@ import {
   gte,
   ilike,
   lt,
+  maxBookingGuests,
   moveBooking,
   or,
+  saveBookingGuests,
   saveBookingSettings,
   schema,
   setBookingStatus,
@@ -45,11 +48,13 @@ import { registerGoogleRoutes } from "./google";
  *   GET   /api/bookings/times?variantId&date   free times on a day
  *   GET   /api/bookings/contacts?q    customers to book for
  *   POST  /api/bookings              the team books a place (any time allowed)
- *   PATCH /api/bookings/:id          { status } or { startsAt } (move)
+ *   PATCH /api/bookings/:id          { status }, { startsAt } (move) or { guestEmails } (Google invites)
  * Anyone in the branch may see and add bookings; managers change the settings.
  */
 
 const B = schema.booking;
+
+const guestEmails = z.array(z.string().max(254)).max(maxBookingGuests, `At most ${maxBookingGuests} guests.`);
 
 const createBody = z.object({
   variantId: z.string().min(1),
@@ -57,12 +62,16 @@ const createBody = z.object({
   startsAt: z.iso.datetime({ offset: true }),
   partySize: z.number().int().min(1).max(500).nullable().optional(),
   notes: z.string().max(1000).optional(),
+  guestEmails: guestEmails.optional(),
 });
 
 const patchBody = z.union([
   z.object({ status: z.enum(bookingStatuses) }),
   z.object({ startsAt: z.iso.datetime({ offset: true }) }),
+  z.object({ guestEmails }),
 ]);
+
+const badEmail = "One of the guests isn't an email address.";
 
 export function bookingRoutes(ctx: AppContext) {
   const app = new Hono<BranchEnv>();
@@ -212,6 +221,8 @@ export function bookingRoutes(ctx: AppContext) {
     if (!canBook(c)) return fail(c, 403, "forbidden", "You don't have access to add bookings.");
     const parsed = await parseBody(c, createBody);
     if ("error" in parsed) return parsed.error;
+    const guests = cleanGuestEmails(parsed.data.guestEmails ?? []);
+    if (!guests) return fail(c, 422, "invalid_input", badEmail);
     const { organizationId, branchId } = scope(c);
     const [contact] = await ctx.db
       .select({ id: schema.contact.id })
@@ -253,7 +264,22 @@ export function bookingRoutes(ctx: AppContext) {
       calendar,
     });
     if (!res.ok) return fail(c, 409, res.reason, bookingProblem[res.reason]);
-    return c.json({ booking: res.booking, label: res.label, meetUrl: res.meetUrl }, 201);
+    const invited = guests.length
+      ? await saveBookingGuests(ctx.db, {
+          organizationId,
+          bookingId: res.booking.id,
+          guestEmails: guests,
+          calendar,
+        })
+      : null;
+    return c.json(
+      {
+        booking: invited?.booking ?? res.booking,
+        label: res.label,
+        meetUrl: invited?.sync.meetUrl ?? res.meetUrl,
+      },
+      201,
+    );
   });
 
   app.patch("/:id", async (c) => {
@@ -276,6 +302,18 @@ export function bookingRoutes(ctx: AppContext) {
         calendar,
       });
       return c.json({ booking: row });
+    }
+    if ("guestEmails" in parsed.data) {
+      const guests = cleanGuestEmails(parsed.data.guestEmails);
+      if (!guests) return fail(c, 422, "invalid_input", badEmail);
+      const res = await saveBookingGuests(ctx.db, {
+        organizationId,
+        bookingId: b.id,
+        guestEmails: guests,
+        calendar,
+      });
+      if (!res) return fail(c, 409, "not_active", "A cancelled or no-show booking can't take guests.");
+      return c.json({ booking: res.booking, calendar: res.sync.status });
     }
     const res = await moveBooking(ctx.db, {
       organizationId,

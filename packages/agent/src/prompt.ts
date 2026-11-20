@@ -80,6 +80,7 @@ export function systemPrompt(agent: AgentProfile): string {
           `- To change or cancel, use ${bookingToolNames.mine} first, then ${bookingToolNames.move} or ${bookingToolNames.cancel}.`,
           "- If nothing is free that day, offer the nearest other days.",
           "- When a booking's result has a meetLink (an online service), always give the customer that exact link in your confirmation.",
+          `- When they want a calendar invite or the meeting by email, ask for their email if they haven't given it, then use ${bookingToolNames.invite}. Say what its result says: invited, or why not.`,
         ].join("\n")
       : "",
     agent.ownTools

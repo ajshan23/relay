@@ -357,6 +357,7 @@ export function agentRoutes(ctx: AppContext) {
           book: notInTry,
           move: notInTry,
           cancel: notInTry,
+          invite: notInTry,
           myBookings: async () => ({ bookings: [] }),
         }
       : undefined;

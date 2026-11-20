@@ -6,6 +6,7 @@ import { defaultBookingSettings, zonedTime } from "@relay/core/bookings";
 import { googleEventIdFor } from "@relay/core/google-calendar";
 import {
   type CalendarDeps,
+  cleanGuestEmails,
   createBooking,
   createCatalogType,
   createDb,
@@ -14,6 +15,7 @@ import {
   forgetGoogleBusy,
   moveBooking,
   retryCalendarSyncs,
+  saveBookingGuests,
   saveBookingSettings,
   saveCatalogItem,
   schema,
@@ -240,6 +242,74 @@ describe("Google Calendar for bookings", () => {
       calendar,
     });
     assert.equal(ev?.deleted, true);
+  });
+
+  it("invites guests by email: Google emails them the invite, changes and cancellation", async () => {
+    const res = await book(consult, at("12:00", "2030-01-10"));
+    assert.ok(res.ok);
+    const ev = eventOf(res.booking.id);
+    assert.ok(ev);
+    assert.equal(ev.body.attendees, undefined, "no guests: Google's list untouched");
+    assert.deepEqual(ev.sendUpdates, ["none"], "and nobody emailed");
+
+    assert.equal(cleanGuestEmails(["not an email"]), null);
+    const guests = cleanGuestEmails([" Ajmal@Example.com ", "ajmal@example.com", "sara@example.org"]);
+    assert.deepEqual(guests, ["ajmal@example.com", "sara@example.org"]);
+    const saved = await saveBookingGuests(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      guestEmails: guests ?? [],
+      calendar,
+    });
+    assert.equal(saved?.sync.status, "synced");
+    assert.deepEqual(saved?.booking.guestEmails, ["ajmal@example.com", "sara@example.org"]);
+    assert.deepEqual(ev.body.attendees, [{ email: "ajmal@example.com" }, { email: "sara@example.org" }]);
+    assert.equal(ev.sendUpdates.at(-1), "all", "Google emails the invite");
+
+    // Another customer's booking can't be changed from their chat.
+    const notTheirs = await saveBookingGuests(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      guestEmails: [],
+      contactId: "ct_someone_else",
+      calendar,
+    });
+    assert.equal(notTheirs, null);
+
+    const moved = await moveBooking(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      startsAt: at("13:00", "2030-01-10"),
+      now,
+      calendar,
+    });
+    assert.ok(moved.ok);
+    assert.equal(ev.sendUpdates.at(-1), "all", "guests hear about the new time");
+    assert.equal(ev.body.attendees && (ev.body.attendees as unknown[]).length, 2);
+
+    // The team removes one: the list follows, and the removed guest is told.
+    await saveBookingGuests(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      guestEmails: ["sara@example.org"],
+      calendar,
+    });
+    assert.deepEqual(ev.body.attendees, [{ email: "sara@example.org" }]);
+    await setBookingStatus(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      status: "cancelled",
+      calendar,
+    });
+    assert.equal(ev.deleted, true);
+    assert.equal(ev.sendUpdates.at(-1), "all", "the guest gets the cancellation");
+    const late = await saveBookingGuests(db, {
+      organizationId: ids.org,
+      bookingId: res.booking.id,
+      guestEmails: ["x@example.com"],
+      calendar,
+    });
+    assert.equal(late, null, "a cancelled booking takes no guests");
   });
 
   it("books even when Google is down, and the sweep puts it in later", async () => {

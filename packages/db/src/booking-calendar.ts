@@ -133,6 +133,7 @@ export async function syncBooking(
   db: Db,
   deps: CalendarDeps | null | undefined,
   bookingId: string,
+  opts: { guestsChanged?: boolean } = {},
 ): Promise<SyncResult> {
   const [row] = await db
     .select({
@@ -166,7 +167,13 @@ export async function syncBooking(
     if (!activeBookingStatuses.includes(b.status)) {
       // Cancelled (or a no-show): a cancelled booking leaves the calendar; a no-show stays as history.
       if (b.status === "cancelled" && b.externalEventId)
-        await deleteGoogleEvent(deps.google, token, calendarId, b.externalEventId);
+        await deleteGoogleEvent(
+          deps.google,
+          token,
+          calendarId,
+          b.externalEventId,
+          b.guestEmails.length ? { guests: b.guestEmails } : {},
+        );
       await record({ calendarSync: "synced", calendarError: null, calendarAttempts: 0 });
       return { status: "synced", meetUrl: b.meetUrl };
     }
@@ -190,6 +197,9 @@ export async function syncBooking(
       start: b.startsAt,
       end: b.endsAt,
       timeZone: tz,
+      // Relay's guests go to Google. With none, Google's list is left alone (guests added there by
+      // hand stay), unless the team just removed the last one.
+      ...(b.guestEmails.length || opts.guestsChanged ? { guests: b.guestEmails } : {}),
     };
     const eventId = b.externalEventId ?? googleEventIdFor(b.id);
     let ev = null as Awaited<ReturnType<typeof insertGoogleEvent>> | null;

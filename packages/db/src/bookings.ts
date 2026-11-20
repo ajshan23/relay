@@ -14,7 +14,7 @@ import {
   zonedTime,
 } from "@relay/core/bookings";
 import { and, asc, eq, gt, gte, inArray, lt, ne, sql } from "drizzle-orm";
-import { type CalendarDeps, googleBusy, syncBooking } from "./booking-calendar";
+import { type CalendarDeps, googleBusy, type SyncResult, syncBooking } from "./booking-calendar";
 import type { createDb } from "./client";
 import { booking, bookingSetting, branch, catalogItem, catalogVariant } from "./schema";
 
@@ -428,6 +428,62 @@ export async function setBookingStatus(
     .returning();
   if (row && input.status === "cancelled" && input.calendar) await syncBooking(db, input.calendar, row.id);
   return row ?? null;
+}
+
+/** At most this many people invited to one booking by email. */
+export const maxBookingGuests = 10;
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Clean guest emails: trimmed, lower case, valid, no repeats; null when one isn't an email. */
+export function cleanGuestEmails(emails: string[]): string[] | null {
+  const out: string[] = [];
+  for (const raw of emails) {
+    const e = raw.trim().toLowerCase();
+    if (!e) continue;
+    if (e.length > 254 || !emailPattern.test(e)) return null;
+    if (!out.includes(e)) out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Sets who is invited to a booking by email and tells Google, which emails new guests the invite (and
+ * removed ones a cancellation). Only a booking that still takes a place can change; null otherwise.
+ * sync is "skipped" when the branch has no Google Calendar: the emails are kept for when it does.
+ */
+export async function saveBookingGuests(
+  db: Db,
+  input: {
+    organizationId: string;
+    bookingId: string;
+    guestEmails: string[];
+    /** Only a booking of this customer (Mira). */
+    contactId?: string;
+    calendar?: CalendarDeps | null;
+  },
+): Promise<{ booking: BookingRow; sync: SyncResult } | null> {
+  const [row] = await db
+    .update(booking)
+    .set({
+      guestEmails: input.guestEmails.slice(0, maxBookingGuests),
+      calendarSync: "pending",
+      calendarAttempts: 0,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(booking.id, input.bookingId),
+        eq(booking.organizationId, input.organizationId),
+        inArray(booking.status, activeBookingStatuses),
+        ...(input.contactId ? [eq(booking.contactId, input.contactId)] : []),
+      ),
+    )
+    .returning();
+  if (!row) return null;
+  const sync: SyncResult = input.calendar
+    ? await syncBooking(db, input.calendar, row.id, { guestsChanged: true })
+    : { status: "skipped", meetUrl: row.meetUrl };
+  return { booking: row, sync };
 }
 
 /** A customer's bookings from now on that still take a place. */

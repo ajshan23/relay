@@ -89,6 +89,8 @@ export const booking = pgTable(
     /** The event in the branch's Google Calendar, and its Meet link for online services. */
     externalEventId: text("external_event_id"),
     meetUrl: text("meet_url"),
+    /** People invited to the Google event by email (Google sends them the invite and its changes). */
+    guestEmails: text("guest_emails").array().notNull().default(sql`'{}'::text[]`),
     /** pending: Google has to be told (again); synced; failed (retried a few times). */
     calendarSync: text("calendar_sync").$type<"pending" | "synced" | "failed">().notNull().default("pending"),
     calendarError: text("calendar_error"),

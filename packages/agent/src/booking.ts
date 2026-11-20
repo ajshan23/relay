@@ -4,7 +4,7 @@ import type { AgentTool, RunContext } from "./types";
 
 /*
  * Booking tools: find free times for a service, book one (the customer taps Yes first), and look up,
- * move or cancel the customer's bookings. Times are always a local date and time in the branch's
+ * move or cancel the customer's bookings, and invite someone to one by email. Times are always a local date and time in the branch's
  * timezone, so the model can read them back from what it offered in the chat.
  */
 
@@ -14,6 +14,7 @@ export const bookingToolNames = {
   mine: "my_bookings",
   move: "move_booking",
   cancel: "cancel_booking",
+  invite: "invite_to_booking",
 } as const;
 
 /** The `ref` of the built-in booking tools that ask first (confirm tools). */
@@ -40,6 +41,8 @@ export type BookingDeps = {
   myBookings: (ctx: RunContext) => Promise<unknown>;
   move: (input: { reference: string; date: string; time: string }, ctx: RunContext) => Promise<unknown>;
   cancel: (input: { reference: string }, ctx: RunContext) => Promise<unknown>;
+  /** Adds an email to one of the customer's bookings; Google emails it a calendar invite. */
+  invite: (input: { reference: string; email: string }, ctx: RunContext) => Promise<unknown>;
 };
 
 const question = z
@@ -130,6 +133,17 @@ export function bookingTools(deps: BookingDeps): AgentTool<unknown>[] {
       description: "Cancel one of the customer's bookings. They are asked to tap Yes first.",
       input: z.object({ reference, confirmText: question }),
       run: ({ confirmText: _q, ...rest }, ctx) => deps.cancel(rest, ctx),
+    }),
+    defineTool({
+      name: bookingToolNames.invite,
+      kind: "write",
+      description:
+        "Send a calendar invite for one of the customer's bookings to an email address they gave you in this chat (the invite has the time and, for online services, the meeting link). Use my_bookings first for the reference. Only use an email the customer typed; never guess one.",
+      input: z.object({
+        reference,
+        email: z.string().trim().max(254).describe("The email address the customer gave, exactly as written"),
+      }),
+      run: (input, ctx) => deps.invite(input, ctx),
     }),
   ];
 }

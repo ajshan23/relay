@@ -12,6 +12,8 @@ export type FakeEvent = {
   meetRequestId: string | null;
   meetReads: number;
   deleted: boolean;
+  /** sendUpdates of every add, change and delete ("all" emails the guests, "none" nobody). */
+  sendUpdates: string[];
 };
 
 export function createFakeGoogle() {
@@ -126,6 +128,7 @@ export function createFakeGoogle() {
           meetRequestId: body.conferenceData?.createRequest?.requestId ?? null,
           meetReads: 0,
           deleted: false,
+          sendUpdates: [url.searchParams.get("sendUpdates") ?? ""],
         };
         state.events.push(e);
         return reply(200, { id: e.id, conferenceData: meetOf(e) });
@@ -136,6 +139,7 @@ export function createFakeGoogle() {
         e.meetReads++;
         return reply(200, { id: e.id, conferenceData: meetOf(e) });
       }
+      if (method !== "GET") e.sendUpdates.push(url.searchParams.get("sendUpdates") ?? "");
       if (method === "PATCH") {
         e.body = { ...e.body, ...(JSON.parse(String(init.body)) as Record<string, unknown>) };
         return reply(200, { id: e.id, conferenceData: meetOf(e) });

@@ -230,6 +230,17 @@ const brain: ModelCaller = async (req) => {
       ],
     });
   }
+  const invite = said.join(" ").match(/invite me to ([A-Z2-9]{6}): (\S+)/);
+  if (invite)
+    return r({
+      toolCalls: [
+        {
+          id: "b3",
+          name: "invite_to_booking",
+          input: { reference: invite[1] ?? "", email: invite[2] ?? "" },
+        },
+      ],
+    });
   if (text.includes("stock count"))
     return r({ toolCalls: [{ id: "t3", name: "shop__stock", input: { item: "S26" } }] });
   if (text.includes("bye"))
@@ -1695,6 +1706,28 @@ describe("bookings with Mira", () => {
     assert.ok(
       google.state.events.some((e) => e.meetRequestId === b?.id),
       "the event in Google asked for Meet",
+    );
+
+    // Then they want the invite by email: the guest is added and Google emails it.
+    await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+    await customerSays(chat, `Please invite me to ${b?.reference}: Asha@Example.com`);
+    const invited = await until("the invite", async () => {
+      const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+      return m.length === 4 ? m[3] : null;
+    });
+    assert.match(textOf(invited as never), /"invited":true/);
+    const [after] = await db
+      .select()
+      .from(schema.booking)
+      .where(eq(schema.booking.id, b?.id ?? ""));
+    assert.deepEqual(after?.guestEmails, ["asha@example.com"]);
+    const ev = google.state.events.find((e) => e.meetRequestId === b?.id);
+    assert.deepEqual(ev?.body.attendees, [{ email: "asha@example.com" }]);
+    assert.equal(ev?.sendUpdates.at(-1), "all");
+    const notes = (await agentMessages(chat.conversationId)).filter((x) => x.type === "note");
+    assert.ok(
+      notes.some((n) => /invited asha@example\.com/.test(JSON.stringify(n.content))),
+      "noted for the team",
     );
   });
 });

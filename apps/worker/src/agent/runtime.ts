@@ -66,6 +66,7 @@ import {
   type CalendarDeps,
   catalogAgentDeps,
   catalogShape,
+  cleanGuestEmails,
   createBooking,
   createCatalogPresenter,
   type createDb,
@@ -74,9 +75,11 @@ import {
   gt,
   inArray,
   insertOutboundMessage,
+  maxBookingGuests,
   moveBooking,
   ne,
   recordAiUsage,
+  saveBookingGuests,
   schema,
   searchKnowledge,
   setBookingStatus,
@@ -999,6 +1002,44 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
           `${agent.name} cancelled ${b.title} on ${bookingTimeLabel(b.startsAt, tz)} (${b.reference}).`,
         );
         return { cancelled: true, ...shown(row) };
+      },
+      invite: async ({ reference, email }) => {
+        const b = await mine(reference);
+        if (!b) throw new Error("No upcoming booking of this customer has that reference. Use my_bookings.");
+        const added = cleanGuestEmails([email])?.[0];
+        if (!added) throw new Error("That isn't an email address. Ask the customer to check it.");
+        const guestEmails = cleanGuestEmails([...b.guestEmails, added]) ?? b.guestEmails;
+        if (guestEmails.length > maxBookingGuests)
+          throw new Error(`A booking can have at most ${maxBookingGuests} people invited.`);
+        const res = await saveBookingGuests(db, {
+          calendar: d.calendar ?? null,
+          organizationId: runCtx.orgId,
+          bookingId: b.id,
+          guestEmails,
+          ...(runCtx.contactId ? { contactId: runCtx.contactId } : {}),
+        });
+        if (!res) throw new Error("That booking can't be changed any more.");
+        await note(
+          `${b.id}:invited:${added}`,
+          `${agent.name} invited ${added} to ${b.title} (${b.reference}).`,
+        );
+        if (res.sync.status === "skipped")
+          return {
+            invited: false,
+            email: added,
+            reason:
+              "This business's bookings aren't in a calendar, so no invite can be emailed. Give the booking details here in the chat instead.",
+          };
+        return {
+          invited: true,
+          email: added,
+          ...(res.sync.status === "failed"
+            ? {
+                note: "The calendar didn't answer yet; the invite goes out as soon as it does, usually within minutes.",
+              }
+            : {}),
+          ...shown({ ...res.booking, meetUrl: res.sync.meetUrl ?? res.booking.meetUrl }),
+        };
       },
     };
   }

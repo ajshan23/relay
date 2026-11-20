@@ -3,7 +3,7 @@
 import { type BookingStatus, localTime, zonedTime } from "@relay/core/bookings";
 import { EmptyState } from "@relay/ui/components/empty-state";
 import { Field } from "@relay/ui/components/field";
-import { Icon } from "@relay/ui/components/icon";
+import { Icon, IconButton } from "@relay/ui/components/icon";
 import { ModalActions } from "@relay/ui/components/modal";
 import { Panel } from "@relay/ui/components/section";
 import { SelectField } from "@relay/ui/components/select-field";
@@ -30,12 +30,28 @@ import {
   useBookingSettings,
   useBookings,
   useFreeTimes,
+  useGoogleCalendar,
 } from "./queries";
 
 /*
  * Bookings: the branch's booking book, from a chosen day for two weeks, grouped by day. The team marks
- * arrivals and no-shows, cancels, moves a booking to a free time, and books for a customer by hand.
+ * arrivals and no-shows, cancels, moves a booking to a free time, invites people by email (Google
+ * Calendar sends the invite) and books for a customer by hand.
  */
+
+/** Emails typed in one box, split on commas, spaces or new lines. */
+const splitEmails = (text: string) =>
+  text
+    .split(/[\s,;]+/)
+    .map((e) => e.trim())
+    .filter(Boolean);
+const looksLikeEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+/** Whether this branch's bookings go to a Google Calendar (invites need it). */
+function useInvitesWork() {
+  const google = useGoogleCalendar();
+  return google.data?.connection?.status === "active";
+}
 
 const errorText = (err: unknown) =>
   err instanceof ApiError ? err.message : "Something went wrong. Try again.";
@@ -62,6 +78,7 @@ export function BookingsView() {
   const [service, setService] = useState("all");
   const [adding, setAdding] = useState(false);
   const [moving, setMoving] = useState<Booking | null>(null);
+  const [inviting, setInviting] = useState<Booking | null>(null);
 
   if (settings.isPending) return <Skeleton className="h-48 w-full" />;
   if (settings.isError)
@@ -157,7 +174,13 @@ export function BookingsView() {
               <Panel padding="none">
                 <ul className="divide-y">
                   {items.map((b) => (
-                    <BookingRow key={b.id} booking={b} tz={tz} onMove={() => setMoving(b)} />
+                    <BookingRow
+                      key={b.id}
+                      booking={b}
+                      tz={tz}
+                      onMove={() => setMoving(b)}
+                      onInvite={() => setInviting(b)}
+                    />
                   ))}
                 </ul>
               </Panel>
@@ -167,11 +190,22 @@ export function BookingsView() {
       )}
       {adding ? <AddBooking services={services} tz={tz} onClose={() => setAdding(false)} /> : null}
       {moving ? <MoveBooking booking={moving} tz={tz} onClose={() => setMoving(null)} /> : null}
+      {inviting ? <BookingGuests booking={inviting} onClose={() => setInviting(null)} /> : null}
     </div>
   );
 }
 
-function BookingRow({ booking: b, tz, onMove }: { booking: Booking; tz: string; onMove: () => void }) {
+function BookingRow({
+  booking: b,
+  tz,
+  onMove,
+  onInvite,
+}: {
+  booking: Booking;
+  tz: string;
+  onMove: () => void;
+  onInvite: () => void;
+}) {
   const { update } = useBookingActions();
   const time = (iso: string) =>
     new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" })
@@ -216,6 +250,12 @@ function BookingRow({ booking: b, tz, onMove }: { booking: Booking; tz: string; 
           {b.partySize ? ` · ${b.partySize} people` : ""} · Ref {b.reference}
           {b.notes ? ` · ${b.notes}` : ""}
         </span>
+        {b.guestEmails.length ? (
+          <span className="inline-flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground">
+            <Icon name="mail" size="sm" />
+            <span className="truncate">Invited {b.guestEmails.join(", ")}</span>
+          </span>
+        ) : null}
         {b.meetUrl || b.externalEventId || b.calendarSync === "failed" ? (
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
             {b.meetUrl ? (
@@ -261,6 +301,7 @@ function BookingRow({ booking: b, tz, onMove }: { booking: Booking; tz: string; 
               <DropdownMenuItem onClick={() => set("confirmed")}>Confirmed</DropdownMenuItem>
             ) : null}
             <DropdownMenuItem onClick={onMove}>Move to another time</DropdownMenuItem>
+            <DropdownMenuItem onClick={onInvite}>Email invites</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={() => set("cancelled")}>
               Cancel booking
@@ -326,6 +367,10 @@ function AddBooking({
   const [startsAt, setStartsAt] = useState("");
   const [people, setPeople] = useState("");
   const [notes, setNotes] = useState("");
+  const [invites, setInvites] = useState("");
+  const invitesWork = useInvitesWork();
+  const guests = splitEmails(invites);
+  const badGuest = guests.find((e) => !looksLikeEmail(e));
   const chosen = contacts.data?.contacts.find((c) => c.id === contactId);
   return (
     <SidePanel
@@ -339,7 +384,7 @@ function AddBooking({
             Cancel
           </Button>
           <Button
-            disabled={create.isPending || !contactId || !variantId || !startsAt}
+            disabled={create.isPending || !contactId || !variantId || !startsAt || !!badGuest}
             onClick={() =>
               create.mutate(
                 {
@@ -348,6 +393,7 @@ function AddBooking({
                   startsAt,
                   ...(people ? { partySize: Number(people) } : {}),
                   ...(notes.trim() ? { notes: notes.trim() } : {}),
+                  ...(invitesWork && guests.length ? { guestEmails: guests } : {}),
                 },
                 {
                   onSuccess: (r) => {
@@ -424,6 +470,22 @@ function AddBooking({
             <TextArea minRows={1} maxLength={1000} value={notes} onChange={(e) => setNotes(e.target.value)} />
           </Field>
         </div>
+        {invitesWork ? (
+          <Field
+            label="Email invites"
+            optional
+            error={badGuest ? `${badGuest} isn't an email address.` : undefined}
+            hint="Google Calendar emails each one an invite. Separate several with commas."
+          >
+            <TextInput
+              type="text"
+              inputMode="email"
+              placeholder="name@example.com"
+              value={invites}
+              onChange={(e) => setInvites(e.target.value)}
+            />
+          </Field>
+        ) : null}
       </div>
     </SidePanel>
   );
@@ -477,6 +539,118 @@ function MoveBooking({ booking, tz, onClose }: { booking: Booking; tz: string; o
             onChange={setStartsAt}
           />
         </div>
+      </div>
+    </SidePanel>
+  );
+}
+
+function BookingGuests({ booking, onClose }: { booking: Booking; onClose: () => void }) {
+  const { update } = useBookingActions();
+  const invitesWork = useInvitesWork();
+  const [guests, setGuests] = useState<string[]>(booking.guestEmails);
+  const [typed, setTyped] = useState("");
+  const adding = splitEmails(typed).map((e) => e.toLowerCase());
+  const bad = adding.find((e) => !looksLikeEmail(e));
+  const add = () => {
+    if (!adding.length || bad) return;
+    setGuests((g) => [...new Set([...g, ...adding])]);
+    setTyped("");
+  };
+  const next = bad ? guests : [...new Set([...guests, ...adding])];
+  const changed = next.join() !== booking.guestEmails.join();
+  return (
+    <SidePanel
+      open
+      onOpenChange={(open) => (open ? null : onClose())}
+      title="Email invites"
+      description={`${booking.title}, ${booking.label}. Google Calendar emails each guest an invite${
+        booking.meetUrl ? " with the Meet link" : ""
+      }, and tells them if it moves or is cancelled.`}
+      footer={
+        <ModalActions>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={update.isPending || !changed || !!bad || !invitesWork}
+            onClick={() =>
+              update.mutate(
+                { id: booking.id, guestEmails: next },
+                {
+                  onSuccess: (r) => {
+                    const failed = (r as { calendar?: string }).calendar === "failed";
+                    notify.success(failed ? "Saved. Google will get it shortly" : "Invites saved", {
+                      description: failed
+                        ? "Google didn't answer; Relay tries again in a minute."
+                        : undefined,
+                    });
+                    onClose();
+                  },
+                  onError: (err) => notify.error("Not saved", { description: errorText(err) }),
+                },
+              )
+            }
+          >
+            {update.isPending ? "Saving…" : "Save"}
+          </Button>
+        </ModalActions>
+      }
+    >
+      <div className="flex flex-col gap-5">
+        {!invitesWork ? (
+          <Panel className="flex flex-wrap items-center gap-3 text-[13px]">
+            <Icon name="info" size="sm" className="text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              Invites are sent through Google Calendar. Connect it in Booking settings first.
+            </span>
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/agents?view=booking-settings">Booking settings</Link>
+            </Button>
+          </Panel>
+        ) : null}
+        <Field
+          label="Add guests"
+          error={bad ? `${bad} isn't an email address.` : undefined}
+          hint="Separate several with commas."
+        >
+          <div className="flex gap-2">
+            <TextInput
+              type="text"
+              inputMode="email"
+              placeholder="name@example.com"
+              value={typed}
+              disabled={!invitesWork}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  add();
+                }
+              }}
+            />
+            <Button variant="outline" disabled={!adding.length || !!bad || !invitesWork} onClick={add}>
+              Add
+            </Button>
+          </div>
+        </Field>
+        {guests.length ? (
+          <ul className="flex flex-col divide-y rounded-md border">
+            {guests.map((g) => (
+              <li key={g} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <Icon name="mail" size="sm" className="text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{g}</span>
+                <IconButton
+                  icon="close"
+                  size="sm"
+                  label={`Remove ${g}`}
+                  onClick={() => setGuests((all) => all.filter((x) => x !== g))}
+                />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[13px] text-muted-foreground">Nobody is invited by email yet.</p>
+        )}
       </div>
     </SidePanel>
   );

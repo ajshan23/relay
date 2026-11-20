@@ -257,6 +257,11 @@ export type GoogleEventInput = {
   start: Date;
   end: Date;
   timeZone: string;
+  /**
+   * Guests by email. Given: the event's guest list becomes exactly this, and Google emails them the
+   * invite and its changes. Left out: the guest list isn't touched and nobody is emailed.
+   */
+  guests?: string[];
 };
 
 export type GoogleEventResult = {
@@ -293,13 +298,17 @@ const eventBody = (e: GoogleEventInput) => ({
   // Free in Google: Relay already counts its own bookings against the service's capacity.
   transparency: "transparent",
   reminders: { useDefault: true },
+  ...(e.guests ? { attendees: e.guests.map((email) => ({ email })), guestsCanModify: false } : {}),
 });
+
+/** Google emails the guests (invite, changes, removal, cancellation) only when a guest list is given. */
+const sendUpdates = (e: { guests?: string[] }) => (e.guests ? "all" : "none");
 
 const events = (cfg: GoogleConfig, calendarId: string) =>
   `${cfg.apiBase}/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
 
 /**
- * Adds an event (no guests, no emails). `meetRequestId` asks Google for a Meet link; `eventId` (a-v,
+ * Adds an event (emails only its guests, when it has any). `meetRequestId` asks Google for a Meet link; `eventId` (a-v,
  * 0-9) makes a retry safe: the same id again answers 409 instead of making a second event.
  */
 export async function insertGoogleEvent(
@@ -320,11 +329,15 @@ export async function insertGoogleEvent(
         }
       : {}),
   };
-  const res = await call(cfg, `${events(cfg, calendarId)}?conferenceDataVersion=1&sendUpdates=none`, {
-    method: "POST",
-    headers: { ...bearer(accessToken), "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await call(
+    cfg,
+    `${events(cfg, calendarId)}?conferenceDataVersion=1&sendUpdates=${sendUpdates(e)}`,
+    {
+      method: "POST",
+      headers: { ...bearer(accessToken), "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
   return eventResult(await json<RawEvent>(res));
 }
 
@@ -360,7 +373,7 @@ export async function patchGoogleEvent(
 ): Promise<GoogleEventResult> {
   const res = await call(
     cfg,
-    `${events(cfg, calendarId)}/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=none`,
+    `${events(cfg, calendarId)}/${encodeURIComponent(eventId)}?conferenceDataVersion=1&sendUpdates=${sendUpdates(e)}`,
     {
       method: "PATCH",
       headers: { ...bearer(accessToken), "content-type": "application/json" },
@@ -370,18 +383,23 @@ export async function patchGoogleEvent(
   return eventResult(await json<RawEvent>(res));
 }
 
-/** Deletes an event; one already gone counts as deleted. */
+/** Deletes an event (its guests get the cancellation); one already gone counts as deleted. */
 export async function deleteGoogleEvent(
   cfg: GoogleConfig,
   accessToken: string,
   calendarId: string,
   eventId: string,
+  opts: { guests?: string[] } = {},
 ): Promise<void> {
   try {
-    await call(cfg, `${events(cfg, calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=none`, {
-      method: "DELETE",
-      headers: bearer(accessToken),
-    });
+    await call(
+      cfg,
+      `${events(cfg, calendarId)}/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates(opts)}`,
+      {
+        method: "DELETE",
+        headers: bearer(accessToken),
+      },
+    );
   } catch (err) {
     if (err instanceof GoogleError && err.kind === "not_found") return;
     throw err;

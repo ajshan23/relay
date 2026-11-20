@@ -1,0 +1,1 @@
+ALTER TABLE "booking" ADD COLUMN "guest_emails" text[] DEFAULT '{}'::text[] NOT NULL;

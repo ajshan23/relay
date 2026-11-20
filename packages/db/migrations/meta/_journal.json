@@ -239,6 +239,13 @@
       "when": 1795166038418,
       "tag": "0033_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1795178223801,
+      "tag": "0034_booking_guests",
+      "breakpoints": true
     }
   ]
 }

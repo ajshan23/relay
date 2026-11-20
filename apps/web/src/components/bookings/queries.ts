@@ -36,6 +36,8 @@ export type Booking = {
   status: BookingStatus;
   bookedBy: "ai" | "team";
   meetUrl: string | null;
+  /** Invited by email: Google sends them the calendar invite. */
+  guestEmails: string[];
   externalEventId: string | null;
   calendarSync: "pending" | "synced" | "failed";
   calendarError: string | null;
@@ -123,6 +125,7 @@ export function useBookingActions() {
         startsAt: string;
         partySize?: number | null;
         notes?: string;
+        guestEmails?: string[];
       }) =>
         api<{ booking: Booking; label: string }>(inBranch("/bookings", branch), {
           method: "POST",
@@ -131,7 +134,10 @@ export function useBookingActions() {
       onSuccess: refresh,
     }),
     update: useMutation({
-      mutationFn: ({ id, ...body }: { id: string } & ({ status: BookingStatus } | { startsAt: string })) =>
+      mutationFn: ({
+        id,
+        ...body
+      }: { id: string } & ({ status: BookingStatus } | { startsAt: string } | { guestEmails: string[] })) =>
         api(inBranch(`/bookings/${id}`, branch), { method: "PATCH", json: body }),
       onSuccess: refresh,
     }),
