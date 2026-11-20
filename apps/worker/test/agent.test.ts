@@ -1543,6 +1543,10 @@ describe("bookings with Mira", () => {
     });
     const content = asked.content as { body: string; options: { id: string; title: string }[] };
     assert.equal(content.body, "Book a haircut at 09:00?");
+    // Its history says which times it gave and that the tap was one of them.
+    const seen = JSON.stringify(calls.at(-1)?.messages ?? []);
+    assert.match(seen, /\[gave choices: [^\]]*9:00 am/);
+    assert.match(seen, /\[picked \\"[^\\]*9:00 am\\" from the choices we gave\]/);
     const before = await db
       .select()
       .from(schema.booking)

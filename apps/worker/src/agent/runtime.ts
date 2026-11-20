@@ -1122,6 +1122,15 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
 
   // ------------------------------------------------------------------ reading the chat
 
+  /** The buttons or list rows of one of our messages (empty for anything else). */
+  function optionsOf(content: Record<string, unknown>): { id: string; title: string }[] {
+    const options = content.options;
+    if (!Array.isArray(options)) return [];
+    return options.filter(
+      (o): o is { id: string; title: string } => typeof o?.id === "string" && typeof o?.title === "string",
+    );
+  }
+
   /** The last 40 readable messages, oldest first, as the model sees them. */
   async function chatLines(
     conversationId: string,
@@ -1155,6 +1164,11 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       const asked = content.pendingAction as PendingAction | undefined;
       if (r.direction === "outbound" && asked)
         text = `[asked the customer to tap Yes or No: "${asked.question}"${asked.answer ? `; they tapped ${asked.answer === "yes" ? "Yes" : "No"}` : "; waiting for a tap on Yes"}]`;
+      // Our buttons or list: say which choices we gave, so a tap on one is known to be one we offered
+      // (otherwise the model can't tell, checks again and offers the times a second time).
+      const offered = optionsOf(content);
+      if (r.direction === "outbound" && !asked && offered.length)
+        text = [text, `[gave choices: ${offered.map((o) => o.title).join("; ")}]`].filter(Boolean).join("\n");
       // A tap on one of our item cards: say which item, so "Order" means something. Reply buttons
       // come back with the id as `id`; carousel buttons as a "button" message with it as `payload`.
       const tapId =
@@ -1164,6 +1178,9 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
             ? content.payload
             : null;
       if (r.direction === "inbound" && r.replyTo && tapId) {
+        const repliedTo = byId.get(r.replyTo)?.content as Record<string, unknown> | undefined;
+        if (repliedTo && !repliedTo.pendingAction && optionsOf(repliedTo).some((o) => o.id === tapId))
+          text = `[picked "${text}" from the choices we gave]`;
         const n = optionOfReply(tapId)?.match(/^i(\d{1,2})[mobs]$/)?.[1];
         const items = (
           byId.get(r.replyTo)?.content as { items?: { id: string; title: string }[] } | undefined

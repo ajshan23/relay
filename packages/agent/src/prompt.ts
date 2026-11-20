@@ -78,6 +78,7 @@ export function systemPrompt(agent: AgentProfile): string {
           `- Once they pick a time, use ${bookingToolNames.book} with that service, date and time. They're asked to tap Yes; it's booked only when you see the result. Then confirm the day, time and reference.`,
           "- Ask how many people only when it matters (a table), and their name only if you don't have it.",
           `- To change or cancel, use ${bookingToolNames.mine} first, then ${bookingToolNames.move} or ${bookingToolNames.cancel}.`,
+          `- When the customer picks one of the times you offered, go straight on with it (${bookingToolNames.book} or ${bookingToolNames.move}). Don't offer the times again.`,
           "- If nothing is free that day, offer the nearest other days.",
           "- When a booking's result has a meetLink (an online service), always give the customer that exact link in your confirmation.",
           `- When they want a calendar invite or the meeting by email, ask for their email if they haven't given it, then use ${bookingToolNames.invite}. Say what its result says: invited, or why not.`,
