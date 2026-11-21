@@ -125,6 +125,29 @@ describe("Claude for chat replies", () => {
     );
   });
 
+  it("never puts a system message right before a customer's message (the 400 from the Operium support chat)", () => {
+    const out = toAnthropicMessages([
+      { role: "user", content: "Can someone call me back tomorrow?" },
+      { role: "system", content: "Follow-up added to Google Tasks: Call back Ajmal." },
+      { role: "assistant", content: "I'm passing you to someone from the team." },
+      { role: "system", content: "Mira handed this chat over: wants a callback." },
+      { role: "system", content: "Follow-up added to Google Tasks: Reply on WhatsApp." },
+      { role: "user", content: "Can someone call me today itself?" },
+      { role: "system", content: "Follow-ups already added for the team in this chat." },
+    ]);
+    assert.deepEqual(
+      out.map((m) => m.role),
+      ["user", "system", "assistant", "user", "user", "user", "system"],
+    );
+    // The rule Claude checks: every system message comes after a user turn, and before an assistant
+    // turn or at the end.
+    out.forEach((m, i) => {
+      if (m.role !== "system") return;
+      assert.equal(out[i - 1]?.role, "user");
+      assert.ok(i === out.length - 1 || out[i + 1]?.role === "assistant");
+    });
+  });
+
   it("runs a whole turn: a tool call, its result, then the reply, with Claude's blocks sent back unchanged", async () => {
     const thinking = { type: "thinking", thinking: "", signature: "sig-1" };
     const { client, requests } = fakeClient([

@@ -25,8 +25,10 @@ type Out = Anthropic.MessageParam;
 /** The harness's messages as Anthropic messages. */
 export function toAnthropicMessages(messages: unknown[]): Out[] {
   const out: Out[] = [];
-  for (const m of messages as AnyMessage[]) {
+  const all = messages as AnyMessage[];
+  for (const [i, m] of all.entries()) {
     const prev = out.at(-1);
+    const next = all[i + 1];
     if (m.role === "user") out.push({ role: "user", content: textOf(m.content) });
     else if (m.role === "assistant") {
       if (m._anthropic)
@@ -42,10 +44,12 @@ export function toAnthropicMessages(messages: unknown[]): Out[] {
         })),
       });
     } else if (m.role === "system") {
-      // A system message in the conversation has to follow a user turn; after a reply from the
-      // model, the harness's note goes in as a clearly marked user message instead.
+      // Claude takes a system message in the conversation only after a user turn and right before
+      // the model's reply (or at the very end). Anywhere else, e.g. chat notes between Mira's reply and
+      // the customer's next message, it goes in as a clearly marked user message instead.
       const text = textOf(m.content);
-      if (prev?.role === "user") out.push({ role: "system", content: text });
+      if (prev?.role === "user" && (!next || next.role === "assistant"))
+        out.push({ role: "system", content: text });
       else out.push({ role: "user", content: `[Note from the system, not the customer:] ${text}` });
     }
   }
