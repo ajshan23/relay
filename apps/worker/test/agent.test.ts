@@ -1648,7 +1648,8 @@ describe("bookings with Mira", () => {
     // An Indian number on a UAE (Asia/Dubai) branch: India is 1 h 30 ahead.
     await db
       .update(schema.contact)
-      .set({ phone: `9198765${T.slice(-5)}` })
+      // Digits only: T can end in letters, which would leave too few digits to tell the country.
+      .set({ phone: `9198765${String(Date.now()).slice(-5)}` })
       .where(eq(schema.contact.id, chat.contactId));
     await customerSays(chat, "Can I book a haircut tomorrow?");
     const [q] = await until("the times", async () => {
@@ -1852,7 +1853,7 @@ describe("bookings with Mira", () => {
 });
 
 describe("follow-ups in Google Tasks", () => {
-  it("adds a callback once to the chosen list, notes it in the chat, and adds one for a hand-over", async () => {
+  it("adds a callback once, notes it, skips the hand-over task after a follow-up, and names hand-over tasks plainly", async () => {
     google.state.taskLists.push({ id: "list-wa", title: "WhatsApp follow-ups" });
     await db.insert(schema.taskConnection).values({
       id: `tsc_${T}`,
@@ -1910,20 +1911,34 @@ describe("follow-ups in Google Tasks", () => {
       );
       assert.equal(google.state.tasks.filter((t) => t.listId === "list-wa").length, 1);
 
-      // A hand-over adds its own task, due today.
+      // A hand-over right after a follow-up adds no second task: the note points at the one there.
       await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
       await customerSays(chat, "I want a person");
-      const handoff = await until("the hand-over task", async () => {
-        const t = google.state.tasks.filter((x) => x.listId === "list-wa");
-        return t.length === 2 ? t[1] : null;
-      });
-      assert.equal(handoff?.title, "Reply on WhatsApp: Asked for a person");
-      assert.equal(handoff?.due, `${localTime(new Date(), "Asia/Dubai").date}T00:00:00.000Z`);
+      const handNote = await until("the hand-over note", async () =>
+        (await agentMessages(chat.conversationId)).find(
+          (m) => m.type === "note" && /handed this chat over/.test(textOf(m as never)),
+        ),
+      );
+      assert.match(textOf(handNote as never), /Already in Google Tasks: Call back Asha about pricing\./);
+      assert.equal(google.state.tasks.filter((t) => t.listId === "list-wa").length, 1);
       const rows = await db
         .select()
         .from(schema.agentTask)
         .where(eq(schema.agentTask.conversationId, chat.conversationId));
-      assert.deepEqual(rows.map((x) => x.source).sort(), ["agent", "handoff"]);
+      assert.deepEqual(
+        rows.map((x) => x.source),
+        ["agent"],
+      );
+
+      // A hand-over in a chat with no follow-up adds its own task, due today, named for a to-do list.
+      const other = await newChat();
+      await customerSays(other, "I want a person");
+      const handoff = await until("the hand-over task", async () => {
+        const t = google.state.tasks.filter((x) => x.listId === "list-wa");
+        return t.length === 2 ? t[1] : null;
+      });
+      assert.equal(handoff?.title, "Reply to Asha on WhatsApp: asked for a person");
+      assert.equal(handoff?.due, `${localTime(new Date(), "Asia/Dubai").date}T00:00:00.000Z`);
     } finally {
       await db.delete(schema.taskConnection).where(eq(schema.taskConnection.id, `tsc_${T}`));
     }

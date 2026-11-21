@@ -128,6 +128,15 @@ const isBareMedia = (e: InboundEventPayload) =>
   ["image", "audio", "video"].includes(e.type) && !e.text.trim();
 type Conversation = typeof schema.conversation.$inferSelect;
 const finished = new Set(["completed", "failed", "cancelled"]);
+/** Hand-over reasons that mean the agent itself couldn't answer (errors, limits), not the customer's ask. */
+const couldNotAnswer = new Set([
+  "The AI had a problem",
+  "AI credits used up",
+  "AI isn't set up",
+  "The assistant couldn't answer",
+  "Needed too many steps to answer",
+  "Took too long to answer",
+]);
 const isLive = (r: RunRow | null | undefined) => !!r && !finished.has(r.status);
 
 /** How a run ended (its output), read before answering an unclaimed chat again. */
@@ -1733,6 +1742,43 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       .onConflictDoNothing();
   }
 
+  /** A follow-up the agent added in this chat in the last hour that isn't done or failed. */
+  async function recentFollowUp(conversationId: string) {
+    const [t] = await db
+      .select({ title: schema.agentTask.title })
+      .from(schema.agentTask)
+      .where(
+        and(
+          eq(schema.agentTask.conversationId, conversationId),
+          eq(schema.agentTask.source, "agent"),
+          inArray(schema.agentTask.status, ["open", "sending"]),
+          gt(schema.agentTask.createdAt, new Date(Date.now() - 60 * 60_000)),
+        ),
+      )
+      .orderBy(desc(schema.agentTask.createdAt))
+      .limit(1);
+    return t ?? null;
+  }
+
+  /**
+   * The hand-over task's title, readable in a to-do list: "Reply to Asha on WhatsApp: wants a
+   * callback". When the agent itself couldn't answer, that's what it says, not the technical reason.
+   */
+  async function handOverTaskTitle(agent: LoadedAgent, contactId: string | null, reason: string) {
+    const [c] = contactId
+      ? await db
+          .select({ name: schema.contact.name })
+          .from(schema.contact)
+          .where(eq(schema.contact.id, contactId))
+          .limit(1)
+      : [];
+    const who = c?.name?.trim().split(/\s+/)[0] || "the customer";
+    const lead = `Reply to ${who} on WhatsApp`;
+    if (reason === "A long chat") return `${lead} (a long chat)`;
+    if (couldNotAnswer.has(reason)) return `${lead} (${agent.name} couldn't answer)`;
+    return `${lead}: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}`;
+  }
+
   /** Steps back for a person: says so to the customer, leaves a note for the team, assigns the chat. */
   async function handOver(
     input: AgentRunInput,
@@ -1744,15 +1790,24 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     // The customer always hears that a person is coming, even if the business cleared the message.
     const bye = agent.handoff.message.trim() || (o.text ? "" : agentHandoffSchema.parse({}).message);
     if (bye) await sendText(input, agent, `${stepKey}:bye`, bye);
-    await addNote(input, agent, stepKey, `${agent.name} handed this chat over: ${o.reason}.\n${o.summary}`);
-    // "Also add a task whenever Mira hands a chat to the team" (Google Tasks).
-    if (agent.tasks?.onHandoff)
+    // "Also add a task whenever Mira hands a chat to the team" (Google Tasks), unless she added a
+    // follow-up in this chat within the hour: the team already has a task for it.
+    const followUp = agent.tasks?.onHandoff ? await recentFollowUp(input.conversationId) : null;
+    await addNote(
+      input,
+      agent,
+      stepKey,
+      `${agent.name} handed this chat over: ${o.reason}.\n${o.summary}${
+        followUp ? `\nAlready in Google Tasks: ${followUp.title}.` : ""
+      }`,
+    );
+    if (agent.tasks?.onHandoff && !followUp)
       await addFollowUp(agent, {
         organizationId: input.organizationId,
         branchId: input.branchId,
         conversationId: input.conversationId,
         contactId: input.contactId,
-        title: `Reply on WhatsApp: ${o.reason}`.slice(0, 120),
+        title: (await handOverTaskTitle(agent, input.contactId, o.reason)).slice(0, 120),
         details: o.summary,
         due: "today",
         source: "handoff",

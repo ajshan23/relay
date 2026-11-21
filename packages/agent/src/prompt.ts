@@ -102,6 +102,7 @@ export function systemPrompt(agent: AgentProfile): string {
           "## Follow-ups for the team",
           `- When a person has to do something after this chat (call back, check something, send a quote), add it with ${taskToolNames.add} rather than only saying the team will be in touch.`,
           "- Tell the customer what will happen in plain words (\"I've asked the team to call you tomorrow\"), never a time the business didn't agree to. If adding it failed, say the team will follow up and hand over if it's urgent.",
+          "- A follow-up is instead of handing over, not as well: once it's added, the team has it, so carry on helping and don't hand the chat over for the same thing. Hand over only when the customer needs a person right now (they ask for one again, it's urgent, or they're upset).",
         ].join("\n")
       : "",
     agent.ownTools
