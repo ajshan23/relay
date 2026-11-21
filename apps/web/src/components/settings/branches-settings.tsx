@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, api, type Branch } from "@/lib/api";
 import { useMe } from "@/lib/me";
 import { BranchFormModal } from "./branch-form-modal";
+import { BranchLogo } from "./branch-logo";
 import { BranchPeoplePanel } from "./branch-people-panel";
 import { errorText, timezoneLabel } from "./words";
 
@@ -78,9 +79,7 @@ export function BranchesSettings() {
           header: "Branch",
           cell: (info) => (
             <span className="flex items-center gap-2.5">
-              <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">
-                <Icon name="branch" size="sm" />
-              </span>
+              <BranchLogo branch={info.row.original} />
               <span className="font-medium">{info.getValue()}</span>
             </span>
           ),
@@ -123,7 +122,7 @@ export function BranchesSettings() {
                   <IconButton
                     icon="edit"
                     size="sm"
-                    label={`Rename or change timezone of ${branch.name}`}
+                    label={`Edit ${branch.name}: name, logo and timezone`}
                     onClick={() => {
                       setEditing(branch);
                       setFormOpen(true);
@@ -201,7 +200,13 @@ export function BranchesSettings() {
         />
       )}
 
-      <BranchFormModal open={formOpen} onOpenChange={setFormOpen} branch={editing} onSaved={afterChange} />
+      <BranchFormModal
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        branch={editing}
+        onSaved={afterChange}
+        onLogoChanged={afterChange}
+      />
 
       <BranchPeoplePanel branch={peopleOf} open={peopleOpen} onOpenChange={setPeopleOpen} onChanged={load} />
 

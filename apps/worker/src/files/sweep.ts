@@ -6,7 +6,7 @@ import { type createDb, fileInUse, recountStorage, releaseStorage, schema, sql }
  * they've been unused for a week. Runs daily on the maintenance queue. The object goes first, then the
  * row, so a failure leaves a row that the next run retries, never an object without a row. Afterwards
  * every business's storage total is recounted from what is really stored.
- * "Used" is fileInUse in @relay/db (attachments, knowledge files, agent pictures, catalogue galleries).
+ * "Used" is fileInUse in @relay/db (attachments, knowledge files, agent pictures, catalogue galleries, branch logos).
  */
 
 type Db = ReturnType<typeof createDb>["db"];

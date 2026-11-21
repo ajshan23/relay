@@ -26,11 +26,12 @@ export function meRoutes(ctx: AppContext) {
       .from(schema.organization)
       .where(eq(schema.organization.id, access.orgId));
     const branches = (await listBranches(ctx, access)).map(
-      ({ id, name, slug, timezone, role, permissions }) => ({
+      ({ id, name, slug, timezone, logoUrl, role, permissions }) => ({
         id,
         name,
         slug,
         timezone,
+        logoUrl,
         role,
         permissions,
       }),

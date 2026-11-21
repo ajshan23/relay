@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { createDb } from "./client";
 import { aiAgent, knowledgeSource } from "./schema/agents";
+import { branch } from "./schema/branches";
 import { catalogMedia } from "./schema/catalog";
 import { attachment, storedFile } from "./schema/messaging";
 import { type QuotaMode, releaseStorage, reserveStorage } from "./storage-usage";
@@ -97,7 +98,8 @@ export const fileInUse = sql`(
   exists (select 1 from ${attachment} a where a.file_id = f.id)
   or exists (select 1 from ${knowledgeSource} k where k.file_id = f.id)
   or exists (select 1 from ${aiAgent} g where g.avatar_file_id = f.id)
-  or exists (select 1 from ${catalogMedia} m where m.file_id = f.id))`;
+  or exists (select 1 from ${catalogMedia} m where m.file_id = f.id)
+  or exists (select 1 from ${branch} b where b.logo_file_id = f.id))`;
 
 /**
  * Deletes a business's stored file right away if nothing uses it any more (and gives the space back),

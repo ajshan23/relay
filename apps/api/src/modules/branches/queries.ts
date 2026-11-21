@@ -32,6 +32,8 @@ export function toBranch(row: BranchRow, access: Access, memberCount: number) {
     name: row.name,
     slug: row.slug,
     timezone: row.timezone,
+    /** Changes with each new logo (?v=), so browsers can cache it. Null: show the initials. */
+    logoUrl: row.logoFileId ? `/api/branches/${row.id}/logo?v=${row.logoFileId}` : null,
     role: branchRoleName(access, row.id),
     permissions: branchPermissions(access, row.id),
     createdAt: row.createdAt.toISOString(),

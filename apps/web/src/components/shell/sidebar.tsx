@@ -33,6 +33,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, Suspense, useState, useSyncExternalStore } from "react";
 import { ContactsNav } from "@/components/contacts/contacts-nav";
 import { InboxNav } from "@/components/inbox/inbox-nav";
+import { BranchLogo } from "@/components/settings/branch-logo";
 import { signOut } from "@/lib/auth-client";
 import { useMe } from "@/lib/me";
 import { useBranch } from "./branch-context";
@@ -165,9 +166,16 @@ function AccountMenu({ side, showName }: { side: "top" | "right"; showName: bool
             <DropdownMenuRadioGroup value={branch.id} onValueChange={switchBranch}>
               {branches.map((b, i) => (
                 <DropdownMenuRadioItem key={b.id} value={b.id}>
-                  <span
-                    className={cn("size-2.5 shrink-0 rounded-sm", branchSwatches[i % branchSwatches.length])}
-                  />
+                  {b.logoUrl ? (
+                    <BranchLogo branch={{ name: b.name, logoUrl: b.logoUrl }} size="xs" />
+                  ) : (
+                    <span
+                      className={cn(
+                        "size-2.5 shrink-0 rounded-sm",
+                        branchSwatches[i % branchSwatches.length],
+                      )}
+                    />
+                  )}
                   <span className="truncate">{b.name}</span>
                 </DropdownMenuRadioItem>
               ))}

@@ -4,7 +4,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSyn
 import { useMe } from "@/lib/me";
 
 /** A branch the signed-in person can reach. Everything (inbox, contacts) shows one branch at a time. */
-export type Branch = { id: string; name: string };
+export type Branch = { id: string; name: string; logoUrl?: string | null };
 
 /** Before /api/me has loaded, or for someone in no branch yet. */
 const NO_BRANCH: Branch = { id: "", name: "No branch" };

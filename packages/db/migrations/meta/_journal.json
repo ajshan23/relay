@@ -260,6 +260,13 @@
       "when": 1795244787715,
       "tag": "0036_agent_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795256522437,
+      "tag": "0037_branch_logo",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,2 @@
+ALTER TABLE "branch" ADD COLUMN "logo_file_id" text;--> statement-breakpoint
+ALTER TABLE "branch" ADD CONSTRAINT "branch_logo_file_id_stored_file_id_fk" FOREIGN KEY ("logo_file_id") REFERENCES "public"."stored_file"("id") ON DELETE set null ON UPDATE no action;

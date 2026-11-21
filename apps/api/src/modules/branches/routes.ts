@@ -1,6 +1,7 @@
-import { newId } from "@relay/core";
-import { and, count, ensureBuiltInRoles, eq, isNull, schema } from "@relay/db";
+import { fileStorage, newId } from "@relay/core";
+import { and, count, deleteFileIfUnused, ensureBuiltInRoles, eq, isNull, schema, storeFile } from "@relay/db";
 import { type Context, Hono } from "hono";
+import sharp from "sharp";
 import { z } from "zod";
 import type { AppContext } from "../../context";
 import { requireSession } from "../auth/session";
@@ -17,6 +18,10 @@ function isTimezone(tz: string) {
     return false;
   }
 }
+
+const logoTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const MAX_LOGO_BYTES = 5 * 1024 * 1024;
+const LOGO_SIDE = 512;
 
 const name = z.string().trim().min(1, "name is required").max(80, "name is too long");
 const timezone = z.string().refine(isTimezone, "unknown timezone");
@@ -74,6 +79,89 @@ export function branchRoutes(ctx: AppContext) {
       .set({ ...body.data, updatedAt: new Date() })
       .where(and(eq(schema.branch.id, found.branch.id), eq(schema.branch.organizationId, access.orgId)));
     return c.json({ branch: await getBranch(ctx, access, found.branch.id) });
+  });
+
+  // ---------------------------------------------------------------- logo
+  // POST /:id/logo (multipart "file": JPEG, PNG, WebP or GIF up to 5 MB) stores it as a square-ish
+  // WebP of at most 512 px; DELETE removes it; GET shows it to anyone who can reach the branch.
+
+  app.post("/:id/logo", async (c) => {
+    const access = c.var.access;
+    const found = await branchAccess(ctx, access, c.req.param("id"));
+    if (!found) return fail(c, 404, "not_found");
+    if (!can(access, "branches.edit", { branchId: found.branch.id })) return fail(c, 403, "forbidden");
+    const form = await c.req.parseBody().catch(() => null);
+    const file = form?.file;
+    if (!(file instanceof File)) return fail(c, 422, "file_required", "Choose an image.");
+    if (!logoTypes.has(file.type))
+      return fail(c, 415, "unsupported_file", "Use a JPEG, PNG, WebP or GIF image.");
+    if (file.size > MAX_LOGO_BYTES) return fail(c, 413, "file_too_large", "Logos can be up to 5 MB.");
+    let bytes: Uint8Array;
+    try {
+      // Rotation applied, at most 512 px on the longest side, transparency kept, first GIF frame.
+      const out = await sharp(new Uint8Array(await file.arrayBuffer()), { failOn: "error" })
+        .rotate()
+        .resize({ width: LOGO_SIDE, height: LOGO_SIDE, fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 90 })
+        .toBuffer();
+      bytes = new Uint8Array(out);
+    } catch {
+      return fail(c, 422, "unreadable_image", "That image couldn't be read. Try another file.");
+    }
+    const storage = fileStorage();
+    const { file: stored } = await storeFile(ctx.db, storage, {
+      organizationId: access.orgId,
+      bytes,
+      mimeType: "image/webp",
+      newId: () => newId("storedFile"),
+      quota: "enforce",
+    });
+    const before = found.branch.logoFileId;
+    await ctx.db
+      .update(schema.branch)
+      .set({ logoFileId: stored.id, updatedAt: new Date() })
+      .where(and(eq(schema.branch.id, found.branch.id), eq(schema.branch.organizationId, access.orgId)));
+    if (before && before !== stored.id)
+      await deleteFileIfUnused(ctx.db, storage, access.orgId, before).catch(() => false);
+    return c.json({ branch: await getBranch(ctx, access, found.branch.id) });
+  });
+
+  app.delete("/:id/logo", async (c) => {
+    const access = c.var.access;
+    const found = await branchAccess(ctx, access, c.req.param("id"));
+    if (!found) return fail(c, 404, "not_found");
+    if (!can(access, "branches.edit", { branchId: found.branch.id })) return fail(c, 403, "forbidden");
+    const before = found.branch.logoFileId;
+    await ctx.db
+      .update(schema.branch)
+      .set({ logoFileId: null, updatedAt: new Date() })
+      .where(and(eq(schema.branch.id, found.branch.id), eq(schema.branch.organizationId, access.orgId)));
+    if (before) await deleteFileIfUnused(ctx.db, fileStorage(), access.orgId, before).catch(() => false);
+    return c.json({ branch: await getBranch(ctx, access, found.branch.id) });
+  });
+
+  app.get("/:id/logo", async (c) => {
+    const access = c.var.access;
+    const found = await branchAccess(ctx, access, c.req.param("id"));
+    if (!found?.branch.logoFileId) return fail(c, 404, "not_found");
+    const [stored] = await ctx.db
+      .select({ storageKey: schema.storedFile.storageKey, mimeType: schema.storedFile.mimeType })
+      .from(schema.storedFile)
+      .where(eq(schema.storedFile.id, found.branch.logoFileId))
+      .limit(1);
+    if (!stored) return fail(c, 404, "not_found");
+    const storage = fileStorage();
+    const contentType = stored.mimeType ?? "image/webp";
+    // The address carries ?v=<file id>, so a new logo is a new address and the browser may cache this.
+    const url = await storage.signedUrl(stored.storageKey, { expiresIn: 3600, contentType, inline: true });
+    if (url) return c.redirect(url, 302);
+    const bytes = await storage.get(stored.storageKey);
+    return c.body(new Uint8Array(bytes).buffer as ArrayBuffer, 200, {
+      "content-type": contentType,
+      "content-length": String(bytes.byteLength),
+      "cache-control": "private, max-age=86400",
+      "x-content-type-options": "nosniff",
+    });
   });
 
   app.delete("/:id", async (c) => {

@@ -24,6 +24,8 @@ export type BranchSummary = {
   name: string;
   slug: string;
   timezone: string;
+  /** The branch's logo, or null to show its initial. */
+  logoUrl: string | null;
   /** Their role name(s) in this branch, or "Owner". */
   role: string | null;
   /** What they may do in this branch (on at least one of its numbers). */

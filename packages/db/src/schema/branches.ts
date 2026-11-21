@@ -1,5 +1,6 @@
 import { index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { organization, user } from "./auth";
+import { storedFile } from "./messaging";
 
 /** A branch is one location of an organization. Conversations, customers and campaigns belong to a branch. */
 export const branch = pgTable(
@@ -12,6 +13,8 @@ export const branch = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     timezone: text("timezone").notNull().default("UTC"),
+    /** The branch's logo (a square image, at most 512 px), or null for its initials. */
+    logoFileId: text("logo_file_id").references(() => storedFile.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
     /** Set when a branch is closed. Its history stays; it no longer appears in pickers. */
