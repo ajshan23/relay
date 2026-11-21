@@ -1288,6 +1288,51 @@ describe("AI agent in chats", () => {
     assert.equal(textOf(reply as never), "You said: prices?");
   });
 
+  it("an automation's Hand to AI agent step doesn't take back a chat Mira handed to the team that day", async () => {
+    const chat = await newChat();
+    await customerSays(chat, "I want a person please");
+    await until("handed over", async () => {
+      const r = await agentRun(chat.conversationId);
+      return r?.status === "completed" ? r : null;
+    });
+    const before = (await agentRun(chat.conversationId))?.id;
+    // The "ai" automation runs again on the next message and hands the chat to Mira.
+    await customerSays(chat, "ai");
+    await new Promise((res) => setTimeout(res, 1500));
+    assert.equal((await agentRun(chat.conversationId))?.id, before, "no new agent run");
+    assert.equal((await agentMessages(chat.conversationId)).length, 2, "no greeting, no answer");
+    assert.equal((await chatRow(chat.conversationId))?.aiAgentId, null);
+  });
+
+  it("an automation's Hand to AI agent step leaves the chat with the team outside the agent's hours", async () => {
+    // Open only from 03:00 to 03:01 UTC on no day at all: always closed.
+    await db
+      .update(schema.aiAgent)
+      .set({ hours: { timezone: "UTC", days: [], from: "03:00", to: "03:01" } })
+      .where(eq(schema.aiAgent.id, ids.agent));
+    try {
+      const chat = await newChat();
+      await customerSays(chat, "ai");
+      const note = await until("the note", async () => {
+        const rows = await db
+          .select()
+          .from(schema.message)
+          .where(
+            sql`${schema.message.conversationId} = ${chat.conversationId} and ${schema.message.type} = 'note'`,
+          );
+        return rows[0];
+      });
+      assert.match(textOf(note as never), /Mira didn't take this chat: it is outside its working hours/);
+      assert.equal(await agentRun(chat.conversationId), null);
+      assert.equal((await agentMessages(chat.conversationId)).length, 0);
+      const conv = await chatRow(chat.conversationId);
+      assert.equal(conv?.aiAgentId, null);
+      assert.equal(conv?.status, "open");
+    } finally {
+      await db.update(schema.aiAgent).set({ hours: null }).where(eq(schema.aiAgent.id, ids.agent));
+    }
+  });
+
   it("shows catalogue items as cards, sends the gallery on More details without the model, and names the item on Order", async () => {
     const chat = await newChat();
     await customerSays(chat, "do you have a sofa?");

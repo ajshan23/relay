@@ -118,7 +118,7 @@ export const sections: Section[] = [
     ],
   ),
   section("agents", "AI agent", Bot, "Teach Mira, try her out, put her live and improve her answers.", [
-    { label: "Mira", items: ["Teach", "Tools", "Try", "Go live", "Improve"] },
+    { label: "Agent", items: ["Teach", "Tools", "Try", "Go live", "Improve"] },
     { label: "Knowledge", items: ["Website", "Files", "Questions and answers"] },
     { label: "Catalogue", items: ["Items", "Types and fields", "Import"] },
     { label: "Bookings", items: ["Bookings", "Booking settings"] },

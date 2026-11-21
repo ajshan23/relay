@@ -16,6 +16,7 @@ import { ImportView } from "@/components/catalog/import-view";
 import { ItemsView } from "@/components/catalog/items-view";
 import { TypesView } from "@/components/catalog/types-view";
 import { ApiError } from "@/lib/api";
+import { AgentSwitcher, useSelectedAgent } from "./agent-switcher";
 import { GoLiveView } from "./go-live";
 import { ImproveView } from "./improve";
 import { KnowledgeView } from "./knowledge";
@@ -92,7 +93,7 @@ export function AgentsPage() {
   const params = useSearchParams();
   const view = titles[params.get("view") ?? ""] ? (params.get("view") as string) : "teach";
   const q = useAgents();
-  const agent = q.data?.agents[0];
+  const { agent, select } = useSelectedAgent(q.data?.agents);
   const head = titles[view] ?? { title: "Teach", description: "" };
 
   return (
@@ -135,7 +136,13 @@ export function AgentsPage() {
             <AgentAvatar name={agent.name} size="lg" />
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-2xl font-semibold tracking-tight">{agent.name}</h1>
+                <AgentSwitcher
+                  agents={q.data.agents}
+                  agent={agent}
+                  onSelect={select}
+                  canManage={q.data.canManage}
+                  starters={q.data.starters}
+                />
                 <Tag size="sm" tone={statusWords[agent.status].tone}>
                   {statusWords[agent.status].label}
                 </Tag>
@@ -155,13 +162,21 @@ export function AgentsPage() {
               </span>
             </Panel>
           ) : null}
+          {/* Keyed by agent: switching agents starts each view fresh (no half-typed form or Try chat). */}
           {view === "teach" ? (
-            <TeachView agent={agent} canManage={q.data.canManage} voiceReady={q.data.voiceReady} />
+            <TeachView
+              key={agent.id}
+              agent={agent}
+              canManage={q.data.canManage}
+              voiceReady={q.data.voiceReady}
+            />
           ) : null}
-          {view === "tools" ? <ToolsView agent={agent} /> : null}
-          {view === "try" ? <TryView agent={agent} aiReady={q.data.aiReady} /> : null}
-          {view === "go-live" ? <GoLiveView agent={agent} overview={q.data} /> : null}
-          {view === "improve" ? <ImproveView agent={agent} canManage={q.data.canManage} /> : null}
+          {view === "tools" ? <ToolsView key={agent.id} agent={agent} /> : null}
+          {view === "try" ? <TryView key={agent.id} agent={agent} aiReady={q.data.aiReady} /> : null}
+          {view === "go-live" ? <GoLiveView key={agent.id} agent={agent} overview={q.data} /> : null}
+          {view === "improve" ? (
+            <ImproveView key={agent.id} agent={agent} canManage={q.data.canManage} />
+          ) : null}
           {view === "website" ? <KnowledgeView kind="website" canManage={q.data.canManage} /> : null}
           {view === "files" ? <KnowledgeView kind="file" canManage={q.data.canManage} /> : null}
           {view === "questions-and-answers" ? <KnowledgeView kind="qa" canManage={q.data.canManage} /> : null}

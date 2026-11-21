@@ -270,6 +270,36 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
   }
 
   /**
+   * Why an agent shouldn't take this chat now, or null when it can: it isn't live, it's outside its
+   * hours, or in the last day it handed this chat to the team or the team stepped in. The same rules
+   * whether the chat came unclaimed or an automation's "Hand to AI agent" step passed it on.
+   */
+  async function whyNotTake(
+    agent: Pick<typeof schema.aiAgent.$inferSelect, "status" | "hours">,
+    conversationId: string,
+  ): Promise<"not_live" | "outside_hours" | "recently_handed_over" | "team_took_over" | null> {
+    if (agent.status !== "live") return "not_live";
+    if (!withinAgentHours(agent.hours)) return "outside_hours";
+    const [last] = await kairos.listRuns({
+      workflow: agentWorkflow.name,
+      labels: { conversationId },
+      limit: 1,
+    });
+    const recent = last?.finished_at && Date.now() - new Date(last.finished_at).getTime() < 24 * 3_600_000;
+    const handedOver = (last?.output as { ended?: Ended } | null)?.ended === "handoff";
+    if (recent && (handedOver || last?.status === "cancelled"))
+      return handedOver ? "recently_handed_over" : "team_took_over";
+    return null;
+  }
+
+  /** An automation's "Hand to AI agent" step: the agent row (any branch status) and why not, if so. */
+  async function canTake(agentId: string, conversationId: string) {
+    const [agent] = await db.select().from(schema.aiAgent).where(eq(schema.aiAgent.id, agentId)).limit(1);
+    if (!agent) return { agent: null, blocked: "no_agent" as const };
+    return { agent, blocked: await whyNotTake(agent, conversationId) };
+  }
+
+  /**
    * The router found no automation for a customer message: the branch's agent answers it when it is
    * live, answers unclaimed chats, it's within its hours, nobody is assigned, and the agent didn't just
    * hand this chat over (or get stopped by the team) in the last day.
@@ -292,16 +322,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       )
       .limit(1);
     if (!agent) return { action: "none", reason: "no_agent" };
-    if (!withinAgentHours(agent.hours)) return { action: "none", reason: "outside_hours" };
-    const [last] = await kairos.listRuns({
-      workflow: agentWorkflow.name,
-      labels: { conversationId: conv.id },
-      limit: 1,
-    });
-    const recent = last?.finished_at && Date.now() - new Date(last.finished_at).getTime() < 24 * 3_600_000;
-    const handedOver = (last?.output as { ended?: Ended } | null)?.ended === "handoff";
-    if (recent && (handedOver || last?.status === "cancelled"))
-      return { action: "none", reason: handedOver ? "recently_handed_over" : "team_took_over" };
+    const blocked = await whyNotTake(agent, conv.id);
+    if (blocked) return { action: "none", reason: blocked };
     const runId = await startRun({
       agentId: agent.id,
       conversation: conv,
@@ -1763,7 +1785,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     if (c) await announce(c);
   }
 
-  return { run, startRun, maybeStartUnclaimed, release };
+  return { run, startRun, canTake, maybeStartUnclaimed, release };
 }
 
 export type AgentRuntime = ReturnType<typeof createAgentRuntime>;

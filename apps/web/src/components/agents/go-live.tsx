@@ -1,6 +1,7 @@
 "use client";
 
 import { SwitchRow } from "@relay/ui/components/choice";
+import { useConfirm } from "@relay/ui/components/confirm-dialog";
 import { Field } from "@relay/ui/components/field";
 import { Icon } from "@relay/ui/components/icon";
 import { Panel, Section } from "@relay/ui/components/section";
@@ -21,8 +22,13 @@ import { type Agent, type AgentsOverview, useAgentActions } from "./queries";
 const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function GoLiveView({ agent, overview }: { agent: Agent; overview: AgentsOverview }) {
-  const { update, setStatus } = useAgentActions();
+  const { update, setStatus, remove } = useAgentActions();
+  const [confirm, confirmDialog] = useConfirm();
   const branchId = useBranch().branch.id;
+  // Only one live agent per branch answers chats nobody picked up.
+  const unclaimedBy = overview.agents.find(
+    (a) => a.id !== agent.id && a.answerUnclaimed && a.status === "live",
+  );
   const timezone = useMe().me?.branches.find((b) => b.id === branchId)?.timezone || "UTC";
   const canManage = overview.canManage;
   const live = agent.status === "live";
@@ -123,9 +129,13 @@ export function GoLiveView({ agent, overview }: { agent: Agent; overview: Agents
         <Panel className="flex flex-col divide-y py-1">
           <SwitchRow
             label="Answer chats nobody picked up"
-            description="A new message that no automation starts on, in a chat nobody is assigned to. It won't take back a chat it handed over or your team stepped into that day."
+            description={
+              unclaimedBy && !agent.answerUnclaimed
+                ? `${unclaimedBy.name} answers these chats now. Only one live agent in a branch can; turn it off for ${unclaimedBy.name} first.`
+                : "A new message that no automation starts on, in a chat nobody is assigned to. It won't take back a chat it handed over or your team stepped into that day."
+            }
             checked={agent.answerUnclaimed}
-            disabled={!canManage || update.isPending}
+            disabled={!canManage || update.isPending || (!!unclaimedBy && !agent.answerUnclaimed)}
             onCheckedChange={(v) =>
               save(
                 { id: agent.id, answerUnclaimed: v },
@@ -134,8 +144,9 @@ export function GoLiveView({ agent, overview }: { agent: Agent; overview: Agents
             }
           />
           <div className="py-2.5 text-[13px] text-muted-foreground">
-            Automations can also hand a chat to {agent.name} with the{" "}
-            <span className="font-medium text-foreground">Hand to AI agent</span> step.{" "}
+            To have {agent.name} answer on a particular number, add an automation on that number that starts
+            on any message and uses the <span className="font-medium text-foreground">Hand to AI agent</span>{" "}
+            step with {agent.name}.{" "}
             <Link href="/automations" className="font-medium text-primary hover:underline">
               Open automations
             </Link>
@@ -145,7 +156,7 @@ export function GoLiveView({ agent, overview }: { agent: Agent; overview: Agents
 
       <Section
         title="Hours"
-        description="For chats nobody picked up. Chats an automation hands over are answered any time."
+        description="Outside these hours it doesn't take new chats, whether nobody picked them up or an automation hands them over. They stay with your team."
       >
         <Panel className="flex flex-col gap-4">
           <SwitchRow
@@ -228,6 +239,39 @@ export function GoLiveView({ agent, overview }: { agent: Agent; overview: Agents
           ) : null}
         </Panel>
       </Section>
+
+      {canManage ? (
+        <Section title="Delete this agent">
+          <Panel className="flex flex-wrap items-center gap-3">
+            <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">
+              Its teaching and tools go. Knowledge, the catalogue and bookings stay: they belong to the
+              branch. Automations that hand chats to {agent.name} leave them with your team instead.
+            </p>
+            <Button
+              variant="outline"
+              className="text-destructive"
+              disabled={remove.isPending}
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: `Delete ${agent.name}?`,
+                    description: `${agent.name} stops answering straight away and can't be brought back.`,
+                    confirmLabel: "Delete",
+                    tone: "danger",
+                  })
+                )
+                  remove.mutate(agent.id, {
+                    onSuccess: () => notify.success(`${agent.name} is deleted`),
+                    onError: (err) => notify.error("Not deleted", { description: errorText(err) }),
+                  });
+              }}
+            >
+              <Icon name="delete" size="sm" /> Delete agent
+            </Button>
+          </Panel>
+        </Section>
+      ) : null}
+      {confirmDialog}
     </div>
   );
 }

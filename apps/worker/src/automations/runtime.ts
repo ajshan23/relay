@@ -807,6 +807,25 @@ export function createAutomations({
         await ctx.step(name, async () => {
           const conv = await conversationOf(input.conversationId);
           if (!conv) return { ok: false, reason: "chat_gone" };
+          // Same rules as an unclaimed chat: live, within its hours, and not a chat it handed to the
+          // team (or the team stepped into) in the last day. Otherwise the chat stays with the team.
+          const { agent, blocked } = await agents.canTake(h.agentId, conv.id);
+          if (blocked) {
+            const why: Partial<Record<typeof blocked, string>> = {
+              not_live: "isn't live",
+              outside_hours: "is outside its working hours",
+              no_agent: "was deleted",
+            };
+            if (why[blocked])
+              await addNote(
+                input,
+                memory,
+                stepKey,
+                `${agent?.name ?? "The AI agent"} didn't take this chat: it ${why[blocked]}. It's with your team.`,
+              );
+            await updateChat(input.conversationId, { status: "open" });
+            return { ok: false, reason: blocked };
+          }
           const runId = await agents.startRun({
             agentId: h.agentId,
             conversation: conv,

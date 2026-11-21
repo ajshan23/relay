@@ -134,6 +134,10 @@ export function useAgentActions() {
         api<{ agent: Agent }>(inBranch(`/agents/${id}/status`, branch), { method: "POST", json: { status } }),
       onSuccess: refresh,
     }),
+    remove: useMutation({
+      mutationFn: (id: string) => api<{ ok: true }>(inBranch(`/agents/${id}`, branch), { method: "DELETE" }),
+      onSuccess: refresh,
+    }),
   };
 }
 
