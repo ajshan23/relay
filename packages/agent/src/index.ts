@@ -10,5 +10,6 @@ export * from "./loop";
 export * from "./models";
 export * from "./prompt";
 export * from "./provider";
+export * from "./tasks";
 export * from "./tools";
 export * from "./types";

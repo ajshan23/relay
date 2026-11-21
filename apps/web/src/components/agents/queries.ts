@@ -357,3 +357,73 @@ export function useToolActions(agentId: string) {
     }),
   };
 }
+
+// ------------------------------------------------------------------ Google Tasks (follow-ups)
+
+export type TaskConnection = {
+  accountEmail: string | null;
+  listId: string | null;
+  listName: string | null;
+  lists: { id: string; name: string }[];
+  enabled: boolean;
+  onHandoff: boolean;
+  status: "active" | "needs_reconnect";
+  lastError: string | null;
+  updatedAt: string;
+};
+
+export type FollowUpRow = {
+  id: string;
+  title: string;
+  dueDate: string | null;
+  status: "sending" | "open" | "done" | "failed";
+  source: "agent" | "handoff";
+  conversationId: string | null;
+  error: string | null;
+  createdAt: string;
+};
+
+type TasksView = {
+  configured: boolean;
+  connection: TaskConnection | null;
+  recent: FollowUpRow[];
+  canManage: boolean;
+};
+
+const tasksKey = (branch: string) => ["agents", branch, "google-tasks"] as const;
+
+export function useGoogleTasks() {
+  const { branch } = useBranch();
+  return useQuery({
+    queryKey: tasksKey(branch.id),
+    queryFn: () => api<TasksView>(inBranch("/agents/google-tasks", branch.id)),
+  });
+}
+
+export function useGoogleTasksActions() {
+  const { branch } = useBranch();
+  const qc = useQueryClient();
+  const set = (v: TasksView) => qc.setQueryData(tasksKey(branch.id), v);
+  return {
+    connect: useMutation({
+      mutationFn: () =>
+        api<{ url: string }>(inBranch("/agents/google-tasks/connect", branch.id), { method: "POST" }),
+      onSuccess: ({ url }) => {
+        window.location.assign(url);
+      },
+    }),
+    update: useMutation({
+      mutationFn: (json: { listId?: string; newList?: true; enabled?: boolean; onHandoff?: boolean }) =>
+        api<TasksView>(inBranch("/agents/google-tasks", branch.id), { method: "PUT", json }),
+      onSuccess: set,
+    }),
+    reload: useMutation({
+      mutationFn: () => api<TasksView>(inBranch("/agents/google-tasks/lists", branch.id), { method: "POST" }),
+      onSuccess: set,
+    }),
+    disconnect: useMutation({
+      mutationFn: () => api(inBranch("/agents/google-tasks", branch.id), { method: "DELETE" }),
+      onSuccess: () => qc.invalidateQueries({ queryKey: tasksKey(branch.id) }),
+    }),
+  };
+}

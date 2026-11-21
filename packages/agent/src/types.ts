@@ -41,6 +41,8 @@ export type AgentProfile = {
   repliesByVoice?: boolean;
   /** The business connected its own tools (API calls or MCP servers). */
   ownTools?: boolean;
+  /** The branch connected Google Tasks: the agent can add follow-ups for the team. */
+  followUps?: boolean;
   /** The branch takes bookings (the booking tools are offered). */
   booking?: boolean;
 };

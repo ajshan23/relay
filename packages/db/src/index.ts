@@ -32,6 +32,7 @@ export * from "./client";
 export * from "./contact-filter";
 export * from "./executor";
 export * from "./files";
+export * from "./google-tasks";
 export * from "./links";
 export * from "./outbound";
 export * as schema from "./schema/index";

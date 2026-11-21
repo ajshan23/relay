@@ -27,6 +27,7 @@ import { Skeleton } from "@relay/ui/ui/skeleton";
 import { Switch } from "@relay/ui/ui/switch";
 import { useState } from "react";
 import { errorText } from "./agents-page";
+import { GoogleTasksBlock } from "./google-tasks";
 import {
   type Agent,
   type AgentToolRow,
@@ -73,6 +74,12 @@ export function ToolsView({ agent }: { agent: Agent }) {
 
   return (
     <div className="flex flex-col gap-8">
+      <Section
+        title="Apps"
+        description={`Ready-made connections. Sign in once and ${agent.name} can use them.`}
+      >
+        <GoogleTasksBlock agentName={agent.name} />
+      </Section>
       {!ready ? (
         <Panel className="flex items-start gap-3 border-warning bg-warning-soft text-[13px]">
           <Icon name="warning" size="sm" className="mt-0.5 text-warning" />

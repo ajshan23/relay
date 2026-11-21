@@ -2,6 +2,7 @@ import { bookingToolNames } from "./booking";
 import { toolNames } from "./builtins";
 import { catalogToolNames } from "./catalog";
 import { plainChat } from "./human";
+import { taskToolNames } from "./tasks";
 import type { AgentProfile, ChatLine, ContactFacts, RunContext } from "./types";
 
 /*
@@ -94,6 +95,13 @@ export function systemPrompt(agent: AgentProfile): string {
           "- When a booking's result has a meetLink (an online service), always give the customer that exact link in your confirmation.",
           "- Write times exactly as the booking tools give them (their labels, time and ourTime). Never work out a time in another timezone yourself.",
           `- When they want a calendar invite or the meeting by email, ask for their email if they haven't given it, then use ${bookingToolNames.invite}. Say what its result says: invited, or why not.`,
+        ].join("\n")
+      : "",
+    agent.followUps
+      ? [
+          "## Follow-ups for the team",
+          `- When a person has to do something after this chat (call back, check something, send a quote), add it with ${taskToolNames.add} rather than only saying the team will be in touch.`,
+          "- Tell the customer what will happen in plain words (\"I've asked the team to call you tomorrow\"), never a time the business didn't agree to. If adding it failed, say the team will follow up and hand over if it's urgent.",
         ].join("\n")
       : "",
     agent.ownTools

@@ -16,8 +16,20 @@ export type FakeEvent = {
   sendUpdates: string[];
 };
 
+export type FakeTask = {
+  id: string;
+  listId: string;
+  title: string;
+  notes: string;
+  due: string | null;
+  status: "needsAction" | "completed";
+  deleted: boolean;
+};
+
 export function createFakeGoogle() {
   const state = {
+    taskLists: [{ id: "list-my", title: "My Tasks" }] as { id: string; title: string }[],
+    tasks: [] as FakeTask[],
     tokens: new Set<string>(),
     refreshTokens: new Set<string>(["rt-1"]),
     busy: [] as { start: string; end: string }[],
@@ -27,6 +39,8 @@ export function createFakeGoogle() {
     /** Every call fails to connect. */
     down: false,
     calls: [] as string[],
+    /** The scopes Google says it granted (people can untick one on the consent screen). */
+    grantScope: "calendar",
     seq: 0,
   };
   const reply = (status: number, body: unknown) =>
@@ -71,7 +85,7 @@ export function createFakeGoogle() {
           refresh_token: "rt-1",
           expires_in: 3600,
           id_token: idToken("owner@lumen.test"),
-          scope: "calendar",
+          scope: state.grantScope,
         });
       }
       if (!state.refreshTokens.has(form.get("refresh_token") ?? ""))
@@ -107,6 +121,41 @@ export function createFakeGoogle() {
       const id = body.items[0]?.id ?? "";
       const busy = state.busy.filter((b) => b.start < body.timeMax && b.end > body.timeMin);
       return reply(200, { calendars: { [id]: { busy } } });
+    }
+    if (url.pathname === "/tasks/v1/users/@me/lists") {
+      if (method === "POST") {
+        const body = JSON.parse(String(init.body)) as { title: string };
+        const l = { id: `list-${++state.seq}`, title: body.title };
+        state.taskLists.push(l);
+        return reply(200, l);
+      }
+      return reply(200, { items: state.taskLists });
+    }
+    const tm = /^\/tasks\/v1\/lists\/([^/]+)\/tasks(?:\/([^/]+))?$/.exec(url.pathname);
+    if (tm) {
+      const listId = decodeURIComponent(tm[1] as string);
+      if (!state.taskLists.some((l) => l.id === listId)) return reply(404, { error: "list not found" });
+      if (method === "POST") {
+        const body = JSON.parse(String(init.body)) as { title: string; notes?: string; due?: string };
+        const t: FakeTask = {
+          id: `task-${++state.seq}`,
+          listId,
+          title: body.title,
+          notes: body.notes ?? "",
+          due: body.due ?? null,
+          status: "needsAction",
+          deleted: false,
+        };
+        state.tasks.push(t);
+        return reply(200, {
+          id: t.id,
+          status: t.status,
+          webViewLink: `https://tasks.google.com/task/${t.id}`,
+        });
+      }
+      const t = state.tasks.find((x) => x.id === decodeURIComponent(tm[2] ?? "") && x.listId === listId);
+      if (!t) return reply(404, { error: "not found" });
+      return reply(200, { id: t.id, status: t.status, ...(t.deleted ? { deleted: true } : {}) });
     }
     const m = /^\/calendar\/v3\/calendars\/([^/]+)\/events(?:\/([^/]+))?$/.exec(url.pathname);
     if (m) {

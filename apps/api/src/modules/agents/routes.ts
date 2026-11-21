@@ -13,6 +13,7 @@ import {
   createModelCaller,
   creditsFor,
   defaultMonthlyCredits,
+  type FollowUpInput,
   modelFor,
   type RunContext,
   runTurn,
@@ -24,6 +25,7 @@ import {
 import { fileStorage, newId } from "@relay/core";
 import { agentPatchSchema, agentSettingsSchema, agentStarters } from "@relay/core/agents";
 import { bookingTimeLabel, zonedTime } from "@relay/core/bookings";
+import { taskDueDate, taskDueLabel } from "@relay/core/google-tasks";
 import {
   agentFreeTimes,
   aiCredits,
@@ -46,6 +48,7 @@ import {
   sql,
   storeFile,
   sum,
+  taskConnectionOf,
 } from "@relay/db";
 import { catalogEmbeddingDimensions } from "@relay/db/schema";
 import { type Context, Hono } from "hono";
@@ -57,6 +60,7 @@ import { can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
 import { type BranchEnv, canIn, requireBranch, requirePermission } from "../contacts/shared";
 import { assignableUsers } from "../conversations/access";
+import { registerTaskRoutes } from "./google-tasks";
 import { registerToolRoutes, testContact, tryTools } from "./tools";
 
 /** What a booking question in Try would do on Yes, in words. */
@@ -101,6 +105,7 @@ function bookingWouldDo(
  *   POST   /api/agents/gaps/:id/answer    { answer } → a Q&A source; POST /api/agents/gaps/:id/dismiss
  *   GET    /api/agents/usage              this month's credits and cost
  *   …/api/agents/:id/tools                 the agent's own tools (see tools.ts)
+ *   …/api/agents/google-tasks              the branch's Google Tasks for follow-ups (google-tasks.ts)
  * Owners, admins and the branch's managers may change things; anyone in the branch may look.
  */
 
@@ -157,6 +162,9 @@ export function agentRoutes(ctx: AppContext) {
     and(eq(A.id, id), eq(A.organizationId, c.var.access.orgId), eq(A.branchId, c.var.branchId));
   const sourceIn = (c: Context<BranchEnv>, id: string) =>
     and(eq(K.id, id), eq(K.organizationId, c.var.access.orgId), eq(K.branchId, c.var.branchId));
+
+  // Before the /:id routes, so "google-tasks" isn't taken for an agent id.
+  registerTaskRoutes(app, ctx, { canManage });
 
   /** Queues indexing for a source's current revision. */
   const index = (sourceId: string, revision: number) =>
@@ -331,6 +339,9 @@ export function agentRoutes(ctx: AppContext) {
           )
       : [];
     const own = await tryTools(ctx, agent.id);
+    // Follow-ups in Try: never added to Google Tasks; the result says what would be.
+    const taskConn = await taskConnectionOf(ctx.db, orgId, c.var.branchId);
+    const followUps = !!(taskConn?.listId && taskConn.status === "active" && taskConn.enabled);
     // Booking in Try: free times are real; booking, moving and cancelling are never carried out.
     const bookingSetup = await bookingSettingsOf(ctx.db, orgId, c.var.branchId);
     const services = bookingSetup.enabled
@@ -371,6 +382,7 @@ export function agentRoutes(ctx: AppContext) {
       tone: agent.tone,
       languages: agent.languages,
       handoffWhen: agent.handoff.when,
+      followUps,
     };
     const shape = await catalogShape(ctx.db, orgId, c.var.branchId);
     profile.catalog = !!shape;
@@ -391,6 +403,25 @@ export function agentRoutes(ctx: AppContext) {
     const tools = [
       ...builtinTools({
         ...(booking ? { booking } : {}),
+        ...(followUps
+          ? {
+              tasks: {
+                add: async (input: FollowUpInput) => {
+                  const due = taskDueDate(input.due, runCtx.now, branch?.timezone || "UTC");
+                  return {
+                    added: false,
+                    test: true,
+                    wouldAdd: {
+                      title: input.title,
+                      due: due ? taskDueLabel(due) : null,
+                      list: taskConn?.listName,
+                    },
+                    note: "This is a test chat, so nothing was added to Google Tasks. Reply as if it was.",
+                  };
+                },
+              },
+            }
+          : {}),
         editableFields: fields,
         ...(shape
           ? {

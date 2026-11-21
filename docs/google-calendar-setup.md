@@ -50,3 +50,14 @@ You'll need:
 - For each booking, its Google event id and Meet link.
 
 Disconnecting revokes the token and deletes these. Events already added stay in the calendar.
+
+## Google Tasks (follow-ups from the AI agent)
+The AI agent can add follow-ups for the team (call backs, questions to check, quotes) to a branch's Google Tasks. It uses the same Google project, client and redirect address as the calendar, so no new redirect URI is needed.
+
+1. APIs & Services → Library → **Google Tasks API** → Enable.
+2. Google Auth Platform → Data access → add the scope `https://www.googleapis.com/auth/tasks` ("See, edit, create and delete all your tasks"). It's *sensitive*, like the calendar scopes, so it goes in the same verification. Why Relay needs it: add the AI agent's follow-up tasks to the list the business picks, make a "WhatsApp follow-ups" list, and see whether a task was ticked off so the agent doesn't add it again.
+3. For the verification video, also show: AI agent → Tools → **Connect Google Tasks** → Google's consent screen → back in Relay, the chosen list → in a chat, the agent adds a follow-up and it appears in Google Tasks.
+
+While the app is in "Testing", the same 7-day limit applies: the card then shows "Needs connecting again", and the agent only notes follow-ups in the chat until it's reconnected.
+
+Disconnecting Google Tasks (or the calendar) doesn't revoke Relay's Google access while another branch's calendar or tasks still uses the same Google account, because revoking ends all of it at once.

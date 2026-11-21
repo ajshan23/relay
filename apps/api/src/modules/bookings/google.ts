@@ -19,6 +19,7 @@ import {
 import { type Context, Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../../context";
+import { finishTasksConnect, type GoogleState, googleAccountInUse } from "../agents/google-tasks";
 import { requireSession } from "../auth/session";
 import { branchAccess, can, fail, requireOrg } from "../branches/access";
 import { parseBody } from "../branches/routes";
@@ -37,7 +38,8 @@ import type { BranchEnv } from "../contacts/shared";
  * only works for the manager who started it, for 10 minutes.
  */
 
-type State = { o: string; b: string; u: string; e: number; n: string };
+/** p: "tasks" when the agent's Google Tasks is connecting (it shares this redirect address). */
+type State = GoogleState;
 const STATE_MS = 10 * 60_000;
 
 const C = schema.calendarConnection;
@@ -146,7 +148,8 @@ export function registerGoogleRoutes(app: Hono<BranchEnv>, ctx: AppContext) {
     if (!(await canManage(c))) return fail(c, 403, "forbidden");
     const conn = await calendarConnectionOf(ctx.db, c.var.access.orgId, c.var.branchId);
     if (!conn) return c.json({ ok: true });
-    if (deps) await revokeGoogleToken(deps.google, decryptSecret(conn.refreshToken, deps.secretKey));
+    if (deps && !(await googleAccountInUse(ctx, conn.accountEmail, { calendarId: conn.id })))
+      await revokeGoogleToken(deps.google, decryptSecret(conn.refreshToken, deps.secretKey));
     await ctx.db.delete(C).where(eq(C.id, conn.id));
     forgetGoogleBusy();
     return c.json({ ok: true });
@@ -159,10 +162,19 @@ export function googleCallbackRoutes(ctx: AppContext) {
   const deps = calendarDepsFrom(ctx.config);
   const back = (c: Context, outcome: string) =>
     c.redirect(`${ctx.config.WEB_URL.replace(/\/$/, "")}/agents?view=booking-settings&google=${outcome}`);
+  const backToTasks = (c: Context, outcome: string) =>
+    c.redirect(`${ctx.config.WEB_URL.replace(/\/$/, "")}/agents?view=tools&google_tasks=${outcome}`);
   app.use(requireSession, requireOrg(ctx));
   app.get("/", async (c) => {
     if (!deps) return back(c, "not_configured");
-    if (c.req.query("error")) return back(c, "cancelled");
+    if (c.req.query("error")) {
+      // Which feature was cancelled is only in the state (Google sends it back with the error).
+      let p: string | undefined;
+      try {
+        p = decryptSecretJson<State>(c.req.query("state") ?? "", deps.secretKey).p;
+      } catch {}
+      return p === "tasks" ? backToTasks(c, "cancelled") : back(c, "cancelled");
+    }
     let state: State;
     try {
       state = decryptSecretJson<State>(c.req.query("state") ?? "", deps.secretKey);
@@ -171,7 +183,16 @@ export function googleCallbackRoutes(ctx: AppContext) {
     }
     const access = (c as unknown as Context<BranchEnv>).var.access;
     if (state.e < Date.now() || state.u !== access.userId || state.o !== access.orgId)
-      return back(c, "expired");
+      return state.p === "tasks" ? backToTasks(c, "expired") : back(c, "expired");
+    if (state.p === "tasks") {
+      if (!(await branchAccess(ctx, access, state.b))) return backToTasks(c, "forbidden");
+      try {
+        return backToTasks(c, await finishTasksConnect(ctx, state, c.req.query("code") ?? "", access));
+      } catch (err) {
+        console.warn("[tasks] Google connect failed:", (err as Error).message);
+        return backToTasks(c, "failed");
+      }
+    }
     if (
       !(await branchAccess(ctx, access, state.b)) ||
       !can(access, "bookings.settings", { branchId: state.b })

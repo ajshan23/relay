@@ -51,6 +51,8 @@ export const idPrefixes = {
   booking: "bkg",
   bookingReminder: "bkr",
   calendarConnection: "cal",
+  taskConnection: "tsc",
+  agentTask: "atk",
   role: "rol",
   memberGrant: "grt",
   invitationGrant: "igr",

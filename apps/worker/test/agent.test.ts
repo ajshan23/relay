@@ -241,6 +241,20 @@ const brain: ModelCaller = async (req) => {
         },
       ],
     });
+  if (text.includes("call me back"))
+    return r({
+      toolCalls: [
+        {
+          id: "f1",
+          name: "add_follow_up_task",
+          input: {
+            title: "Call back Asha about pricing",
+            details: "Wants a call after 5 pm.",
+            due: "tomorrow",
+          },
+        },
+      ],
+    });
   if (text.includes("stock count"))
     return r({ toolCalls: [{ id: "t3", name: "shop__stock", input: { item: "S26" } }] });
   if (text.includes("bye"))
@@ -1789,5 +1803,84 @@ describe("bookings with Mira", () => {
       notes.some((n) => /invited asha@example\.com/.test(JSON.stringify(n.content))),
       "noted for the team",
     );
+  });
+});
+
+describe("follow-ups in Google Tasks", () => {
+  it("adds a callback once to the chosen list, notes it in the chat, and adds one for a hand-over", async () => {
+    google.state.taskLists.push({ id: "list-wa", title: "WhatsApp follow-ups" });
+    await db.insert(schema.taskConnection).values({
+      id: `tsc_${T}`,
+      organizationId: ids.org,
+      branchId: ids.branch,
+      accountEmail: "owner@lumen.test",
+      refreshToken: encryptSecret("rt-1", calendarKey),
+      listId: "list-wa",
+      listName: "WhatsApp follow-ups",
+      lists: [{ id: "list-wa", name: "WhatsApp follow-ups" }],
+      enabled: true,
+      onHandoff: true,
+    });
+    try {
+      const chat = await newChat();
+      await customerSays(chat, "can you call me back tomorrow?");
+      const reply = await until("the reply", async () => {
+        const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+        return m.length ? m[0] : null;
+      });
+      assert.match(textOf(reply as never), /"added":true/);
+      assert.match(calls.at(-1)?.system ?? "", /## Follow-ups for the team/);
+      const added = google.state.tasks.filter((t) => t.listId === "list-wa");
+      assert.equal(added.length, 1);
+      assert.equal(added[0]?.title, "Call back Asha about pricing");
+      assert.equal(added[0]?.due, `${tomorrow}T00:00:00.000Z`);
+      assert.match(added[0]?.notes ?? "", /Wants a call after 5 pm\./);
+      assert.match(added[0]?.notes ?? "", /Customer: Asha, \+97150\d+/);
+      assert.match(
+        added[0]?.notes ?? "",
+        new RegExp(`https://app\\.test/conversations\\?view=all&c=${chat.conversationId}`),
+      );
+      const [row] = await db
+        .select()
+        .from(schema.agentTask)
+        .where(eq(schema.agentTask.conversationId, chat.conversationId));
+      assert.equal(row?.status, "open");
+      assert.equal(row?.externalTaskId, added[0]?.id);
+      const note = (await agentMessages(chat.conversationId)).find((m) => m.type === "note");
+      assert.match(
+        textOf(note as never),
+        /Follow-up added to Google Tasks: Call back Asha about pricing \(due /,
+      );
+
+      // Asking again the same day: Mira sees it's already there, and it isn't added twice.
+      await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+      await customerSays(chat, "please call me back tomorrow");
+      await until("the second reply", async () => {
+        const m = (await agentMessages(chat.conversationId)).filter((x) => x.type !== "note");
+        return m.length === 2 ? m : null;
+      });
+      assert.match(
+        JSON.stringify(calls.at(-2)?.messages ?? []),
+        /Follow-ups already added for the team in this chat/,
+      );
+      assert.equal(google.state.tasks.filter((t) => t.listId === "list-wa").length, 1);
+
+      // A hand-over adds its own task, due today.
+      await until("waiting", async () => (await agentRun(chat.conversationId))?.status === "waiting");
+      await customerSays(chat, "I want a person");
+      const handoff = await until("the hand-over task", async () => {
+        const t = google.state.tasks.filter((x) => x.listId === "list-wa");
+        return t.length === 2 ? t[1] : null;
+      });
+      assert.equal(handoff?.title, "Reply on WhatsApp: Asked for a person");
+      assert.equal(handoff?.due, `${localTime(new Date(), "Asia/Dubai").date}T00:00:00.000Z`);
+      const rows = await db
+        .select()
+        .from(schema.agentTask)
+        .where(eq(schema.agentTask.conversationId, chat.conversationId));
+      assert.deepEqual(rows.map((x) => x.source).sort(), ["agent", "handoff"]);
+    } finally {
+      await db.delete(schema.taskConnection).where(eq(schema.taskConnection.id, `tsc_${T}`));
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type BookingDeps, bookingTools } from "./booking";
 import { type CatalogDeps, catalogTools } from "./catalog";
+import { type TaskDeps, taskTools } from "./tasks";
 import { defineTool } from "./tools";
 import type { AgentTool, RunContext } from "./types";
 
@@ -22,6 +23,8 @@ export type BuiltinDeps = {
   catalog?: CatalogDeps;
   /** Booking, when the branch takes bookings and has services that can be booked. */
   booking?: BookingDeps;
+  /** Follow-up tasks for the team, when the branch connected Google Tasks. */
+  tasks?: TaskDeps;
 };
 
 export const toolNames = {
@@ -131,5 +134,6 @@ export function builtinTools(deps: BuiltinDeps): AgentTool<unknown>[] {
   }
   if (deps.catalog) tools.push(...catalogTools(deps.catalog));
   if (deps.booking) tools.push(...bookingTools(deps.booking));
+  if (deps.tasks) tools.push(...taskTools(deps.tasks));
   return tools;
 }

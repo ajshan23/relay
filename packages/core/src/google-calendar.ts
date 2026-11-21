@@ -63,6 +63,16 @@ export class GoogleError extends Error {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** One Google API call: retries on 5xx and quota, then a GoogleError with a kind to act on. */
+export async function googleCall(
+  cfg: GoogleConfig,
+  url: string,
+  init: RequestInit,
+  tries = 3,
+): Promise<Response> {
+  return call(cfg, url, init, tries);
+}
+
 async function call(cfg: GoogleConfig, url: string, init: RequestInit, tries = 3): Promise<Response> {
   const f = cfg.fetch ?? fetch;
   for (let attempt = 1; ; attempt++) {
@@ -99,13 +109,17 @@ async function call(cfg: GoogleConfig, url: string, init: RequestInit, tries = 3
 const json = async <T>(res: Response) => (await res.json()) as T;
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
-/** Where to send a manager to connect their Google Calendar. */
-export function googleAuthUrl(cfg: GoogleConfig, state: string): string {
+/** Where to send a manager to connect Google (Calendar by default; Tasks passes its own scopes). */
+export function googleAuthUrl(
+  cfg: GoogleConfig,
+  state: string,
+  scopes: string[] = googleCalendarScopes,
+): string {
   const q = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: cfg.redirectUri,
     response_type: "code",
-    scope: googleCalendarScopes.join(" "),
+    scope: scopes.join(" "),
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "true",

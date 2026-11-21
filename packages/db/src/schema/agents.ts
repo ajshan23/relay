@@ -329,3 +329,66 @@ export const aiToolCall = pgTable(
     uniqueIndex("ai_tool_call_step_uidx").on(t.stepKey),
   ],
 );
+
+/**
+ * A branch's Google Tasks, where the agent adds follow-ups for the team: the account, the chosen list
+ * and its tokens (encrypted with CHANNEL_SECRET_KEY, like the booking calendar's).
+ */
+export const taskConnection = pgTable("task_connection", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  branchId: text("branch_id")
+    .notNull()
+    .unique()
+    .references(() => branch.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<"google">().notNull().default("google"),
+  accountEmail: text("account_email"),
+  refreshToken: text("refresh_token").notNull(),
+  accessToken: text("access_token"),
+  accessExpiresAt: timestamp("access_expires_at", { withTimezone: true }),
+  listId: text("list_id"),
+  listName: text("list_name"),
+  /** The account's task lists, as last read (to pick from). */
+  lists: jsonb("lists").$type<{ id: string; name: string }[]>().notNull().default([]),
+  /** The agent may add follow-up tasks. */
+  enabled: boolean("enabled").notNull().default(true),
+  /** Every hand-over to the team also adds a task. */
+  onHandoff: boolean("on_handoff").notNull().default(false),
+  status: text("status").$type<"active" | "needs_reconnect">().notNull().default("active"),
+  lastError: text("last_error"),
+  connectedByUserId: text("connected_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+/** A follow-up the agent added for the team (so it isn't added twice, and the chat can show it). */
+export const agentTask = pgTable(
+  "agent_task",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    branchId: text("branch_id")
+      .notNull()
+      .references(() => branch.id, { onDelete: "cascade" }),
+    agentId: text("agent_id").references(() => aiAgent.id, { onDelete: "set null" }),
+    conversationId: text("conversation_id").references(() => conversation.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    notes: text("notes").notNull().default(""),
+    /** Local date it's due (YYYY-MM-DD), or null. */
+    dueDate: text("due_date"),
+    /** Why: the agent chose to, or a hand-over. */
+    source: text("source").$type<"agent" | "handoff">().notNull().default("agent"),
+    listId: text("list_id"),
+    externalTaskId: text("external_task_id"),
+    /** sending → open (in Google) or failed; done when the team ticked it off. */
+    status: text("status").$type<"sending" | "open" | "done" | "failed">().notNull().default("sending"),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [index("agent_task_conversation_idx").on(t.conversationId, t.createdAt)],
+);

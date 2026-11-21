@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type AgentProfile,
   type BookingDeps,
@@ -16,8 +17,10 @@ import {
   defaultMonthlyCredits,
   type Embedder,
   envelope,
+  type FollowUpInput,
   type ModelCaller,
   modelFor,
+  openFollowUpsNote,
   photoLine,
   type RunContext,
   runTool,
@@ -59,11 +62,14 @@ import {
   bookingRangeLabel,
   bookingReplyOf,
   bookingTimeLabel,
+  localTime,
   phoneTimezone,
   timezonePlace,
   zonedTime,
 } from "@relay/core/bookings";
+import { taskDueDate, taskDueLabel } from "@relay/core/google-tasks";
 import {
+  addFollowUpTask,
   agentFreeTimes,
   aiCredits,
   and,
@@ -85,6 +91,7 @@ import {
   maxBookingGuests,
   moveBooking,
   ne,
+  openFollowUps,
   recordAiUsage,
   saveBookingGuests,
   schema,
@@ -93,6 +100,7 @@ import {
   sql,
   sqlExecutor,
   storeFile,
+  taskConnectionOf,
   upcomingBookingsFor,
 } from "@relay/db";
 import { isKairosControl, type Kairos, type RunRow, type WorkflowContext } from "@relay/kairos";
@@ -393,6 +401,12 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const services = bookingSetup.enabled
       ? await bookableServices(db, { organizationId: orgId, branchId: a.branchId })
       : [];
+    // Follow-ups for the team: the branch connected Google Tasks and chose a list.
+    const taskConn = d.calendar ? await taskConnectionOf(db, orgId, a.branchId) : null;
+    const tasks =
+      taskConn?.listId && taskConn.status === "active"
+        ? { enabled: taskConn.enabled, onHandoff: taskConn.onHandoff, timezone: bookingSetup.timezone }
+        : null;
     const booking = services.length
       ? {
           timezone: bookingSetup.timezone,
@@ -428,6 +442,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
         repliesByVoice: a.voiceReplies !== "off" && !!d.voiceReplies,
         ownTools: tools.length > 0,
         booking: !!booking,
+        followUps: !!tasks?.enabled,
       } satisfies AgentProfile,
       editableFields: fields,
       /** What the branch sells (null: no catalogue tools). Frozen for the run like the rest. */
@@ -436,6 +451,8 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       tools: tools as Omit<CustomToolDef, "secret">[],
       /** Booking services and the branch's timezone (null: no booking tools). */
       booking,
+      /** Google Tasks for follow-ups (null: not connected). */
+      tasks,
     };
   }
   type LoadedAgent = NonNullable<Awaited<ReturnType<typeof loadAgent>>> & {
@@ -777,6 +794,19 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const runCtx = await liveContext(input, agent);
     const tools = agentTools(agent, runCtx);
     const messages = chatMessages(lines, contextNote(runCtx, contact, agent.profile.languages));
+    if (agent.tasks?.enabled) {
+      const open = await openFollowUps(
+        db,
+        d.calendar ?? null,
+        input.organizationId,
+        input.branchId,
+        input.conversationId,
+      ).catch(() => []);
+      const note = openFollowUpsNote(
+        open.map((t) => ({ title: t.title, due: t.dueDate ? taskDueLabel(t.dueDate) : null })),
+      );
+      if (note) messages.push({ role: "system", content: note });
+    }
     if (actNote) messages.push({ role: "system", content: actNote });
     try {
       const result = await runTurn({
@@ -1088,11 +1118,106 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     };
   }
 
+  /** The follow-up tool: adds a task to the branch's Google Tasks and notes it in the chat. */
+  function taskDeps(agent: LoadedAgent, runCtx: RunContext) {
+    return {
+      add: async (input: FollowUpInput) => {
+        const r = await addFollowUp(agent, {
+          organizationId: runCtx.orgId,
+          branchId: runCtx.branchId,
+          conversationId: runCtx.conversationId as string,
+          contactId: runCtx.contactId,
+          title: input.title,
+          details: input.details,
+          due: input.due,
+          source: "agent",
+          now: runCtx.now,
+        });
+        return r.ok
+          ? { added: true, title: input.title, due: r.due, ...(r.reused ? { alreadyAdded: true } : {}) }
+          : {
+              added: false,
+              problem: r.message,
+              hint: "Tell the customer the team will follow up. Hand over if it's urgent.",
+            };
+      },
+    };
+  }
+
+  /**
+   * One follow-up in Google Tasks, once: the same chat, day and title make the same task, so a
+   * retried step or a repeated call doesn't add a second one. The chat gets a note either way.
+   */
+  async function addFollowUp(
+    agent: LoadedAgent,
+    t: {
+      organizationId: string;
+      branchId: string;
+      conversationId: string;
+      contactId: string | null;
+      title: string;
+      details: string;
+      due: string | undefined;
+      source: "agent" | "handoff";
+      now: Date;
+    },
+  ): Promise<{ ok: true; due: string | null; reused: boolean } | { ok: false; message: string }> {
+    const deps = d.calendar;
+    const tz = agent.tasks?.timezone ?? "UTC";
+    if (!deps) return { ok: false, message: "Google isn't set up on this server." };
+    const dueDate = taskDueDate(t.due, t.now, tz);
+    const [c] = t.contactId
+      ? await db
+          .select({ name: schema.contact.name, phone: schema.contact.phone })
+          .from(schema.contact)
+          .where(eq(schema.contact.id, t.contactId))
+          .limit(1)
+      : [];
+    const notes = [
+      t.details.trim(),
+      "",
+      `Customer: ${[c?.name, c?.phone ? `+${c.phone}` : null].filter(Boolean).join(", ") || "unknown"}`,
+      `Chat: ${deps.appUrl.replace(/\/$/, "")}/conversations?view=all&c=${t.conversationId}`,
+      `Added by ${agent.name} from WhatsApp.`,
+    ].join("\n");
+    const day = localTime(t.now, tz).date;
+    const hash = createHash("sha1").update(t.title.trim().toLowerCase()).digest("hex").slice(0, 12);
+    const key = `${t.conversationId}:${day}:${hash}`;
+    const r = await addFollowUpTask(db, deps, key, {
+      organizationId: t.organizationId,
+      branchId: t.branchId,
+      agentId: agent.id,
+      conversationId: t.conversationId,
+      title: t.title.trim(),
+      notes,
+      dueDate,
+      source: t.source,
+    });
+    const due = dueDate ? taskDueLabel(dueDate) : null;
+    if (r.ok && !r.reused)
+      await addNoteIn(
+        t.conversationId,
+        agent.id,
+        `task:${key}`,
+        `Follow-up added to Google Tasks: ${t.title.trim()}${due ? ` (due ${due})` : ""}.`,
+      );
+    if (!r.ok)
+      await addNoteIn(
+        t.conversationId,
+        agent.id,
+        `task:${key}:failed`,
+        `${agent.name} couldn't add a follow-up to Google Tasks (${r.message}). To do: ${t.title.trim()}${due ? `, by ${due}` : ""}.`,
+      );
+    return r.ok ? { ok: true, due, reused: r.reused } : { ok: false, message: r.message };
+  }
+
   function builtinAgentTools(agent: LoadedAgent, runCtx: RunContext) {
     const embedCatalog = d.embedCatalog;
     const booking = bookingDeps(agent, runCtx);
+    const tasks = agent.tasks?.enabled && runCtx.conversationId ? taskDeps(agent, runCtx) : null;
     return builtinTools({
       ...(booking ? { booking } : {}),
+      ...(tasks ? { tasks } : {}),
       editableFields: agent.editableFields,
       ...(agent.catalog
         ? {
@@ -1598,6 +1723,19 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     const bye = agent.handoff.message.trim() || (o.text ? "" : agentHandoffSchema.parse({}).message);
     if (bye) await sendText(input, agent, `${stepKey}:bye`, bye);
     await addNote(input, agent, stepKey, `${agent.name} handed this chat over: ${o.reason}.\n${o.summary}`);
+    // "Also add a task whenever Mira hands a chat to the team" (Google Tasks).
+    if (agent.tasks?.onHandoff)
+      await addFollowUp(agent, {
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        conversationId: input.conversationId,
+        contactId: input.contactId,
+        title: `Reply on WhatsApp: ${o.reason}`.slice(0, 120),
+        details: o.summary,
+        due: "today",
+        source: "handoff",
+        now: new Date(),
+      }).catch((err) => console.warn(`[tasks] hand-over task failed: ${(err as Error).message}`));
     const [c] = await db
       .update(schema.conversation)
       .set({

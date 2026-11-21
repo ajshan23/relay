@@ -17,6 +17,7 @@
     "./agent-tools": "./src/agent-tools.ts",
     "./bookings": "./src/bookings.ts",
     "./google-calendar": "./src/google-calendar.ts",
+    "./google-tasks": "./src/google-tasks.ts",
     "./net": "./src/net.ts",
     "./permissions": "./src/permissions.ts"
   },
