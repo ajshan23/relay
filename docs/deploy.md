@@ -150,6 +150,26 @@ server {
 
 ## Updating
 
+### Automatically (every push to main)
+`scripts/auto-deploy.sh` runs from cron every minute as the user that runs pm2. It fetches `main` and, when
+it moved, pulls and does only what the new commits need: `pnpm install` (a package.json or the lockfile
+changed), migrations (a new file in `packages/db/migrations/`), the web build (`apps/web`, `packages/core`,
+`packages/ui` or the lockfile), the Kairos dashboard build (only if it runs here), then reloads the Relay apps.
+Docs-only pushes restart nothing. GitHub never connects to the server.
+
+Turn it on once (as the pm2 user, from a shell where `node`, `pnpm` and `pm2` work):
+```bash
+cd /var/www/ajmal/relay && git pull && bash scripts/auto-deploy.sh install
+```
+- `bash scripts/auto-deploy.sh status`: deployed commit, a failed one if any, the last log lines.
+  Full log: `~/.relay-deploy/deploy.log`.
+- A failing step stops the deploy before any reload and that commit isn't retried; push a fix, or run
+  `bash scripts/auto-deploy.sh retry`. A failed web build can leave the web app down until then.
+- `bash scripts/auto-deploy.sh uninstall` turns it off. A deploy by hand still works; auto-deploy then runs
+  once more for the same commits (an extra build, nothing breaks).
+
+### By hand
+
 ```bash
 cd /var/www/relay && git pull && pnpm install --frozen-lockfile && pnpm --filter @relay/web build && pnpm --filter @relay/kairos-dashboard build && pm2 reload ecosystem.config.cjs
 ```
