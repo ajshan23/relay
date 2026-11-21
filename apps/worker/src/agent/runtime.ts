@@ -409,6 +409,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
       status: a.status,
       name: a.name,
       model: a.model,
+      engine: a.engine,
       voiceNotes: a.voiceNotes,
       photos: a.photos,
       voiceReplies: a.voiceReplies,
@@ -779,7 +780,7 @@ export function createAgentRuntime(d: AgentRuntimeDeps) {
     if (actNote) messages.push({ role: "system", content: actNote });
     try {
       const result = await runTurn({
-        model: modelFor(agent.model),
+        model: modelFor(agent.model, process.env, agent.engine),
         system: systemPrompt(agent.profile),
         messages,
         tools,

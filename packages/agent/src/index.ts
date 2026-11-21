@@ -1,6 +1,7 @@
 export * from "./booking";
 export * from "./builtins";
 export * from "./catalog";
+export * from "./claude";
 export * from "./connect";
 export * from "./custom";
 export * from "./human";

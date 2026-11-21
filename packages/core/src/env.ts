@@ -44,6 +44,13 @@ const schema = z.object({
   AI_MODEL_FAST: z.string().optional(),
   AI_MODEL_SMART: z.string().optional(),
   /**
+   * Claude, when an agent's "AI model" is set to Claude (chat replies only; embeddings stay on
+   * OpenAI). CLOUD_APIKEY is the same key under its first name. AI_CLAUDE_MODEL: default claude-haiku-5-5.
+   */
+  ANTHROPIC_API_KEY: z.string().optional(),
+  CLOUD_APIKEY: z.string().optional(),
+  AI_CLAUDE_MODEL: z.string().optional(),
+  /**
    * Cloudflare Workers AI, for voice notes on "Accurate" (Whisper Large V3 Turbo; ~200 free minutes a
    * day). Without both, Accurate uses OpenAI. Token: My Profile → API Tokens → "Workers AI" template.
    */

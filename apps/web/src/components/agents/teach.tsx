@@ -27,6 +27,7 @@ type Draft = Pick<
   | "tone"
   | "languages"
   | "model"
+  | "engine"
   | "voiceNotes"
   | "photos"
   | "voiceReplies"
@@ -49,6 +50,7 @@ const draftOf = (a: Agent): Draft => ({
   tone: a.tone,
   languages: a.languages,
   model: a.model,
+  engine: a.engine ?? "gpt",
   voiceNotes: a.voiceNotes ?? "accurate",
   photos: a.photos ?? "accurate",
   voiceReplies: a.voiceReplies ?? "off",
@@ -281,8 +283,29 @@ export function TeachView({
       </Section>
 
       <Section
+        title="AI model"
+        description="Which AI writes your agent's replies. Try both in the test chat to compare. Knowledge search works the same with either."
+      >
+        <Segmented
+          aria-label="AI model"
+          value={draft.engine}
+          disabled={!canManage}
+          onChange={(v) => set("engine", v)}
+          options={[
+            { value: "gpt", label: "GPT-5.4 mini" },
+            { value: "claude", label: "Claude Haiku 5.5" },
+          ]}
+          className="self-start"
+        />
+      </Section>
+
+      <Section
         title="Thinking"
-        description="Fast suits most businesses. Smart thinks harder and costs more per reply."
+        description={
+          draft.engine === "claude"
+            ? "Applies to GPT only. Claude Haiku 5.5 always answers the same way."
+            : "Fast suits most businesses. Smart thinks harder and costs more per reply."
+        }
       >
         <Segmented
           aria-label="Model"

@@ -8,6 +8,7 @@ import {
   type ToolSet,
   tool,
 } from "ai";
+import { createClaudeCaller, isClaudeModel } from "./claude";
 import { cloudflareCostMicros, costMicros, embeddingModel } from "./models";
 import type { AgentTool, ModelCaller, ModelResponse, Usage } from "./types";
 
@@ -22,6 +23,9 @@ export type ProviderEnv = {
   CARTESIA_MODEL?: string;
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
+  /** Claude models (chat replies only; embeddings, voice notes and photos stay on OpenAI/Cloudflare). */
+  ANTHROPIC_API_KEY?: string;
+  CLOUD_APIKEY?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_AI_TOKEN?: string;
 };
@@ -50,7 +54,9 @@ export function createModelCaller(
   env: ProviderEnv = process.env,
   opts: { cacheKey?: string; languageModel?: (id: string) => LanguageModel } = {},
 ): ModelCaller {
+  const claude = createClaudeCaller(env);
   return async (request) => {
+    if (isClaudeModel(request.model) && !opts.languageModel) return claude(request);
     const model = opts.languageModel ? opts.languageModel(request.model) : openaiProvider(env)(request.model);
     const started = Date.now();
     const result = await generateText({

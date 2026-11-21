@@ -428,7 +428,7 @@ export function agentRoutes(ctx: AppContext) {
     const tryId = randomUUID();
     try {
       const result = await runTurn({
-        model: modelFor(agent.model, process.env),
+        model: modelFor(agent.model, process.env, agent.engine),
         system: systemPrompt(profile),
         messages: chatMessages(
           lines,

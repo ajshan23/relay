@@ -76,6 +76,8 @@ const agentFields = {
   tone: z.string().trim().max(60),
   languages: z.array(z.string().trim().min(1).max(30)).max(8),
   model: z.enum(["fast", "smart"]),
+  /** Which AI writes the replies: GPT-5.4 mini or Claude Haiku 5.5. */
+  engine: z.enum(["gpt", "claude"]),
   /** Voice notes: not heard, turned into text, or with the more accurate model (2× credits). */
   voiceNotes: z.enum(["off", "accurate", "best"]),
   /** Photos: not looked at, described, or with the more accurate model (2× credits). */
@@ -97,6 +99,7 @@ export const agentSettingsSchema = z.object({
   tone: agentFields.tone.default("friendly"),
   languages: agentFields.languages.default([]),
   model: agentFields.model.default("fast"),
+  engine: agentFields.engine.default("gpt"),
   voiceNotes: agentFields.voiceNotes.default("accurate"),
   photos: agentFields.photos.default("accurate"),
   voiceReplies: agentFields.voiceReplies.default("off"),

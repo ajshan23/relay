@@ -6,11 +6,19 @@ import type { Usage } from "./types";
  */
 
 export type ModelChoice = "fast" | "smart";
+/** Which family answers chats: OpenAI's GPT or Anthropic's Claude. Embeddings always stay on OpenAI. */
+export type ModelEngine = "gpt" | "claude";
 
 export const defaultChatModel = "gpt-5.4-mini";
+export const defaultClaudeModel = "claude-haiku-5-5";
 export const embeddingModel = "text-embedding-3-small";
 
-export function modelFor(choice: ModelChoice, env: Record<string, string | undefined> = process.env): string {
+export function modelFor(
+  choice: ModelChoice,
+  env: Record<string, string | undefined> = process.env,
+  engine: ModelEngine = "gpt",
+): string {
+  if (engine === "claude") return env.AI_CLAUDE_MODEL || defaultClaudeModel;
   if (choice === "smart") return env.AI_MODEL_SMART || env.AI_MODEL_FAST || defaultChatModel;
   return env.AI_MODEL_FAST || defaultChatModel;
 }
@@ -21,6 +29,8 @@ const prices: Record<string, Price> = {
   "gpt-5.4-mini": { input: 0.75, cachedInput: 0.075, output: 4.5 },
   "gpt-5.4-nano": { input: 0.2, cachedInput: 0.02, output: 1.25 },
   "text-embedding-3-small": { input: 0.02, cachedInput: 0.02, output: 0 },
+  // Prompts up to 100K tokens (Mira's are far below). Cache writes are counted at the input price.
+  "claude-haiku-5-5": { input: 0.1, cachedInput: 0.01, output: 0.5 },
 };
 
 /** Cost in millionths of a dollar. Unknown models cost 0 (and are visible in usage by name). */

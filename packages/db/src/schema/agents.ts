@@ -27,6 +27,8 @@ import { conversation, storedFile } from "./messaging";
 
 export const agentStatus = pgEnum("ai_agent_status", ["draft", "live", "paused"]);
 export const agentModel = pgEnum("ai_agent_model", ["fast", "smart"]);
+/** Which AI model family writes the replies (embeddings stay on OpenAI either way). */
+export const agentEngine = pgEnum("ai_agent_engine", ["gpt", "claude"]);
 /** Voice notes: not listened to, turned into text, or turned into text with the more accurate model (2× credits). */
 export const agentVoiceNotes = pgEnum("ai_agent_voice_notes", ["off", "accurate", "best"]);
 /** Photos: not looked at, described, or described with the more accurate model (2× credits). */
@@ -73,6 +75,7 @@ export const aiAgent = pgTable(
     /** Languages it may answer in; empty means "the customer's language". */
     languages: text("languages").array().notNull().default(sql`'{}'::text[]`),
     model: agentModel("model").notNull().default("fast"),
+    engine: agentEngine("engine").notNull().default("gpt"),
     voiceNotes: agentVoiceNotes("voice_notes").notNull().default("accurate"),
     photos: agentPhotos("photos").notNull().default("accurate"),
     voiceReplies: agentVoiceReplies("voice_replies").notNull().default("off"),
